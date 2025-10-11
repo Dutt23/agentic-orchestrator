@@ -1,0 +1,47 @@
+{
+  "name": "Lead Processing Workflow",
+  "version": "1.0",
+  "description": "Simple lead processing workflow with 3 steps",
+  "nodes": [
+    {
+      "id": "validate_lead",
+      "type": "task",
+      "name": "Validate Lead",
+      "config": {
+        "timeout": 30,
+        "retries": 3,
+        "action": "validate_email_and_phone"
+      }
+    },
+    {
+      "id": "enrich_data",
+      "type": "task",
+      "name": "Enrich Lead Data",
+      "config": {
+        "timeout": 60,
+        "retries": 2,
+        "action": "fetch_company_info"
+      }
+    },
+    {
+      "id": "score_lead",
+      "type": "task",
+      "name": "Score Lead",
+      "config": {
+        "timeout": 15,
+        "retries": 1,
+        "action": "calculate_lead_score"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "validate_lead",
+      "to": "enrich_data"
+    },
+    {
+      "from": "enrich_data",
+      "to": "score_lead"
+    }
+  ]
+}

@@ -1,0 +1,120 @@
+{
+  "name": "Customer Onboarding Pipeline",
+  "version": "2.0",
+  "description": "Complex workflow with parallel branches and conditional logic",
+  "nodes": [
+    {
+      "id": "start",
+      "type": "start",
+      "name": "New Customer"
+    },
+    {
+      "id": "validate_customer",
+      "type": "task",
+      "name": "Validate Customer Info",
+      "config": {
+        "timeout": 30,
+        "retries": 3,
+        "action": "validate_customer_data",
+        "required_fields": ["email", "name", "company"]
+      }
+    },
+    {
+      "id": "kyc_check",
+      "type": "task",
+      "name": "KYC Verification",
+      "config": {
+        "timeout": 120,
+        "retries": 2,
+        "action": "perform_kyc_check",
+        "external_api": "identity_service"
+      }
+    },
+    {
+      "id": "credit_check",
+      "type": "task",
+      "name": "Credit Check",
+      "config": {
+        "timeout": 90,
+        "retries": 2,
+        "action": "check_credit_score",
+        "external_api": "credit_bureau"
+      }
+    },
+    {
+      "id": "setup_account",
+      "type": "task",
+      "name": "Setup Account",
+      "config": {
+        "timeout": 60,
+        "retries": 3,
+        "action": "create_customer_account"
+      }
+    },
+    {
+      "id": "send_welcome_email",
+      "type": "task",
+      "name": "Send Welcome Email",
+      "config": {
+        "timeout": 15,
+        "retries": 1,
+        "action": "send_email",
+        "template": "welcome_template"
+      }
+    },
+    {
+      "id": "assign_account_manager",
+      "type": "task",
+      "name": "Assign Account Manager",
+      "config": {
+        "timeout": 30,
+        "retries": 1,
+        "action": "assign_manager",
+        "rules": "round_robin"
+      }
+    },
+    {
+      "id": "end",
+      "type": "end",
+      "name": "Onboarding Complete"
+    }
+  ],
+  "edges": [
+    {
+      "from": "start",
+      "to": "validate_customer"
+    },
+    {
+      "from": "validate_customer",
+      "to": "kyc_check"
+    },
+    {
+      "from": "validate_customer",
+      "to": "credit_check"
+    },
+    {
+      "from": "kyc_check",
+      "to": "setup_account"
+    },
+    {
+      "from": "credit_check",
+      "to": "setup_account"
+    },
+    {
+      "from": "setup_account",
+      "to": "send_welcome_email"
+    },
+    {
+      "from": "setup_account",
+      "to": "assign_account_manager"
+    },
+    {
+      "from": "send_welcome_email",
+      "to": "end"
+    },
+    {
+      "from": "assign_account_manager",
+      "to": "end"
+    }
+  ]
+}
