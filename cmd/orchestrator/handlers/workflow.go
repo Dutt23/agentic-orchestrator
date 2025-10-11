@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -17,9 +18,10 @@ type WorkflowHandler struct {
 	components *bootstrap.Components
 
 	// Individual services
-	casService      *service.CASService
-	artifactService *service.ArtifactService
-	tagService      *service.TagService
+	casService         *service.CASService
+	artifactService    *service.ArtifactService
+	tagService         *service.TagService
+	materializerService *service.MaterializerService
 
 	// Optional: lightweight orchestrator
 	workflowService *service.WorkflowServiceV2
@@ -36,16 +38,18 @@ func NewWorkflowHandler(components *bootstrap.Components) *WorkflowHandler {
 	casService := service.NewCASService(casBlobRepo, components.Logger)
 	artifactService := service.NewArtifactService(artifactRepo, components.Logger)
 	tagService := service.NewTagService(tagRepo, components.Logger)
+	materializerService := service.NewMaterializerService(components.Logger)
 
 	// Initialize lightweight workflow orchestrator
 	workflowService := service.NewWorkflowServiceV2(casService, artifactService, tagService, components.Logger)
 
 	return &WorkflowHandler{
-		components:      components,
-		casService:      casService,
-		artifactService: artifactService,
-		tagService:      tagService,
-		workflowService: workflowService,
+		components:         components,
+		casService:         casService,
+		artifactService:    artifactService,
+		tagService:         tagService,
+		materializerService: materializerService,
+		workflowService:    workflowService,
 	}
 }
 
@@ -301,26 +305,24 @@ func (h *WorkflowHandler) buildPatchChainMetadata(patchChain []models.PatchInfo)
 
 // addMaterializedWorkflow materializes the workflow and adds it to the response
 func (h *WorkflowHandler) addMaterializedWorkflow(response map[string]interface{}, components *models.WorkflowComponents) error {
-	h.components.Logger.Info("materialization requested", "tag", components.TagName, "depth", components.Depth)
+	h.components.Logger.Info("materialization requested",
+		"tag", components.TagName,
+		"kind", components.Kind,
+		"depth", components.Depth,
+		"patch_count", components.PatchCount,
+	)
 
-	// TODO: Implement materialization in Phase 2
-	// For now, if it's a dag_version, return base content
-	// If it's a patch_set, return nil (not yet implemented)
-
-	if components.IsDAGVersion() {
-		// Simple case: just parse and return base content
-		var workflow map[string]interface{}
-		if err := json.Unmarshal(components.BaseContent, &workflow); err != nil {
-			h.components.Logger.Error("failed to unmarshal workflow", "error", err)
-			return fmt.Errorf("failed to parse workflow: %w", err)
-		}
-		response["workflow"] = workflow
-	} else {
-		// Patch set: Materialization not yet implemented
-		response["workflow"] = nil
-		response["materialization_note"] = "Patch materialization will be implemented in Phase 2"
+	// Use MaterializerService to apply patches
+	workflow, err := h.materializerService.Materialize(context.Background(), components)
+	if err != nil {
+		h.components.Logger.Error("materialization failed",
+			"tag", components.TagName,
+			"error", err,
+		)
+		return fmt.Errorf("failed to materialize workflow: %w", err)
 	}
 
+	response["workflow"] = workflow
 	return nil
 }
 
