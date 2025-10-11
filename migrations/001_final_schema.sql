@@ -356,7 +356,7 @@ COMMENT ON COLUMN patch_chain_member.seq IS 'Application order (1-indexed)';
 
 CREATE TABLE run (
     -- Unique run ID (time-ordered for better index performance)
-    run_id UUID PRIMARY KEY DEFAULT uuid_generate_v7(),
+    run_id UUID DEFAULT uuid_generate_v7(),
 
     -- Base reference type
     base_kind TEXT NOT NULL CHECK (base_kind IN ('tag', 'dag_version', 'patch_set')),
@@ -385,7 +385,10 @@ CREATE TABLE run (
 
     -- Audit fields
     submitted_by TEXT,
-    submitted_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    submitted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    -- Primary key must include partition key for partitioned tables
+    PRIMARY KEY (run_id, submitted_at)
 ) PARTITION BY RANGE (submitted_at);
 
 -- Create initial partitions (extend with pg_partman or cron job)
@@ -411,8 +414,9 @@ COMMENT ON COLUMN run.tags_snapshot IS 'Tag positions at submission time (for au
 -- ============================================================================
 
 CREATE TABLE run_snapshot_index (
-    -- One-to-one with run
-    run_id UUID PRIMARY KEY REFERENCES run(run_id) ON DELETE CASCADE,
+    -- One-to-one with run (must match run's composite PK)
+    run_id UUID NOT NULL,
+    run_submitted_at TIMESTAMPTZ NOT NULL,
 
     -- Reference to cached snapshot artifact
     snapshot_id UUID NOT NULL REFERENCES artifact(artifact_id) ON DELETE RESTRICT,
@@ -421,8 +425,15 @@ CREATE TABLE run_snapshot_index (
     version_hash TEXT NOT NULL,
 
     -- When snapshot was linked to this run
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    -- Primary key and foreign key to run table
+    PRIMARY KEY (run_id, run_submitted_at),
+    FOREIGN KEY (run_id, run_submitted_at) REFERENCES run(run_id, submitted_at) ON DELETE CASCADE
 );
+
+-- Lookup by run_id (common query pattern)
+CREATE INDEX idx_run_snapshot_index_run_id ON run_snapshot_index(run_id);
 
 -- Reverse lookup: find runs using same snapshot
 CREATE INDEX idx_run_snapshot_index_snapshot ON run_snapshot_index(snapshot_id);
