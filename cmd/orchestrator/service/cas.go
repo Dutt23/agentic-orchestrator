@@ -70,6 +70,34 @@ func (s *CASService) GetContent(ctx context.Context, casID string) ([]byte, erro
 	return content, nil
 }
 
+// GetContentBulk retrieves content for multiple CAS IDs in a single query
+// Returns a map of cas_id -> content
+func (s *CASService) GetContentBulk(ctx context.Context, casIDs []string) (map[string][]byte, error) {
+	if len(casIDs) == 0 {
+		return make(map[string][]byte), nil
+	}
+
+	s.log.Info("bulk fetching CAS content", "count", len(casIDs))
+
+	results, err := s.repo.GetContentBulk(ctx, casIDs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get bulk content: %w", err)
+	}
+
+	// Verify all requested IDs were found
+	if len(results) != len(casIDs) {
+		missing := []string{}
+		for _, id := range casIDs {
+			if _, found := results[id]; !found {
+				missing = append(missing, id)
+			}
+		}
+		s.log.Warn("some CAS IDs not found", "missing_count", len(missing), "missing_ids", missing)
+	}
+
+	return results, nil
+}
+
 // GetBlob retrieves full CAS blob metadata
 func (s *CASService) GetBlob(ctx context.Context, casID string) (*models.CASBlob, error) {
 	blob, err := s.repo.GetByID(ctx, casID)

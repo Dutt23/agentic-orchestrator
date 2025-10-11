@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/labstack/echo/v4"
+	"github.com/lyzr/orchestrator/cmd/orchestrator/models"
 	"github.com/lyzr/orchestrator/cmd/orchestrator/repository"
 	"github.com/lyzr/orchestrator/cmd/orchestrator/service"
 	"github.com/lyzr/orchestrator/common/bootstrap"
@@ -187,11 +188,20 @@ func (h *WorkflowHandler) CreateWorkflowDirectOrchestration(c echo.Context) erro
 	})
 }
 
-// GetWorkflow retrieves a workflow by tag name
-// GET /api/v1/workflows/:tag
+// GetWorkflow retrieves a workflow by tag name with optional materialization
+// GET /api/v1/workflows/:tag?materialize=false
+//
+// Query parameters:
+//   - materialize: "true" or "false" (default: "false")
+//     If true, returns the fully materialized workflow (base + patches applied)
+//     If false, returns components only (base + patch chain metadata)
 func (h *WorkflowHandler) GetWorkflow(c echo.Context) error {
 	ctx := c.Request().Context()
 	tagName := c.Param("tag")
+
+	// Parse materialize flag (default: false)
+	materializeParam := c.QueryParam("materialize")
+	materialize := materializeParam == "true"
 
 	if tagName == "" {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{
@@ -199,19 +209,119 @@ func (h *WorkflowHandler) GetWorkflow(c echo.Context) error {
 		})
 	}
 
-	// Option 1: Use workflow service
-	workflow, err := h.workflowService.GetWorkflowByTag(ctx, tagName)
+	// Fetch workflow components (always does 4 queries)
+	components, err := h.workflowService.GetWorkflowComponents(ctx, tagName)
 	if err != nil {
-		h.components.Logger.Error("failed to get workflow", "tag", tagName, "error", err)
+		h.components.Logger.Error("failed to get workflow components", "tag", tagName, "error", err)
 		return c.JSON(http.StatusNotFound, map[string]interface{}{
 			"error": "workflow not found",
 		})
 	}
 
-	return c.JSON(http.StatusOK, map[string]interface{}{
-		"tag":      tagName,
-		"workflow": workflow,
-	})
+	// Build response
+	response := h.buildWorkflowResponse(tagName, components)
+
+	// Optionally materialize the workflow
+	if materialize {
+		if err := h.addMaterializedWorkflow(response, components); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{
+				"error": fmt.Sprintf("failed to materialize workflow: %v", err),
+			})
+		}
+	} else {
+		response["workflow"] = nil
+	}
+
+	return c.JSON(http.StatusOK, response)
+}
+
+// buildWorkflowResponse constructs the response with metadata and components
+func (h *WorkflowHandler) buildWorkflowResponse(tagName string, components *models.WorkflowComponents) map[string]interface{} {
+	response := map[string]interface{}{
+		"tag":         tagName,
+		"artifact_id": components.ArtifactID,
+		"kind":        components.Kind,
+		"depth":       components.Depth,
+		"patch_count": components.PatchCount,
+		"created_at":  components.CreatedAt,
+	}
+
+	if components.CreatedBy != nil {
+		response["created_by"] = *components.CreatedBy
+	}
+
+	response["components"] = h.buildComponentDetails(components)
+
+	return response
+}
+
+// buildComponentDetails constructs the component details section of the response
+func (h *WorkflowHandler) buildComponentDetails(components *models.WorkflowComponents) map[string]interface{} {
+	details := map[string]interface{}{
+		"base_cas_id":       components.BaseCASID,
+		"base_version_hash": components.BaseVersionHash,
+	}
+
+	if components.BaseVersion != nil {
+		details["base_version"] = *components.BaseVersion
+	}
+
+	if len(components.PatchChain) > 0 {
+		details["patches"] = h.buildPatchChainMetadata(components.PatchChain)
+	}
+
+	return details
+}
+
+// buildPatchChainMetadata converts patch chain to metadata format (without content)
+func (h *WorkflowHandler) buildPatchChainMetadata(patchChain []models.PatchInfo) []map[string]interface{} {
+	patches := make([]map[string]interface{}, 0, len(patchChain))
+
+	for _, patch := range patchChain {
+		patchInfo := map[string]interface{}{
+			"seq":         patch.Seq,
+			"artifact_id": patch.ArtifactID,
+			"cas_id":      patch.CASID,
+			"depth":       patch.Depth,
+			"created_at":  patch.CreatedAt,
+		}
+
+		if patch.OpCount != nil {
+			patchInfo["op_count"] = *patch.OpCount
+		}
+		if patch.CreatedBy != nil {
+			patchInfo["created_by"] = *patch.CreatedBy
+		}
+
+		patches = append(patches, patchInfo)
+	}
+
+	return patches
+}
+
+// addMaterializedWorkflow materializes the workflow and adds it to the response
+func (h *WorkflowHandler) addMaterializedWorkflow(response map[string]interface{}, components *models.WorkflowComponents) error {
+	h.components.Logger.Info("materialization requested", "tag", components.TagName, "depth", components.Depth)
+
+	// TODO: Implement materialization in Phase 2
+	// For now, if it's a dag_version, return base content
+	// If it's a patch_set, return nil (not yet implemented)
+
+	if components.IsDAGVersion() {
+		// Simple case: just parse and return base content
+		var workflow map[string]interface{}
+		if err := json.Unmarshal(components.BaseContent, &workflow); err != nil {
+			h.components.Logger.Error("failed to unmarshal workflow", "error", err)
+			return fmt.Errorf("failed to parse workflow: %w", err)
+		}
+		response["workflow"] = workflow
+	} else {
+		// Patch set: Materialization not yet implemented
+		response["workflow"] = nil
+		response["materialization_note"] = "Patch materialization will be implemented in Phase 2"
+	}
+
+	return nil
 }
 
 // GetWorkflowDirectOrchestration is an alternative that orchestrates directly

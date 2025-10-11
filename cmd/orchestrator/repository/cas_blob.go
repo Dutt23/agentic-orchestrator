@@ -93,6 +93,41 @@ func (r *CASBlobRepository) GetContentByID(ctx context.Context, casID string) ([
 	return content, nil
 }
 
+// GetContentBulk retrieves content for multiple CAS blobs in a single query
+func (r *CASBlobRepository) GetContentBulk(ctx context.Context, casIDs []string) (map[string][]byte, error) {
+	if len(casIDs) == 0 {
+		return make(map[string][]byte), nil
+	}
+
+	query := `
+		SELECT cas_id, content
+		FROM cas_blob
+		WHERE cas_id = ANY($1)
+	`
+
+	rows, err := r.db.Query(ctx, query, casIDs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get CAS blob contents in bulk: %w", err)
+	}
+	defer rows.Close()
+
+	results := make(map[string][]byte, len(casIDs))
+	for rows.Next() {
+		var casID string
+		var content []byte
+		if err := rows.Scan(&casID, &content); err != nil {
+			return nil, fmt.Errorf("failed to scan CAS blob content: %w", err)
+		}
+		results[casID] = content
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating CAS blob contents: %w", err)
+	}
+
+	return results, nil
+}
+
 // ListByMediaType lists CAS blobs by media type
 func (r *CASBlobRepository) ListByMediaType(ctx context.Context, mediaType string, limit int) ([]*models.CASBlob, error) {
 	query := `
