@@ -14,13 +14,13 @@ struct StartRunRequest {
     inputs: Option<serde_json::Value>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct RunResponse {
     run_id: String,
     status: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct RunStatus {
     run_id: String,
     status: String,
@@ -29,7 +29,7 @@ struct RunStatus {
     active_nodes: Vec<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct RunListResponse {
     runs: Vec<RunStatus>,
     total: usize,
@@ -166,7 +166,7 @@ async fn list_runs(
 async fn cancel_run(client: ApiClient, run_id: String, _output: &OutputFormat) -> Result<()> {
     let _spinner = spinner::new("Cancelling run...");
 
-    client.post(&format!("/api/runs/{}/cancel", run_id), &()).await?;
+    client.post::<_, ()>(&format!("/api/runs/{}/cancel", run_id), &()).await?;
 
     drop(_spinner);
 
