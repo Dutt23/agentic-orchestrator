@@ -1,0 +1,52 @@
+# ========================================
+# Fanout Service (Streaming)
+# ========================================
+
+[Unit]
+Description=Orchestrator Fanout Streaming Service
+After=network.target orchestrator-orchestrator.service
+PartOf=orchestrator-fanout.slice
+
+[Service]
+Type=simple
+User=orchestrator
+Group=orchestrator
+WorkingDirectory=/opt/orchestrator
+
+# Assign to fanout slice (dedicated cores for real-time)
+Slice=orchestrator-fanout.slice
+
+# Service binary
+ExecStart=/opt/orchestrator/bin/fanout
+
+# Environment (tuned for streaming)
+EnvironmentFile=-/opt/orchestrator/etc/fanout.env
+Environment="GOMAXPROCS=4"
+Environment="GOGC=50"
+Environment="GOMEMLIMIT=4GiB"
+Environment="SERVICE_NAME=fanout"
+Environment="PORT=8090"
+Environment="MAX_CONNECTIONS=10000"
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/orchestrator/logs
+
+# Limits (high for SSE/WS connections)
+LimitNOFILE=524288
+LimitNPROC=32768
+
+# Restart
+Restart=on-failure
+RestartSec=3s
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=fanout
+
+[Install]
+WantedBy=multi-user.target

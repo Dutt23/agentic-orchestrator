@@ -1,0 +1,51 @@
+# ========================================
+# Orchestrator Core Service
+# ========================================
+
+[Unit]
+Description=Orchestrator Core Service
+After=network.target postgresql.service
+PartOf=orchestrator-control.slice
+
+[Service]
+Type=simple
+User=orchestrator
+Group=orchestrator
+WorkingDirectory=/opt/orchestrator
+
+# Assign to control plane slice
+Slice=orchestrator-control.slice
+
+# Service binary
+ExecStart=/opt/orchestrator/bin/orchestrator
+
+# Environment
+EnvironmentFile=-/opt/orchestrator/etc/orchestrator.env
+Environment="GOMAXPROCS=8"
+Environment="GOGC=100"
+Environment="GOMEMLIMIT=4GiB"
+Environment="SERVICE_NAME=orchestrator"
+Environment="PORT=8080"
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/orchestrator/data /opt/orchestrator/logs
+
+# Limits
+LimitNOFILE=262144
+LimitNPROC=65536
+
+# Restart
+Restart=on-failure
+RestartSec=5s
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=orchestrator
+
+[Install]
+WantedBy=multi-user.target

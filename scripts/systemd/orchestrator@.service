@@ -1,0 +1,61 @@
+# ========================================
+# Orchestrator Service Template
+# ========================================
+# Usage: orchestrator@<service-name>.service
+# Example: orchestrator@orchestrator.service
+#          orchestrator@runner.service
+
+[Unit]
+Description=Orchestrator %i Service
+After=network.target postgresql.service
+PartOf=%p-%i.slice
+
+[Service]
+Type=simple
+User=orchestrator
+Group=orchestrator
+WorkingDirectory=/opt/orchestrator
+
+# Dynamic slice assignment based on service type
+# Control plane: orchestrator, router, parser, hitl, api
+# Runner plane: runner, agent-runner
+# Fanout plane: fanout
+Slice=%p-control.slice
+
+# Service binary
+ExecStart=/opt/orchestrator/bin/%i
+
+# Environment file (per-service config)
+EnvironmentFile=-/opt/orchestrator/etc/%i.env
+
+# Default environment
+Environment="GOMAXPROCS=8"
+Environment="GOGC=100"
+Environment="GOMEMLIMIT=2GiB"
+Environment="SERVICE_NAME=%i"
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/orchestrator/data /opt/orchestrator/logs
+
+# Resource limits
+LimitNOFILE=262144
+LimitNPROC=65536
+LimitMEMLOCK=64M
+
+# Restart policy
+Restart=on-failure
+RestartSec=5s
+StartLimitBurst=5
+StartLimitIntervalSec=60s
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=%i
+
+[Install]
+WantedBy=multi-user.target

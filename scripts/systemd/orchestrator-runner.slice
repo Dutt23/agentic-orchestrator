@@ -1,0 +1,39 @@
+# ========================================
+# Orchestrator Runner (Data Plane) Slice
+# ========================================
+# Services: runner, agent-runner
+# CPU: Cores 8-15 (NUMA node 1 if available)
+# Priority: Standard (execution plane)
+
+[Unit]
+Description=Orchestrator Runner Data Plane Slice
+Before=slices.target
+
+[Slice]
+# CPU affinity - runners on cores 8-15
+CPUAffinity=8 9 10 11 12 13 14 15
+
+# CPU quota (800% = 8 cores)
+CPUQuota=800%
+
+# Memory limits (runners need more memory for workloads)
+MemoryMin=8G
+MemoryHigh=16G
+MemoryMax=24G
+
+# NUMA node 1 (if multi-socket system)
+# Uncomment for NUMA-aware placement
+# NUMAPolicy=bind
+# NUMAMask=1
+
+# I/O weight (standard priority)
+IOWeight=300
+
+# Tasks limit (runners spawn many goroutines)
+TasksMax=8192
+
+# Nice level (standard priority)
+Nice=0
+
+[Install]
+WantedBy=slices.target

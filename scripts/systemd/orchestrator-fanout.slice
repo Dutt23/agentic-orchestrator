@@ -1,0 +1,39 @@
+# ========================================
+# Orchestrator Fanout (Streaming) Slice
+# ========================================
+# Services: fanout
+# CPU: Cores 16-19 (or shared with control plane if <16 cores)
+# Priority: Real-time (for SSE/WebSocket streaming)
+
+[Unit]
+Description=Orchestrator Fanout Streaming Slice
+Before=slices.target
+
+[Slice]
+# CPU affinity - fanout on cores 16-19 (adjust if fewer cores)
+# For systems with <16 cores, use: 4 5 6 7
+CPUAffinity=16 17 18 19
+
+# CPU quota (400% = 4 cores)
+CPUQuota=400%
+
+# Memory limits (fanout buffers many connections)
+MemoryMin=2G
+MemoryHigh=6G
+MemoryMax=8G
+
+# NUMA node (prefer same node as control plane for low latency)
+# NUMAPolicy=bind
+# NUMAMask=0
+
+# I/O weight (low, mostly network I/O)
+IOWeight=200
+
+# Tasks limit (many connections)
+TasksMax=16384
+
+# Nice level (real-time priority for streaming)
+Nice=-10
+
+[Install]
+WantedBy=slices.target

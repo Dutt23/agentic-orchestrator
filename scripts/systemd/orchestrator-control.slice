@@ -1,0 +1,39 @@
+# ========================================
+# Orchestrator Control Plane Slice
+# ========================================
+# Services: orchestrator, router, parser, hitl, api
+# CPU: Cores 0-7 (NUMA node 0)
+# Priority: High (control plane)
+
+[Unit]
+Description=Orchestrator Control Plane Slice
+Before=slices.target
+
+[Slice]
+# CPU affinity - control plane on cores 0-7
+CPUAffinity=0 1 2 3 4 5 6 7
+
+# CPU quota (800% = 8 cores)
+CPUQuota=800%
+
+# Memory limits (control plane should have guaranteed memory)
+MemoryMin=4G
+MemoryHigh=8G
+MemoryMax=12G
+
+# NUMA node 0 (if available)
+# Uncomment if you have multi-socket system
+# NUMAPolicy=bind
+# NUMAMask=0
+
+# I/O weight (higher priority for control plane)
+IOWeight=500
+
+# Tasks limit (prevent fork bombs)
+TasksMax=4096
+
+# Nice level (higher priority)
+Nice=-5
+
+[Install]
+WantedBy=slices.target

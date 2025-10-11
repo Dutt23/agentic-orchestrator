@@ -1,0 +1,52 @@
+# ========================================
+# Runner Service (Data Plane)
+# ========================================
+
+[Unit]
+Description=Orchestrator Runner Service
+After=network.target orchestrator-orchestrator.service
+PartOf=orchestrator-runner.slice
+
+[Service]
+Type=simple
+User=orchestrator
+Group=orchestrator
+WorkingDirectory=/opt/orchestrator
+
+# Assign to runner slice (separate CPU cores)
+Slice=orchestrator-runner.slice
+
+# Service binary
+ExecStart=/opt/orchestrator/bin/runner
+
+# Environment
+EnvironmentFile=-/opt/orchestrator/etc/runner.env
+Environment="GOMAXPROCS=8"
+Environment="GOGC=100"
+Environment="GOMEMLIMIT=8GiB"
+Environment="SERVICE_NAME=runner"
+Environment="PORT=8082"
+Environment="RUNNER_WORKERS=16"
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/orchestrator/data /opt/orchestrator/logs
+
+# Limits (runners need more)
+LimitNOFILE=262144
+LimitNPROC=131072
+
+# Restart
+Restart=on-failure
+RestartSec=5s
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=runner
+
+[Install]
+WantedBy=multi-user.target
