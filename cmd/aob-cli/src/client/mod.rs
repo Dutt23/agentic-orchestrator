@@ -6,6 +6,7 @@ use std::time::Duration;
 pub struct ApiClient {
     base_url: String,
     client: Client,
+    username: Option<String>,
 }
 
 impl ApiClient {
@@ -19,15 +20,32 @@ impl ApiClient {
         Ok(Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             client,
+            username: None,
         })
+    }
+
+    /// Set the username for X-User-ID header
+    pub fn with_username(mut self, username: String) -> Self {
+        self.username = Some(username);
+        self
+    }
+
+    /// Get the username
+    pub fn username(&self) -> Option<&str> {
+        self.username.as_deref()
     }
 
     pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
         let url = format!("{}{}", self.base_url, path);
 
-        let response = self
-            .client
-            .get(&url)
+        let mut request = self.client.get(&url);
+
+        // Add X-User-ID header if username is set
+        if let Some(username) = &self.username {
+            request = request.header("X-User-ID", username);
+        }
+
+        let response = request
             .send()
             .await
             .context("Request failed")?;
@@ -48,10 +66,14 @@ impl ApiClient {
     ) -> Result<R> {
         let url = format!("{}{}", self.base_url, path);
 
-        let response = self
-            .client
-            .post(&url)
-            .json(body)
+        let mut request = self.client.post(&url).json(body);
+
+        // Add X-User-ID header if username is set
+        if let Some(username) = &self.username {
+            request = request.header("X-User-ID", username);
+        }
+
+        let response = request
             .send()
             .await
             .context("Request failed")?;
@@ -69,9 +91,14 @@ impl ApiClient {
     pub async fn delete(&self, path: &str) -> Result<()> {
         let url = format!("{}{}", self.base_url, path);
 
-        let response = self
-            .client
-            .delete(&url)
+        let mut request = self.client.delete(&url);
+
+        // Add X-User-ID header if username is set
+        if let Some(username) = &self.username {
+            request = request.header("X-User-ID", username);
+        }
+
+        let response = request
             .send()
             .await
             .context("Request failed")?;

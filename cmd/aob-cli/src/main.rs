@@ -1,10 +1,12 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
+mod auth;
 mod client;
 mod commands;
 mod utils;
 
+use auth::{ensure_authenticated, Config};
 use client::ApiClient;
 use commands::*;
 
@@ -101,6 +103,18 @@ enum Commands {
         #[arg(long, value_enum, default_value = "freeze")]
         mode: ReplayMode,
     },
+
+    /// Login with username
+    Login {
+        /// Username to use (optional, prompts if not provided)
+        username: Option<String>,
+    },
+
+    /// Logout (clear stored credentials)
+    Logout,
+
+    /// Show current authentication status
+    Whoami,
 }
 
 #[derive(Clone, clap::ValueEnum)]
@@ -120,8 +134,25 @@ async fn main() -> Result<()> {
     // Parse CLI arguments
     let cli = Cli::parse();
 
-    // Initialize API client
-    let client = ApiClient::new(&cli.api_url)?;
+    // Handle auth commands that don't need API client
+    match &cli.command {
+        Commands::Login { username } => {
+            return handle_login(username.clone()).await;
+        }
+        Commands::Logout => {
+            return handle_logout();
+        }
+        Commands::Whoami => {
+            return handle_whoami();
+        }
+        _ => {} // Continue to API commands
+    }
+
+    // Ensure user is authenticated
+    let config = ensure_authenticated()?;
+
+    // Initialize API client with username
+    let client = ApiClient::new(&cli.api_url)?.with_username(config.username);
 
     // Execute command
     match cli.command {
@@ -154,6 +185,59 @@ async fn main() -> Result<()> {
                 &cli.output,
             )
             .await?
+        }
+        Commands::Login { .. } | Commands::Logout | Commands::Whoami => {
+            // Already handled above
+            unreachable!()
+        }
+    }
+
+    Ok(())
+}
+
+/// Handle login command
+async fn handle_login(username: Option<String>) -> Result<()> {
+    let username = match username {
+        Some(u) => u,
+        None => auth::prompt_username()?,
+    };
+
+    let config = Config { username };
+    config.save()?;
+
+    println!("✓ Logged in as: {}", config.username);
+    println!("✓ Config saved to: {}", Config::config_path_display());
+
+    Ok(())
+}
+
+/// Handle logout command
+fn handle_logout() -> Result<()> {
+    // Check if logged in
+    let config = Config::load()?;
+
+    if config.is_none() {
+        println!("Not logged in");
+        return Ok(());
+    }
+
+    Config::delete()?;
+    println!("✓ Logged out successfully");
+    println!("✓ Config deleted from: {}", Config::config_path_display());
+
+    Ok(())
+}
+
+/// Handle whoami command
+fn handle_whoami() -> Result<()> {
+    match Config::load()? {
+        Some(config) => {
+            println!("Logged in as: {}", config.username);
+            println!("Config file: {}", Config::config_path_display());
+        }
+        None => {
+            println!("Not logged in");
+            println!("Run 'aob login' to authenticate");
         }
     }
 
