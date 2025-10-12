@@ -15,6 +15,10 @@ DB_NAME="orchestrator"
 DB_USER="sdutt"
 USER_ID="X-User-ID: test-user"
 
+# Enable error logging
+ERROR_LOG="$SCRIPT_DIR/test_patches_errors.log"
+exec 2> >(tee -a "$ERROR_LOG" >&2)
+
 # Colors for output
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'

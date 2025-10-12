@@ -68,18 +68,18 @@ echo -e "${GREEN}✓ Base workflow created: $BASE_ARTIFACT_ID${NC}\n"
 echo -e "${YELLOW}Step 2: Creating Deep Patch Chain (15 patches)${NC}"
 echo -e "${BLUE}This simulates a long-running workflow with many edits${NC}\n"
 
-psql -U "$DB_USER" -d "$DB_NAME" -v base_artifact_id="'$BASE_ARTIFACT_ID'" <<'SQL'
+psql -U "$DB_USER" -d "$DB_NAME" <<SQL
 -- Function to generate patch content
-CREATE OR REPLACE FUNCTION generate_patch(seq INT) RETURNS TEXT AS $$
+CREATE OR REPLACE FUNCTION generate_patch(seq INT) RETURNS TEXT AS \$\$
 BEGIN
     RETURN format('[{"op":"replace","path":"/nodes/0/config/timeout","value":%s}]', 30 + seq * 10);
 END;
-$$ LANGUAGE plpgsql;
+\$\$ LANGUAGE plpgsql;
 
 -- Insert 15 patches
-DO $$
+DO \$\$
 DECLARE
-    base_id UUID := :base_artifact_id::uuid;
+    base_id UUID := '$BASE_ARTIFACT_ID'::uuid;
     current_patch_id UUID;
     prev_patch_id UUID := NULL;
     i INT;
@@ -140,10 +140,10 @@ BEGIN
         version = version + 1,
         moved_by = 'compaction-test',
         moved_at = now()
-    WHERE tag_name = 'compaction-test';
+    WHERE username = 'compaction-test' AND tag_name = 'compaction-test';
 
     RAISE NOTICE 'Tag updated to point to P15: %', prev_patch_id;
-END $$;
+END \$\$;
 
 -- Show current state
 \echo ''
@@ -155,7 +155,7 @@ SELECT
     (SELECT COUNT(*) FROM patch_chain_member WHERE head_id = a.artifact_id) as chain_length
 FROM artifact a
 INNER JOIN tag t ON t.target_id = a.artifact_id
-WHERE t.tag_name = 'compaction-test';
+WHERE t.username = 'compaction-test' AND t.tag_name = 'compaction-test';
 
 -- Show storage cost
 \echo ''
@@ -164,7 +164,7 @@ SELECT COUNT(*) as total_rows
 FROM patch_chain_member pcm
 INNER JOIN artifact a ON a.artifact_id = pcm.head_id
 INNER JOIN tag t ON t.target_id = a.artifact_id
-WHERE t.tag_name = 'compaction-test';
+WHERE t.username = 'compaction-test' AND t.tag_name = 'compaction-test';
 
 SQL
 
@@ -296,4 +296,4 @@ echo -e "4. Test undo after migration"
 
 echo -e "\n${YELLOW}Cleanup:${NC}"
 echo -e "To clean up test data, run:"
-echo -e "  psql -U $DB_USER -d $DB_NAME -c \"DELETE FROM tag WHERE tag_name = 'compaction-test'\""
+echo -e "  psql -U $DB_USER -d $DB_NAME -c \"DELETE FROM tag WHERE username = 'compaction-test' AND tag_name = 'compaction-test'\""

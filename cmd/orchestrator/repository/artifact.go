@@ -228,7 +228,7 @@ func (r *ArtifactRepository) GetPatchChain(ctx context.Context, headID uuid.UUID
 		SELECT
 			a.artifact_id, a.kind, a.cas_id, a.name, a.plan_hash, a.version_hash,
 			a.base_version, a.depth, a.op_count, a.nodes_count, a.edges_count,
-			a.meta, a.created_by, a.created_at
+			a.compacted_from_id, a.meta, a.created_by, a.created_at
 		FROM artifact a
 		INNER JOIN patch_chain_member pcm ON a.artifact_id = pcm.member_id
 		WHERE pcm.head_id = $1
