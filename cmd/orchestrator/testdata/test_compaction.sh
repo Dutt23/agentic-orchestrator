@@ -13,7 +13,12 @@ cd "$SCRIPT_DIR"
 API_BASE="http://localhost:8081/api/v1"
 DB_NAME="orchestrator"
 DB_USER="sdutt"
+USER_ID="X-User-ID: compaction-test"
 DEPTH_THRESHOLD=10
+
+# Enable error logging
+ERROR_LOG="$SCRIPT_DIR/test_compaction_errors.log"
+exec 2> >(tee -a "$ERROR_LOG" >&2)
 
 # Colors for output
 GREEN='\033[0;32m'

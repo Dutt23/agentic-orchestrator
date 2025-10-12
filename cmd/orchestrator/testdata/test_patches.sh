@@ -13,6 +13,7 @@ cd "$SCRIPT_DIR"
 API_BASE="http://localhost:8081/api/v1"
 DB_NAME="orchestrator"
 DB_USER="sdutt"
+USER_ID="X-User-ID: test-user"
 
 # Colors for output
 GREEN='\033[0;32m'
@@ -172,27 +173,33 @@ VALUES (
     :'patch3_artifact_id'::uuid
 );
 
--- Create tags
-INSERT INTO tag (tag_name, target_kind, target_id, moved_by, moved_at)
-VALUES ('patch-test-1', 'patch_set', :'patch1_artifact_id'::uuid, 'test-user', now())
-ON CONFLICT (tag_name) DO UPDATE SET
+-- Create tags (with new username column for multi-user support)
+INSERT INTO tag (username, tag_name, target_kind, target_id, created_by, moved_by, moved_at)
+VALUES ('test-user', 'patch-test-1', 'patch_set', :'patch1_artifact_id'::uuid, 'test-user', 'test-user', now())
+ON CONFLICT (username, tag_name) DO UPDATE SET
     target_kind = EXCLUDED.target_kind,
     target_id = EXCLUDED.target_id,
-    version = tag.version + 1;
+    version = tag.version + 1,
+    moved_by = EXCLUDED.moved_by,
+    moved_at = EXCLUDED.moved_at;
 
-INSERT INTO tag (tag_name, target_kind, target_id, moved_by, moved_at)
-VALUES ('patch-test-2', 'patch_set', :'patch2_artifact_id'::uuid, 'test-user', now())
-ON CONFLICT (tag_name) DO UPDATE SET
+INSERT INTO tag (username, tag_name, target_kind, target_id, created_by, moved_by, moved_at)
+VALUES ('test-user', 'patch-test-2', 'patch_set', :'patch2_artifact_id'::uuid, 'test-user', 'test-user', now())
+ON CONFLICT (username, tag_name) DO UPDATE SET
     target_kind = EXCLUDED.target_kind,
     target_id = EXCLUDED.target_id,
-    version = tag.version + 1;
+    version = tag.version + 1,
+    moved_by = EXCLUDED.moved_by,
+    moved_at = EXCLUDED.moved_at;
 
-INSERT INTO tag (tag_name, target_kind, target_id, moved_by, moved_at)
-VALUES ('patch-test-3', 'patch_set', :'patch3_artifact_id'::uuid, 'test-user', now())
-ON CONFLICT (tag_name) DO UPDATE SET
+INSERT INTO tag (username, tag_name, target_kind, target_id, created_by, moved_by, moved_at)
+VALUES ('test-user', 'patch-test-3', 'patch_set', :'patch3_artifact_id'::uuid, 'test-user', 'test-user', now())
+ON CONFLICT (username, tag_name) DO UPDATE SET
     target_kind = EXCLUDED.target_kind,
     target_id = EXCLUDED.target_id,
-    version = tag.version + 1;
+    version = tag.version + 1,
+    moved_by = EXCLUDED.moved_by,
+    moved_at = EXCLUDED.moved_at;
 
 \echo 'Patches inserted successfully!'
 SQL
@@ -255,4 +262,4 @@ echo -e "- Created 3 tags pointing to different patch depths"
 echo -e "- Verified materialization works correctly"
 echo -e "\n${YELLOW}Cleanup:${NC}"
 echo -e "To clean up test data, run:"
-echo -e "  psql -U $DB_USER -d $DB_NAME -c \"DELETE FROM tag WHERE tag_name LIKE 'patch-%'\""
+echo -e "  psql -U $DB_USER -d $DB_NAME -c \"DELETE FROM tag WHERE username = 'test-user' AND tag_name LIKE 'patch-%'\""
