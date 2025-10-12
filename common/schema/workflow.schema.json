@@ -1,0 +1,125 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://orchestrator.lyzr.ai/schemas/workflow.json",
+  "title": "Workflow",
+  "description": "A directed acyclic graph (DAG) representing a workflow",
+  "type": "object",
+  "required": ["nodes", "edges"],
+  "properties": {
+    "nodes": {
+      "type": "array",
+      "description": "List of nodes in the workflow",
+      "items": {
+        "$ref": "#/definitions/Node"
+      },
+      "minItems": 1
+    },
+    "edges": {
+      "type": "array",
+      "description": "List of edges connecting nodes",
+      "items": {
+        "$ref": "#/definitions/Edge"
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Optional workflow metadata",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "Node": {
+      "type": "object",
+      "required": ["id", "type"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for the node",
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "type": {
+          "type": "string",
+          "description": "Type of the node",
+          "enum": [
+            "function",
+            "http",
+            "conditional",
+            "loop",
+            "parallel",
+            "transform",
+            "aggregate",
+            "filter"
+          ]
+        },
+        "config": {
+          "type": "object",
+          "description": "Node-specific configuration",
+          "additionalProperties": true
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "description": "Execution timeout in milliseconds",
+          "minimum": 0
+        },
+        "retry": {
+          "$ref": "#/definitions/RetryPolicy"
+        }
+      }
+    },
+    "Edge": {
+      "type": "object",
+      "required": ["from", "to"],
+      "properties": {
+        "from": {
+          "type": "string",
+          "description": "Source node ID"
+        },
+        "to": {
+          "type": "string",
+          "description": "Target node ID"
+        },
+        "condition": {
+          "type": "string",
+          "description": "Optional condition for edge traversal"
+        }
+      }
+    },
+    "RetryPolicy": {
+      "type": "object",
+      "properties": {
+        "max_attempts": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "default": 3
+        },
+        "backoff_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 1000
+        },
+        "backoff_multiplier": {
+          "type": "number",
+          "minimum": 1.0,
+          "default": 2.0
+        }
+      }
+    }
+  }
+}

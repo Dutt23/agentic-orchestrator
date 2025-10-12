@@ -1,0 +1,16 @@
+# === Generated Types (DO NOT COMMIT) ===
+# This file is auto-generated from common/schema/workflow.schema.json
+# Run 'make generate-types' to regenerate
+src/types.rs
+
+# === Rust Build Artifacts ===
+/target/
+Cargo.lock
+
+# === WASM Build ===
+pkg/
+*.wasm
+wasm-pack.log
+
+# === Backup Files ===
+**/*.rs.bk

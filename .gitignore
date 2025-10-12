@@ -1,0 +1,151 @@
+# === Generated Code (DO NOT COMMIT) ===
+# These files are auto-generated from JSON schemas
+crates/dag-optimizer/src/types.rs
+cmd/orchestrator/models/generated/
+
+# === Go ===
+# Binaries
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test coverage
+coverage.out
+*.test
+*.prof
+
+# Go workspace
+go.work
+go.work.sum
+
+# Vendor (if used)
+vendor/
+
+# === Rust ===
+# Build artifacts
+target/
+**/target/
+debug/
+release/
+
+# Cargo.lock for libraries (keep for binaries)
+**/Cargo.lock
+
+# Backup files
+**/*.rs.bk
+**/*.rs.bk.*
+
+# === WASM ===
+*.wasm
+pkg/
+wasm-pack.log
+
+# === Node.js / npm ===
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# UI build artifacts
+ui/build/
+ui/dist/
+ui/.next/
+ui/out/
+
+# === Logs ===
+logs/
+*.log
+log/
+
+# === Runtime / Process ===
+.pids/
+*.pid
+*.seed
+*.pid.lock
+
+# === Data / Database ===
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# === IDE / Editor ===
+# VSCode
+.vscode/
+*.code-workspace
+
+# JetBrains
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Vim
+*.swp
+*.swo
+*~
+.vim/
+
+# Emacs
+*~
+\#*\#
+.\#*
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# === OS ===
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+
+# Linux
+*~
+
+# === Environment ===
+.env
+.env.local
+.env.*.local
+.envrc
+
+# === Temporary Files ===
+*.tmp
+*.temp
+tmp/
+temp/
+
+# === Build / Distribution ===
+dist/
+build/
+*.tar.gz
+*.zip
+
+# === Test Coverage ===
+coverage/
+.nyc_output/
+*.lcov
+
+# === Documentation ===
+# Keep README.md and docs/, but ignore generated docs
+site/
+_site/
+
+# === Miscellaneous ===
+.cache/
+.npm/
+.eslintcache
+.parcel-cache/

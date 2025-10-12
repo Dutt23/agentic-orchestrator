@@ -1,0 +1,66 @@
+{
+  "nodes": [
+    {
+      "id": "parse",
+      "type": "function",
+      "config": {
+        "function_name": "parse_input",
+        "params": {
+          "format": "json"
+        }
+      }
+    },
+    {
+      "id": "enrich",
+      "type": "http",
+      "config": {
+        "url": "https://api.example.com/enrich",
+        "method": "POST",
+        "headers": {
+          "Content-Type": "application/json"
+        }
+      },
+      "timeout_ms": 5000,
+      "retry": {
+        "max_attempts": 3,
+        "backoff_ms": 1000,
+        "backoff_multiplier": 2.0
+      }
+    },
+    {
+      "id": "transform",
+      "type": "transform",
+      "config": {
+        "expression": "data.map(x => x.value * 2)"
+      }
+    },
+    {
+      "id": "aggregate",
+      "type": "aggregate",
+      "config": {
+        "operation": "sum",
+        "field": "value"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "parse",
+      "to": "enrich"
+    },
+    {
+      "from": "enrich",
+      "to": "transform"
+    },
+    {
+      "from": "transform",
+      "to": "aggregate"
+    }
+  ],
+  "metadata": {
+    "name": "Simple Data Processing",
+    "description": "Parse, enrich, transform, and aggregate data",
+    "version": "1.0.0",
+    "tags": ["data-processing", "example"]
+  }
+}
