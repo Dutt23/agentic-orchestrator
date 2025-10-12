@@ -29,8 +29,9 @@ async fn list_workflows(client: ApiClient, output: &OutputFormat) -> Result<()> 
         }
         OutputFormat::Compact => {
             for tag in response.workflows {
-                println!("{}\t{}\t{}\tv{}",
-                    tag.tag_name,
+                println!("{}/{}\t{}\t{}\tv{}",
+                    tag.owner,
+                    tag.tag,
                     tag.target_kind,
                     tag.target_id,
                     tag.version
@@ -47,9 +48,16 @@ async fn list_workflows(client: ApiClient, output: &OutputFormat) -> Result<()> 
             println!();
 
             for tag in response.workflows {
+                // Display owner/tag (e.g., "sdutt/main" or "_global_/prod")
+                let full_name = if tag.owner == "_global_" {
+                    format!("{} (global)", tag.tag.cyan().bold())
+                } else {
+                    format!("{}/{}", tag.owner.bright_black(), tag.tag.cyan().bold())
+                };
+
                 println!("{} {}",
                     "•".blue(),
-                    tag.tag_name.cyan().bold()
+                    full_name
                 );
 
                 println!("  Kind: {}", tag.target_kind.yellow());
@@ -60,6 +68,10 @@ async fn list_workflows(client: ApiClient, output: &OutputFormat) -> Result<()> 
                 }
 
                 println!("  Version: {}", tag.version.to_string().green());
+
+                if let Some(created_by) = &tag.created_by {
+                    println!("  Created by: {}", created_by.bright_black());
+                }
 
                 if let Some(moved_by) = &tag.moved_by {
                     println!("  Last updated by: {}", moved_by.bright_black());
