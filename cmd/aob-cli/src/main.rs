@@ -21,17 +21,20 @@ use commands::*;
                   For more help: aob help",
     after_help = "Use 'aob <command> --help' for more information about a command."
 )]
+#[command(args_conflicts_with_subcommands = false)]
+#[command(arg_required_else_help = false)]
 struct Cli {
     /// API endpoint URL
     #[arg(
         long,
+        global = true,
         env = "AOB_API_URL",
         default_value = "http://localhost:8081"
     )]
     api_url: String,
 
     /// Output format
-    #[arg(long, value_enum, default_value = "pretty")]
+    #[arg(long, global = true, value_enum, default_value = "pretty")]
     output: OutputFormat,
 
     #[command(subcommand)]

@@ -65,6 +65,7 @@ impl ApiClient {
         response.json().await.context("Failed to parse response")
     }
 
+    #[allow(dead_code)]
     pub async fn delete(&self, path: &str) -> Result<()> {
         let url = format!("{}{}", self.base_url, path);
 
@@ -88,6 +89,7 @@ impl ApiClient {
         format!("{}{}", self.base_url, path)
     }
 
+    #[allow(dead_code)]
     pub fn base_url(&self) -> &str {
         &self.base_url
     }
