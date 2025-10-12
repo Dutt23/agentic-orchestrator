@@ -3,6 +3,7 @@ package routes
 import (
 	"github.com/labstack/echo/v4"
 	"github.com/lyzr/orchestrator/cmd/orchestrator/handlers"
+	"github.com/lyzr/orchestrator/cmd/orchestrator/middleware"
 	"github.com/lyzr/orchestrator/common/bootstrap"
 )
 
@@ -11,8 +12,9 @@ func RegisterWorkflowRoutes(e *echo.Echo, components *bootstrap.Components) {
 	// Create handler with dependencies
 	h := handlers.NewWorkflowHandler(components)
 
-	// Workflow routes
+	// Workflow routes with username extraction middleware
 	wf := e.Group("/api/v1/workflows")
+	wf.Use(middleware.ExtractUsername()) // Extract X-User-ID into context
 	{
 		wf.GET("/:tag", h.GetWorkflow)        // GET /api/v1/workflows/main
 		wf.POST("", h.CreateWorkflow)         // POST /api/v1/workflows

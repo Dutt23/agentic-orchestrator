@@ -179,6 +179,48 @@ func (r *TagRepository) List(ctx context.Context) ([]*models.Tag, error) {
 	return tags, nil
 }
 
+// ListByPrefix retrieves tags matching a prefix pattern
+// Uses indexed LIKE query for efficient filtering
+// Example: ListByPrefix(ctx, "alice/") returns all of alice's tags
+func (r *TagRepository) ListByPrefix(ctx context.Context, prefix string) ([]*models.Tag, error) {
+	query := `
+		SELECT tag_name, target_kind, target_id, target_hash, version, moved_by, moved_at
+		FROM tag
+		WHERE tag_name LIKE $1 || '%'
+		ORDER BY tag_name ASC
+	`
+
+	rows, err := r.db.Query(ctx, query, prefix)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list tags by prefix: %w", err)
+	}
+	defer rows.Close()
+
+	var tags []*models.Tag
+	for rows.Next() {
+		tag := &models.Tag{}
+		err := rows.Scan(
+			&tag.TagName,
+			&tag.TargetKind,
+			&tag.TargetID,
+			&tag.TargetHash,
+			&tag.Version,
+			&tag.MovedBy,
+			&tag.MovedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan tag: %w", err)
+		}
+		tags = append(tags, tag)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating tags: %w", err)
+	}
+
+	return tags, nil
+}
+
 // Exists checks if a tag exists
 func (r *TagRepository) Exists(ctx context.Context, tagName string) (bool, error) {
 	query := `SELECT EXISTS(SELECT 1 FROM tag WHERE tag_name = $1)`

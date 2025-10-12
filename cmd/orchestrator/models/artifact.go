@@ -56,6 +56,11 @@ type Artifact struct {
 	NodesCount *int `db:"nodes_count" json:"nodes_count,omitempty"`
 	EdgesCount *int `db:"edges_count" json:"edges_count,omitempty"`
 
+	// For compaction tracking (dag_version only)
+	// Points to the patch that was compacted into this base version
+	// Example: V2 (new base) compacted_from_id → P20 (old head)
+	CompactedFromID *uuid.UUID `db:"compacted_from_id" json:"compacted_from_id,omitempty"`
+
 	// ========================================================================
 	// FLEXIBLE METADATA (rarely queried)
 	// ========================================================================
@@ -64,7 +69,7 @@ type Artifact struct {
 	// Examples:
 	//   {"author": "user@example.com", "message": "Add retry logic"}
 	//   {"materializer_version": "1.0.0"}
-	//   {"compacted_from": ["P1", "P2", "P3"]}
+	//   {"original_depth": 20, "compacted_at": "2025-10-12T..."}
 	Meta map[string]interface{} `db:"meta" json:"meta,omitempty"`
 
 	// Audit fields

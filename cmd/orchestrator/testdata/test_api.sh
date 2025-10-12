@@ -23,7 +23,7 @@ echo -e "${BLUE}========================================${NC}\n"
 
 # Check API availability
 echo -e "${YELLOW}Checking API server availability...${NC}"
-if ! curl --max-time 2 --silent --fail "$API_BASE/workflows" > /dev/null 2>&1; then
+if ! curl --max-time 2 --silent --fail -H "$USER_ID" "$API_BASE/workflows" > /dev/null 2>&1; then
     echo -e "${RED}ERROR: Cannot connect to API server at $API_BASE${NC}"
     echo -e "${YELLOW}Please start the API server first:${NC}"
     echo -e "${YELLOW}  cd /Users/sdutt/Documents/practice/lyzr/orchestrator/cmd/orchestrator${NC}"
@@ -59,12 +59,12 @@ test_result "Create Simple Workflow"
 
 # Test 2: Get Workflow (without materialization)
 echo -e "${YELLOW}Test 2: Get Workflow (materialize=false)${NC}"
-curl -s -X GET "$API_BASE/workflows/main?materialize=false" | jq '.'
+curl -s -X GET "$API_BASE/workflows/main?materialize=false" -H "$USER_ID" | jq '.'
 test_result "Get Workflow Metadata"
 
 # Test 3: Get Workflow (with materialization)
 echo -e "${YELLOW}Test 3: Get Workflow (materialize=true)${NC}"
-curl -s -X GET "$API_BASE/workflows/main?materialize=true" | jq '.'
+curl -s -X GET "$API_BASE/workflows/main?materialize=true" -H "$USER_ID" | jq '.'
 test_result "Get Materialized Workflow"
 
 # Test 4: Create Complex Workflow (dev branch)
@@ -80,8 +80,8 @@ curl -s -X POST "$API_BASE/workflows" \
 test_result "Create Complex Workflow"
 
 # Test 5: List All Workflows
-echo -e "${YELLOW}Test 5: List All Workflows${NC}"
-curl -s -X GET "$API_BASE/workflows" | jq '.'
+echo -e "${YELLOW}Test 5: List All Workflows (user scope)${NC}"
+curl -s -X GET "$API_BASE/workflows" -H "$USER_ID" | jq '.'
 test_result "List Workflows"
 
 # Test 6: Create Another Workflow (prod branch)
@@ -99,18 +99,18 @@ test_result "Create Production Workflow"
 # Test 7: Compare branches
 echo -e "${YELLOW}Test 7: Compare Different Branches${NC}"
 echo -e "${BLUE}Main branch:${NC}"
-curl -s -X GET "$API_BASE/workflows/main?materialize=false" | jq '{tag, kind, depth, patch_count}'
+curl -s -X GET "$API_BASE/workflows/main?materialize=false" -H "$USER_ID" | jq '{tag, owner, kind, depth, patch_count}'
 
 echo -e "${BLUE}Dev branch:${NC}"
-curl -s -X GET "$API_BASE/workflows/dev?materialize=false" | jq '{tag, kind, depth, patch_count}'
+curl -s -X GET "$API_BASE/workflows/dev?materialize=false" -H "$USER_ID" | jq '{tag, owner, kind, depth, patch_count}'
 
 echo -e "${BLUE}Prod branch:${NC}"
-curl -s -X GET "$API_BASE/workflows/prod?materialize=false" | jq '{tag, kind, depth, patch_count}'
+curl -s -X GET "$API_BASE/workflows/prod?materialize=false" -H "$USER_ID" | jq '{tag, owner, kind, depth, patch_count}'
 test_result "Compare Branches"
 
 # Test 8: Test Error Handling - Non-existent workflow
 echo -e "${YELLOW}Test 8: Error Handling - Non-existent Workflow${NC}"
-curl -s -X GET "$API_BASE/workflows/nonexistent" | jq '.'
+curl -s -X GET "$API_BASE/workflows/nonexistent" -H "$USER_ID" | jq '.'
 if [ ${PIPESTATUS[0]} -eq 0 ]; then
     echo -e "${GREEN}✓ Error handling works correctly${NC}\n"
 else
@@ -119,12 +119,12 @@ fi
 
 # Test 9: Delete a workflow tag
 echo -e "${YELLOW}Test 9: Delete Workflow Tag${NC}"
-curl -s -X DELETE "$API_BASE/workflows/dev" | jq '.'
+curl -s -X DELETE "$API_BASE/workflows/dev" -H "$USER_ID" | jq '.'
 test_result "Delete Workflow"
 
 # Verify deletion
 echo -e "${YELLOW}Verify deletion:${NC}"
-curl -s -X GET "$API_BASE/workflows/dev" | jq '.'
+curl -s -X GET "$API_BASE/workflows/dev" -H "$USER_ID" | jq '.'
 
 echo -e "\n${BLUE}========================================${NC}"
 echo -e "${GREEN}  All Tests Completed Successfully!${NC}"

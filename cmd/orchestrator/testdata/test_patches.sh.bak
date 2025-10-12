@@ -209,39 +209,39 @@ echo -e "${YELLOW}Step 3: Testing Patch Materialization${NC}\n"
 
 # Test Patch 1 (depth=1)
 echo -e "${BLUE}Test 3a: Patch-test-1 (depth=1, adds Slack node)${NC}"
-curl -s -H "$USER_ID" "$API_BASE/workflows/patch-test-1?materialize=false" | jq '{tag, kind, depth, patch_count}'
+curl -s "$API_BASE/workflows/patch-test-1?materialize=false" | jq '{tag, kind, depth, patch_count}'
 echo ""
-curl -s -H "$USER_ID" "$API_BASE/workflows/patch-test-1?materialize=true" | jq '.workflow.nodes | length'
+curl -s "$API_BASE/workflows/patch-test-1?materialize=true" | jq '.workflow.nodes | length'
 echo -e "${GREEN}✓ Should have 4 nodes (original 3 + 1 added)${NC}\n"
 
 # Test Patch 2 (depth=2)
 echo -e "${BLUE}Test 3b: Patch-test-2 (depth=2, also updates timeouts)${NC}"
-curl -s -H "$USER_ID" "$API_BASE/workflows/patch-test-2?materialize=false" | jq '{tag, kind, depth, patch_count}'
+curl -s "$API_BASE/workflows/patch-test-2?materialize=false" | jq '{tag, kind, depth, patch_count}'
 echo ""
-curl -s -H "$USER_ID" "$API_BASE/workflows/patch-test-2?materialize=true" | jq '.workflow.nodes[0].config.timeout'
+curl -s "$API_BASE/workflows/patch-test-2?materialize=true" | jq '.workflow.nodes[0].config.timeout'
 echo -e "${GREEN}✓ Should be 60 (updated from 30)${NC}\n"
 
 # Test Patch 3 (depth=3)
 echo -e "${BLUE}Test 3c: Patch-test-3 (depth=3, also removes enrich node)${NC}"
-curl -s -H "$USER_ID" "$API_BASE/workflows/patch-test-3?materialize=false" | jq '{tag, kind, depth, patch_count}'
+curl -s "$API_BASE/workflows/patch-test-3?materialize=false" | jq '{tag, kind, depth, patch_count}'
 echo ""
-curl -s -H "$USER_ID" "$API_BASE/workflows/patch-test-3?materialize=true" | jq '.workflow.nodes | length'
+curl -s "$API_BASE/workflows/patch-test-3?materialize=true" | jq '.workflow.nodes | length'
 echo -e "${GREEN}✓ Should have 3 nodes (removed enrich_data)${NC}\n"
 
 # Step 4: Show Full Workflows
 echo -e "${YELLOW}Step 4: Full Materialized Workflows${NC}\n"
 
 echo -e "${BLUE}Original Base Workflow:${NC}"
-curl -s -H "$USER_ID" "$API_BASE/workflows/patch-base?materialize=true" | jq '.workflow.nodes[] | {id, type}'
+curl -s "$API_BASE/workflows/patch-base?materialize=true" | jq '.workflow.nodes[] | {id, type}'
 
 echo -e "\n${BLUE}After Patch 1 (added notify_slack):${NC}"
-curl -s -H "$USER_ID" "$API_BASE/workflows/patch-test-1?materialize=true" | jq '.workflow.nodes[] | {id, type}'
+curl -s "$API_BASE/workflows/patch-test-1?materialize=true" | jq '.workflow.nodes[] | {id, type}'
 
 echo -e "\n${BLUE}After Patch 2 (updated timeouts):${NC}"
-curl -s -H "$USER_ID" "$API_BASE/workflows/patch-test-2?materialize=true" | jq '.workflow.nodes[] | {id, timeout: .config.timeout}'
+curl -s "$API_BASE/workflows/patch-test-2?materialize=true" | jq '.workflow.nodes[] | {id, timeout: .config.timeout}'
 
 echo -e "\n${BLUE}After Patch 3 (removed enrich_data):${NC}"
-curl -s -H "$USER_ID" "$API_BASE/workflows/patch-test-3?materialize=true" | jq '.workflow.nodes[] | {id, type}'
+curl -s "$API_BASE/workflows/patch-test-3?materialize=true" | jq '.workflow.nodes[] | {id, type}'
 
 # Summary
 echo -e "\n${BLUE}========================================${NC}"

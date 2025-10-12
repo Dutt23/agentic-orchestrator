@@ -6,19 +6,19 @@ import (
 	"github.com/lyzr/orchestrator/common/bootstrap"
 )
 
-// RegisterTagRoutes registers all tag-related routes (Git-like branching)
+// RegisterTagRoutes registers tag-related routes (planned, not yet implemented)
+// Note: Tag operations are currently handled through /api/v1/workflows endpoints
 func RegisterTagRoutes(e *echo.Echo, components *bootstrap.Components) {
-	// Create handler with dependencies
-	h := handlers.NewTagHandler(components)
+	h := handlers.NewPlaceholderHandler(components)
 
-	// Tag routes
+	// Tag routes (not yet implemented)
 	tags := e.Group("/api/v1/tags")
 	{
-		tags.GET("", h.ListTags)                  // GET /api/v1/tags
-		tags.GET("/:name", h.GetTag)              // GET /api/v1/tags/main
-		tags.POST("/:name/move", h.MoveTag)       // POST /api/v1/tags/main/move
-		tags.POST("/:name/undo", h.UndoTag)       // POST /api/v1/tags/main/undo
-		tags.POST("/:name/redo", h.RedoTag)       // POST /api/v1/tags/main/redo
-		tags.GET("/:name/history", h.GetHistory)  // GET /api/v1/tags/main/history
+		tags.GET("", h.NotImplemented)                  // GET /api/v1/tags
+		tags.GET("/:name", h.NotImplemented)            // GET /api/v1/tags/main
+		tags.POST("/:name/move", h.NotImplemented)      // POST /api/v1/tags/main/move
+		tags.POST("/:name/undo", h.NotImplemented)      // POST /api/v1/tags/main/undo
+		tags.POST("/:name/redo", h.NotImplemented)      // POST /api/v1/tags/main/redo
+		tags.GET("/:name/history", h.NotImplemented)    // GET /api/v1/tags/main/history
 	}
 }

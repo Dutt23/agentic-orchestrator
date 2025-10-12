@@ -25,9 +25,9 @@ func (r *ArtifactRepository) Create(ctx context.Context, artifact *models.Artifa
 		INSERT INTO artifact (
 			artifact_id, kind, cas_id, name, plan_hash, version_hash,
 			base_version, depth, op_count, nodes_count, edges_count,
-			meta, created_by, created_at
+			compacted_from_id, meta, created_by, created_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
 		)
 		RETURNING artifact_id
 	`
@@ -44,6 +44,7 @@ func (r *ArtifactRepository) Create(ctx context.Context, artifact *models.Artifa
 		artifact.OpCount,
 		artifact.NodesCount,
 		artifact.EdgesCount,
+		artifact.CompactedFromID,
 		artifact.Meta,
 		artifact.CreatedBy,
 		artifact.CreatedAt,
@@ -62,7 +63,7 @@ func (r *ArtifactRepository) GetByID(ctx context.Context, artifactID uuid.UUID) 
 		SELECT
 			artifact_id, kind, cas_id, name, plan_hash, version_hash,
 			base_version, depth, op_count, nodes_count, edges_count,
-			meta, created_by, created_at
+			compacted_from_id, meta, created_by, created_at
 		FROM artifact
 		WHERE artifact_id = $1
 	`
@@ -80,6 +81,7 @@ func (r *ArtifactRepository) GetByID(ctx context.Context, artifactID uuid.UUID) 
 		&artifact.OpCount,
 		&artifact.NodesCount,
 		&artifact.EdgesCount,
+		&artifact.CompactedFromID,
 		&artifact.Meta,
 		&artifact.CreatedBy,
 		&artifact.CreatedAt,
@@ -98,7 +100,7 @@ func (r *ArtifactRepository) GetByVersionHash(ctx context.Context, versionHash s
 		SELECT
 			artifact_id, kind, cas_id, name, plan_hash, version_hash,
 			base_version, depth, op_count, nodes_count, edges_count,
-			meta, created_by, created_at
+			compacted_from_id, meta, created_by, created_at
 		FROM artifact
 		WHERE version_hash = $1
 		LIMIT 1
@@ -117,6 +119,7 @@ func (r *ArtifactRepository) GetByVersionHash(ctx context.Context, versionHash s
 		&artifact.OpCount,
 		&artifact.NodesCount,
 		&artifact.EdgesCount,
+		&artifact.CompactedFromID,
 		&artifact.Meta,
 		&artifact.CreatedBy,
 		&artifact.CreatedAt,
@@ -135,7 +138,7 @@ func (r *ArtifactRepository) GetByPlanHash(ctx context.Context, planHash string)
 		SELECT
 			artifact_id, kind, cas_id, name, plan_hash, version_hash,
 			base_version, depth, op_count, nodes_count, edges_count,
-			meta, created_by, created_at
+			compacted_from_id, meta, created_by, created_at
 		FROM artifact
 		WHERE kind = 'run_snapshot' AND plan_hash = $1
 		LIMIT 1
@@ -154,6 +157,7 @@ func (r *ArtifactRepository) GetByPlanHash(ctx context.Context, planHash string)
 		&artifact.OpCount,
 		&artifact.NodesCount,
 		&artifact.EdgesCount,
+		&artifact.CompactedFromID,
 		&artifact.Meta,
 		&artifact.CreatedBy,
 		&artifact.CreatedAt,
@@ -172,7 +176,7 @@ func (r *ArtifactRepository) ListByKind(ctx context.Context, kind string, limit 
 		SELECT
 			artifact_id, kind, cas_id, name, plan_hash, version_hash,
 			base_version, depth, op_count, nodes_count, edges_count,
-			meta, created_by, created_at
+			compacted_from_id, meta, created_by, created_at
 		FROM artifact
 		WHERE kind = $1
 		ORDER BY created_at DESC
@@ -200,6 +204,7 @@ func (r *ArtifactRepository) ListByKind(ctx context.Context, kind string, limit 
 			&artifact.OpCount,
 			&artifact.NodesCount,
 			&artifact.EdgesCount,
+			&artifact.CompactedFromID,
 			&artifact.Meta,
 			&artifact.CreatedBy,
 			&artifact.CreatedAt,
@@ -251,6 +256,7 @@ func (r *ArtifactRepository) GetPatchChain(ctx context.Context, headID uuid.UUID
 			&artifact.OpCount,
 			&artifact.NodesCount,
 			&artifact.EdgesCount,
+			&artifact.CompactedFromID,
 			&artifact.Meta,
 			&artifact.CreatedBy,
 			&artifact.CreatedAt,
@@ -263,6 +269,100 @@ func (r *ArtifactRepository) GetPatchChain(ctx context.Context, headID uuid.UUID
 
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("error iterating patch chain: %w", err)
+	}
+
+	return artifacts, nil
+}
+
+// FindCompactedBase finds a dag_version that was compacted from a specific patch
+// Returns nil if no compacted version exists
+func (r *ArtifactRepository) FindCompactedBase(ctx context.Context, patchID uuid.UUID) (*models.Artifact, error) {
+	query := `
+		SELECT
+			artifact_id, kind, cas_id, name, plan_hash, version_hash,
+			base_version, depth, op_count, nodes_count, edges_count,
+			compacted_from_id, meta, created_by, created_at
+		FROM artifact
+		WHERE kind = 'dag_version'
+		  AND compacted_from_id = $1
+		ORDER BY created_at DESC
+		LIMIT 1
+	`
+
+	artifact := &models.Artifact{}
+	err := r.db.QueryRow(ctx, query, patchID).Scan(
+		&artifact.ArtifactID,
+		&artifact.Kind,
+		&artifact.CasID,
+		&artifact.Name,
+		&artifact.PlanHash,
+		&artifact.VersionHash,
+		&artifact.BaseVersion,
+		&artifact.Depth,
+		&artifact.OpCount,
+		&artifact.NodesCount,
+		&artifact.EdgesCount,
+		&artifact.CompactedFromID,
+		&artifact.Meta,
+		&artifact.CreatedBy,
+		&artifact.CreatedAt,
+	)
+
+	if err != nil {
+		// No compacted version found (not an error)
+		return nil, nil
+	}
+
+	return artifact, nil
+}
+
+// GetCompactionCandidates returns patches exceeding depth threshold
+func (r *ArtifactRepository) GetCompactionCandidates(ctx context.Context, depthThreshold int) ([]*models.Artifact, error) {
+	query := `
+		SELECT
+			artifact_id, kind, cas_id, name, plan_hash, version_hash,
+			base_version, depth, op_count, nodes_count, edges_count,
+			compacted_from_id, meta, created_by, created_at
+		FROM artifact
+		WHERE kind = 'patch_set'
+		  AND depth >= $1
+		ORDER BY depth DESC
+	`
+
+	rows, err := r.db.Query(ctx, query, depthThreshold)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query compaction candidates: %w", err)
+	}
+	defer rows.Close()
+
+	var artifacts []*models.Artifact
+	for rows.Next() {
+		artifact := &models.Artifact{}
+		err := rows.Scan(
+			&artifact.ArtifactID,
+			&artifact.Kind,
+			&artifact.CasID,
+			&artifact.Name,
+			&artifact.PlanHash,
+			&artifact.VersionHash,
+			&artifact.BaseVersion,
+			&artifact.Depth,
+			&artifact.OpCount,
+			&artifact.NodesCount,
+			&artifact.EdgesCount,
+			&artifact.CompactedFromID,
+			&artifact.Meta,
+			&artifact.CreatedBy,
+			&artifact.CreatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan artifact: %w", err)
+		}
+		artifacts = append(artifacts, artifact)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating candidates: %w", err)
 	}
 
 	return artifacts, nil

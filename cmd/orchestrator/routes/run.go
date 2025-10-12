@@ -6,24 +6,23 @@ import (
 	"github.com/lyzr/orchestrator/common/bootstrap"
 )
 
-// RegisterRunRoutes registers all run-related routes
+// RegisterRunRoutes registers run and patch routes (planned, not yet implemented)
 func RegisterRunRoutes(e *echo.Echo, components *bootstrap.Components) {
-	// Create handler with dependencies
-	h := handlers.NewRunHandler(components)
+	h := handlers.NewPlaceholderHandler(components)
 
-	// Run routes
+	// Run routes (not yet implemented)
 	runs := e.Group("/api/v1/runs")
 	{
-		runs.POST("", h.SubmitRun)             // POST /api/v1/runs
-		runs.GET("/:id", h.GetRun)             // GET /api/v1/runs/{run_id}
-		runs.GET("", h.ListRuns)               // GET /api/v1/runs?status=running
-		runs.POST("/:id/cancel", h.CancelRun)  // POST /api/v1/runs/{run_id}/cancel
+		runs.POST("", h.NotImplemented)                // POST /api/v1/runs
+		runs.GET("/:id", h.NotImplemented)             // GET /api/v1/runs/{run_id}
+		runs.GET("", h.NotImplemented)                 // GET /api/v1/runs?status=running
+		runs.POST("/:id/cancel", h.NotImplemented)     // POST /api/v1/runs/{run_id}/cancel
 	}
 
-	// Patch routes (for creating patches on workflows)
+	// Patch routes (not yet implemented)
 	patches := e.Group("/api/v1/patches")
 	{
-		patches.POST("", h.CreatePatch)         // POST /api/v1/patches
-		patches.GET("/:id", h.GetPatch)         // GET /api/v1/patches/{patch_id}
+		patches.POST("", h.NotImplemented)             // POST /api/v1/patches
+		patches.GET("/:id", h.NotImplemented)          // GET /api/v1/patches/{patch_id}
 	}
 }
