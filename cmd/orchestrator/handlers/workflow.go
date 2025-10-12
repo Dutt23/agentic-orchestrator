@@ -77,7 +77,7 @@ func (h *WorkflowHandler) CreateWorkflow(c echo.Context) error {
 		})
 	}
 
-	// Validate tag name (no "/" or "_global_" prefix allowed)
+	// Validate tag name
 	if errMsg := service.ValidateUserTagName(req.TagName); errMsg != "" {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{
 			"error": fmt.Sprintf("invalid tag_name: %s", errMsg),
@@ -86,12 +86,10 @@ func (h *WorkflowHandler) CreateWorkflow(c echo.Context) error {
 
 	// Set created_by from username
 	req.CreatedBy = username
+	// Set username for tag namespace
+	req.Username = username
 
-	// Build internal tag name with namespace (user provides "main" → stored as "alice/main")
-	userProvidedTag := req.TagName
-	req.TagName = service.BuildInternalTagName(username, userProvidedTag)
-
-	// Use workflow service orchestrator with internal tag name
+	// Use workflow service orchestrator
 	resp, err := h.workflowService.CreateWorkflow(ctx, &req)
 	if err != nil {
 		h.components.Logger.Error("failed to create workflow", "error", err)
@@ -100,16 +98,13 @@ func (h *WorkflowHandler) CreateWorkflow(c echo.Context) error {
 		})
 	}
 
-	// Strip prefix from response (return "main" instead of "alice/main")
-	resp.TagName = service.ExtractUserTagName(resp.TagName)
-
-	// Add owner information
+	// Build response
 	response := map[string]interface{}{
 		"artifact_id":  resp.ArtifactID,
 		"cas_id":       resp.CASID,
 		"version_hash": resp.VersionHash,
-		"tag":          resp.TagName, // Clean tag name
-		"owner":        username,     // Show ownership
+		"tag":          resp.TagName,    // Tag name (e.g., "main")
+		"owner":        resp.Username,   // Owner (e.g., "sdutt")
 		"nodes_count":  resp.NodesCount,
 		"edges_count":  resp.EdgesCount,
 		"created_at":   resp.CreatedAt,
@@ -127,7 +122,7 @@ func (h *WorkflowHandler) CreateWorkflow(c echo.Context) error {
 //     If false, returns components only (base + patch chain metadata)
 func (h *WorkflowHandler) GetWorkflow(c echo.Context) error {
 	ctx := c.Request().Context()
-	userTag := c.Param("tag") // User provides: "main"
+	tagName := c.Param("tag") // User provides: "main"
 
 	// Extract username from context (set by middleware)
 	username, err := middleware.RequireUsername(c)
@@ -139,33 +134,30 @@ func (h *WorkflowHandler) GetWorkflow(c echo.Context) error {
 	materializeParam := c.QueryParam("materialize")
 	materialize := materializeParam == "true"
 
-	if userTag == "" {
+	if tagName == "" {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{
 			"error": "tag name is required",
 		})
 	}
 
 	// Validate tag name
-	if errMsg := service.ValidateUserTagName(userTag); errMsg != "" {
+	if errMsg := service.ValidateUserTagName(tagName); errMsg != "" {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{
 			"error": fmt.Sprintf("invalid tag name: %s", errMsg),
 		})
 	}
 
-	// Build internal tag name (user provides "main" → lookup "alice/main")
-	internalTag := service.BuildInternalTagName(username, userTag)
-
-	// Fetch workflow components with internal tag name
-	components, err := h.workflowService.GetWorkflowComponents(ctx, internalTag)
+	// Fetch workflow components (pass username and tagName separately)
+	components, err := h.workflowService.GetWorkflowComponents(ctx, username, tagName)
 	if err != nil {
-		h.components.Logger.Error("failed to get workflow components", "tag", userTag, "error", err)
+		h.components.Logger.Error("failed to get workflow components", "username", username, "tag", tagName, "error", err)
 		return c.JSON(http.StatusNotFound, map[string]interface{}{
 			"error": "workflow not found",
 		})
 	}
 
-	// Build response with clean tag name
-	response := h.buildWorkflowResponse(userTag, username, components)
+	// Build response
+	response := h.buildWorkflowResponse(tagName, username, components)
 
 	// Optionally materialize the workflow
 	if materialize {
@@ -182,10 +174,10 @@ func (h *WorkflowHandler) GetWorkflow(c echo.Context) error {
 }
 
 // buildWorkflowResponse constructs the response with metadata and components
-func (h *WorkflowHandler) buildWorkflowResponse(userTag, owner string, components *models.WorkflowComponents) map[string]interface{} {
+func (h *WorkflowHandler) buildWorkflowResponse(tagName, owner string, components *models.WorkflowComponents) map[string]interface{} {
 	response := map[string]interface{}{
-		"tag":         userTag, // Clean tag name (e.g., "main")
-		"owner":       owner,   // Show ownership (e.g., "alice")
+		"tag":         tagName,            // Tag name (e.g., "main")
+		"owner":       owner,              // Owner username (e.g., "sdutt")
 		"artifact_id": components.ArtifactID,
 		"kind":        components.Kind,
 		"depth":       components.Depth,
@@ -315,16 +307,19 @@ func (h *WorkflowHandler) ListWorkflows(c echo.Context) error {
 		})
 	}
 
-	// Strip prefixes from response
+	// Build response
 	workflows := make([]map[string]interface{}, len(tags))
 	for i, tag := range tags {
 		workflows[i] = map[string]interface{}{
-			"tag":         service.ExtractUserTagName(tag.TagName), // Clean name
-			"owner":       service.ExtractUsername(tag.TagName),     // Owner (empty for global)
+			"tag":         tag.TagName,    // Tag name (e.g., "main")
+			"owner":       tag.Username,   // Owner (e.g., "sdutt" or "_global_")
 			"target_id":   tag.TargetID,
 			"target_kind": tag.TargetKind,
 			"version":     tag.Version,
 			"moved_at":    tag.MovedAt,
+		}
+		if tag.CreatedBy != nil {
+			workflows[i]["created_by"] = *tag.CreatedBy
 		}
 		if tag.MovedBy != nil {
 			workflows[i]["moved_by"] = *tag.MovedBy
@@ -342,7 +337,7 @@ func (h *WorkflowHandler) ListWorkflows(c echo.Context) error {
 // DELETE /api/v1/workflows/:tag
 func (h *WorkflowHandler) DeleteWorkflow(c echo.Context) error {
 	ctx := c.Request().Context()
-	userTag := c.Param("tag") // User provides: "main"
+	tagName := c.Param("tag") // User provides: "main"
 
 	// Extract username from context
 	username, err := middleware.RequireUsername(c)
@@ -350,29 +345,22 @@ func (h *WorkflowHandler) DeleteWorkflow(c echo.Context) error {
 		return err
 	}
 
-	if userTag == "" {
+	if tagName == "" {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{
 			"error": "tag name is required",
 		})
 	}
 
 	// Validate tag name
-	if errMsg := service.ValidateUserTagName(userTag); errMsg != "" {
+	if errMsg := service.ValidateUserTagName(tagName); errMsg != "" {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{
 			"error": fmt.Sprintf("invalid tag name: %s", errMsg),
 		})
 	}
 
-	// Use DeleteTagWithNamespace for ownership verification
-	if err := h.tagService.DeleteTagWithNamespace(ctx, userTag, username); err != nil {
-		h.components.Logger.Error("failed to delete workflow", "tag", userTag, "username", username, "error", err)
-
-		// Check if it's an access denied error
-		if err.Error() == "access denied: cannot delete tag owned by another user" {
-			return c.JSON(http.StatusForbidden, map[string]interface{}{
-				"error": "you cannot delete tags owned by other users",
-			})
-		}
+	// Delete tag (ownership is implicit - username is primary key)
+	if err := h.tagService.DeleteTag(ctx, username, tagName); err != nil {
+		h.components.Logger.Error("failed to delete workflow", "username", username, "tag", tagName, "error", err)
 
 		return c.JSON(http.StatusInternalServerError, map[string]interface{}{
 			"error": "failed to delete workflow",
@@ -381,7 +369,7 @@ func (h *WorkflowHandler) DeleteWorkflow(c echo.Context) error {
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"message": "workflow tag deleted successfully",
-		"tag":     userTag,  // Return clean name
+		"tag":     tagName,
 		"owner":   username,
 	})
 }

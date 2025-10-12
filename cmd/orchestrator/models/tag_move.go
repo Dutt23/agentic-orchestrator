@@ -12,6 +12,9 @@ type TagMove struct {
 	// Auto-incrementing ID
 	ID int64 `db:"id" json:"id"`
 
+	// Username (tag owner)
+	Username string `db:"username" json:"username"`
+
 	// Tag that was moved
 	TagName string `db:"tag_name" json:"tag_name"`
 

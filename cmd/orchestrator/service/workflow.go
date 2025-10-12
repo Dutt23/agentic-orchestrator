@@ -37,6 +37,7 @@ func NewWorkflowServiceV2(
 
 // CreateWorkflowRequest represents the input for creating a workflow
 type CreateWorkflowRequest struct {
+	Username  string                 `json:"username" validate:"required"`
 	TagName   string                 `json:"tag_name" validate:"required"`
 	Workflow  map[string]interface{} `json:"workflow" validate:"required"`
 	CreatedBy string                 `json:"created_by"`
@@ -47,6 +48,7 @@ type CreateWorkflowResponse struct {
 	ArtifactID  uuid.UUID `json:"artifact_id"`
 	CASID       string    `json:"cas_id"`
 	VersionHash string    `json:"version_hash"`
+	Username    string    `json:"username"`
 	TagName     string    `json:"tag_name"`
 	NodesCount  int       `json:"nodes_count"`
 	EdgesCount  int       `json:"edges_count"`
@@ -96,13 +98,14 @@ func (s *WorkflowServiceV2) CreateWorkflow(ctx context.Context, req *CreateWorkf
 	}
 
 	// 4. Create or move tag
-	if err := s.tagService.CreateOrMoveTag(ctx, req.TagName, "dag_version", artifactID, versionHash, req.CreatedBy); err != nil {
+	if err := s.tagService.CreateOrMoveTag(ctx, req.Username, req.TagName, "dag_version", artifactID, versionHash, req.CreatedBy); err != nil {
 		return nil, fmt.Errorf("failed to create/move tag: %w", err)
 	}
 
 	s.log.Info("workflow created successfully",
 		"artifact_id", artifactID,
 		"cas_id", casID,
+		"username", req.Username,
 		"tag", req.TagName,
 	)
 
@@ -112,6 +115,7 @@ func (s *WorkflowServiceV2) CreateWorkflow(ctx context.Context, req *CreateWorkf
 		ArtifactID:  artifactID,
 		CASID:       casID,
 		VersionHash: versionHash,
+		Username:    req.Username,
 		TagName:     req.TagName,
 		NodesCount:  nodesCount,
 		EdgesCount:  edgesCount,
@@ -120,9 +124,11 @@ func (s *WorkflowServiceV2) CreateWorkflow(ctx context.Context, req *CreateWorkf
 }
 
 // GetWorkflowByTag retrieves a workflow by tag name
-func (s *WorkflowServiceV2) GetWorkflowByTag(ctx context.Context, tagName string) (map[string]interface{}, error) {
+// NOTE: This function is incomplete and not currently used
+// TODO: Update to accept username parameter
+func (s *WorkflowServiceV2) GetWorkflowByTag(ctx context.Context, username, tagName string) (map[string]interface{}, error) {
 	// 1. Resolve tag
-	tag, err := s.tagService.GetTag(ctx, tagName)
+	tag, err := s.tagService.GetTag(ctx, username, tagName)
 	if err != nil {
 		return nil, err
 	}
@@ -187,16 +193,16 @@ func CountWorkflowElements(workflow map[string]interface{}) (int, int) {
 // 2. Get patch chain (if patch_set)
 // 3. Load base DAG from CAS
 // 4. Load all patches from CAS
-func (s *WorkflowServiceV2) GetWorkflowComponents(ctx context.Context, tagName string) (*models.WorkflowComponents, error) {
-	s.log.Info("fetching workflow components", "tag", tagName)
+func (s *WorkflowServiceV2) GetWorkflowComponents(ctx context.Context, username, tagName string) (*models.WorkflowComponents, error) {
+	s.log.Info("fetching workflow components", "username", username, "tag", tagName)
 
 	// Query 1: Resolve tag to artifact
-	artifact, err := s.resolveTagToArtifact(ctx, tagName)
+	artifact, err := s.resolveTagToArtifact(ctx, username, tagName)
 	if err != nil {
 		return nil, err
 	}
 
-	components := s.initializeComponents(tagName, artifact)
+	components := s.initializeComponents(username, tagName, artifact)
 
 	// Handle based on artifact kind
 	if artifact.IsDAGVersion() {
@@ -221,8 +227,8 @@ func (s *WorkflowServiceV2) GetWorkflowComponents(ctx context.Context, tagName s
 }
 
 // resolveTagToArtifact resolves a tag name to its artifact (Query 1)
-func (s *WorkflowServiceV2) resolveTagToArtifact(ctx context.Context, tagName string) (*models.Artifact, error) {
-	tag, err := s.tagService.GetTag(ctx, tagName)
+func (s *WorkflowServiceV2) resolveTagToArtifact(ctx context.Context, username, tagName string) (*models.Artifact, error) {
+	tag, err := s.tagService.GetTag(ctx, username, tagName)
 	if err != nil {
 		return nil, fmt.Errorf("tag not found: %w", err)
 	}
@@ -236,13 +242,14 @@ func (s *WorkflowServiceV2) resolveTagToArtifact(ctx context.Context, tagName st
 }
 
 // initializeComponents creates the base components structure
-func (s *WorkflowServiceV2) initializeComponents(tagName string, artifact *models.Artifact) *models.WorkflowComponents {
+func (s *WorkflowServiceV2) initializeComponents(username, tagName string, artifact *models.Artifact) *models.WorkflowComponents {
 	return &models.WorkflowComponents{
+		Username:   username,
 		TagName:    tagName,
 		ArtifactID: artifact.ArtifactID,
 		Kind:       artifact.Kind,
 		CreatedAt:  artifact.CreatedAt,
-		CreatedBy:  artifact.CreatedBy,
+		CreatedBy:  &artifact.CreatedBy,
 	}
 }
 
@@ -361,7 +368,7 @@ func (s *WorkflowServiceV2) loadPatchChain(ctx context.Context, patchArtifacts [
 			OpCount:    patchArt.OpCount,
 			Content:    content,
 			CreatedAt:  patchArt.CreatedAt,
-			CreatedBy:  patchArt.CreatedBy,
+			CreatedBy:  &patchArt.CreatedBy,
 		}
 
 		if patchArt.Depth != nil {

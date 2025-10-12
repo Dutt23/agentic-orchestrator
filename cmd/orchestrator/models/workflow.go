@@ -10,7 +10,8 @@ import (
 // This includes base DAG + optional patch chain
 type WorkflowComponents struct {
 	// Tag information
-	TagName string `json:"tag_name"`
+	Username string `json:"username"`
+	TagName  string `json:"tag_name"`
 
 	// Artifact metadata
 	ArtifactID uuid.UUID    `json:"artifact_id"`

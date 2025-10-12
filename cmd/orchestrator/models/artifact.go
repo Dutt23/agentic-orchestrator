@@ -73,7 +73,7 @@ type Artifact struct {
 	Meta map[string]interface{} `db:"meta" json:"meta,omitempty"`
 
 	// Audit fields
-	CreatedBy *string   `db:"created_by" json:"created_by,omitempty"`
+	CreatedBy string    `db:"created_by" json:"created_by"`
 	CreatedAt time.Time `db:"created_at" json:"created_at"`
 }
 

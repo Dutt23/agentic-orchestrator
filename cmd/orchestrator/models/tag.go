@@ -9,8 +9,12 @@ import (
 // Tag represents a mutable pointer to an artifact (Git-like branch)
 // Maps to: tag table
 type Tag struct {
-	// Tag name (branch or release)
-	// Examples: 'main', 'prod', 'exp/quality', 'release/v1.0'
+	// Username (tag owner for namespace isolation)
+	// Examples: 'alice', 'bob', '_global_'
+	Username string `db:"username" json:"username"`
+
+	// Tag name within user namespace
+	// Examples: 'main', 'prod', 'dev', 'release/v1.0'
 	TagName string `db:"tag_name" json:"tag_name"`
 
 	// Target artifact type
@@ -26,6 +30,7 @@ type Tag struct {
 	Version int64 `db:"version" json:"version"`
 
 	// Audit fields
-	MovedBy *string   `db:"moved_by" json:"moved_by,omitempty"`
-	MovedAt time.Time `db:"moved_at" json:"moved_at"`
+	CreatedBy *string   `db:"created_by" json:"created_by,omitempty"`
+	MovedBy   *string   `db:"moved_by" json:"moved_by,omitempty"`
+	MovedAt   time.Time `db:"moved_at" json:"moved_at"`
 }

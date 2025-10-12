@@ -22,16 +22,18 @@ func NewTagRepository(db *db.DB) *TagRepository {
 // Create inserts a new tag
 func (r *TagRepository) Create(ctx context.Context, tag *models.Tag) error {
 	query := `
-		INSERT INTO tag (tag_name, target_kind, target_id, target_hash, version, moved_by, moved_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		INSERT INTO tag (username, tag_name, target_kind, target_id, target_hash, version, created_by, moved_by, moved_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 	`
 
 	_, err := r.db.Exec(ctx, query,
+		tag.Username,
 		tag.TagName,
 		tag.TargetKind,
 		tag.TargetID,
 		tag.TargetHash,
 		tag.Version,
+		tag.CreatedBy,
 		tag.MovedBy,
 		tag.MovedAt,
 	)
@@ -43,21 +45,23 @@ func (r *TagRepository) Create(ctx context.Context, tag *models.Tag) error {
 	return nil
 }
 
-// GetByName retrieves a tag by name
-func (r *TagRepository) GetByName(ctx context.Context, tagName string) (*models.Tag, error) {
+// GetByName retrieves a tag by username and tag name (exact match)
+func (r *TagRepository) GetByName(ctx context.Context, username, tagName string) (*models.Tag, error) {
 	query := `
-		SELECT tag_name, target_kind, target_id, target_hash, version, moved_by, moved_at
+		SELECT username, tag_name, target_kind, target_id, target_hash, version, created_by, moved_by, moved_at
 		FROM tag
-		WHERE tag_name = $1
+		WHERE username = $1 AND tag_name = $2
 	`
 
 	tag := &models.Tag{}
-	err := r.db.QueryRow(ctx, query, tagName).Scan(
+	err := r.db.QueryRow(ctx, query, username, tagName).Scan(
+		&tag.Username,
 		&tag.TagName,
 		&tag.TargetKind,
 		&tag.TargetID,
 		&tag.TargetHash,
 		&tag.Version,
+		&tag.CreatedBy,
 		&tag.MovedBy,
 		&tag.MovedAt,
 	)
@@ -73,13 +77,14 @@ func (r *TagRepository) GetByName(ctx context.Context, tagName string) (*models.
 func (r *TagRepository) Update(ctx context.Context, tag *models.Tag) error {
 	query := `
 		UPDATE tag
-		SET target_kind = $2, target_id = $3, target_hash = $4,
-		    version = version + 1, moved_by = $5, moved_at = $6
-		WHERE tag_name = $1
+		SET target_kind = $3, target_id = $4, target_hash = $5,
+		    version = version + 1, moved_by = $6, moved_at = $7
+		WHERE username = $1 AND tag_name = $2
 		RETURNING version
 	`
 
 	err := r.db.QueryRow(ctx, query,
+		tag.Username,
 		tag.TagName,
 		tag.TargetKind,
 		tag.TargetID,
@@ -96,17 +101,18 @@ func (r *TagRepository) Update(ctx context.Context, tag *models.Tag) error {
 }
 
 // CompareAndSwap performs an optimistic lock update (CAS operation)
-func (r *TagRepository) CompareAndSwap(ctx context.Context, tagName string, expectedVersion int64, newTarget uuid.UUID, newTargetKind, newTargetHash, movedBy string) (bool, error) {
+func (r *TagRepository) CompareAndSwap(ctx context.Context, username, tagName string, expectedVersion int64, newTarget uuid.UUID, newTargetKind, newTargetHash, movedBy string) (bool, error) {
 	query := `
 		UPDATE tag
-		SET target_kind = $3, target_id = $4, target_hash = $5,
-		    version = version + 1, moved_by = $6, moved_at = NOW()
-		WHERE tag_name = $1 AND version = $2
+		SET target_kind = $4, target_id = $5, target_hash = $6,
+		    version = version + 1, moved_by = $7, moved_at = NOW()
+		WHERE username = $1 AND tag_name = $2 AND version = $3
 		RETURNING version
 	`
 
 	var newVersion int64
 	err := r.db.QueryRow(ctx, query,
+		username,
 		tagName,
 		expectedVersion,
 		newTargetKind,
@@ -124,28 +130,28 @@ func (r *TagRepository) CompareAndSwap(ctx context.Context, tagName string, expe
 }
 
 // Delete removes a tag
-func (r *TagRepository) Delete(ctx context.Context, tagName string) error {
-	query := `DELETE FROM tag WHERE tag_name = $1`
+func (r *TagRepository) Delete(ctx context.Context, username, tagName string) error {
+	query := `DELETE FROM tag WHERE username = $1 AND tag_name = $2`
 
-	result, err := r.db.Exec(ctx, query, tagName)
+	result, err := r.db.Exec(ctx, query, username, tagName)
 	if err != nil {
 		return fmt.Errorf("failed to delete tag: %w", err)
 	}
 
 	rowsAffected := result.RowsAffected()
 	if rowsAffected == 0 {
-		return fmt.Errorf("tag not found: %s", tagName)
+		return fmt.Errorf("tag not found: %s/%s", username, tagName)
 	}
 
 	return nil
 }
 
-// List retrieves all tags
+// List retrieves all tags (admin use only)
 func (r *TagRepository) List(ctx context.Context) ([]*models.Tag, error) {
 	query := `
-		SELECT tag_name, target_kind, target_id, target_hash, version, moved_by, moved_at
+		SELECT username, tag_name, target_kind, target_id, target_hash, version, created_by, moved_by, moved_at
 		FROM tag
-		ORDER BY tag_name ASC
+		ORDER BY username, tag_name ASC
 	`
 
 	rows, err := r.db.Query(ctx, query)
@@ -158,11 +164,13 @@ func (r *TagRepository) List(ctx context.Context) ([]*models.Tag, error) {
 	for rows.Next() {
 		tag := &models.Tag{}
 		err := rows.Scan(
+			&tag.Username,
 			&tag.TagName,
 			&tag.TargetKind,
 			&tag.TargetID,
 			&tag.TargetHash,
 			&tag.Version,
+			&tag.CreatedBy,
 			&tag.MovedBy,
 			&tag.MovedAt,
 		)
@@ -179,20 +187,19 @@ func (r *TagRepository) List(ctx context.Context) ([]*models.Tag, error) {
 	return tags, nil
 }
 
-// ListByPrefix retrieves tags matching a prefix pattern
-// Uses indexed LIKE query for efficient filtering
-// Example: ListByPrefix(ctx, "alice/") returns all of alice's tags
-func (r *TagRepository) ListByPrefix(ctx context.Context, prefix string) ([]*models.Tag, error) {
+// ListByUsername retrieves all tags for a specific user (EXACT MATCH - no LIKE query!)
+// This is the secure replacement for ListByPrefix - uses exact username matching
+func (r *TagRepository) ListByUsername(ctx context.Context, username string) ([]*models.Tag, error) {
 	query := `
-		SELECT tag_name, target_kind, target_id, target_hash, version, moved_by, moved_at
+		SELECT username, tag_name, target_kind, target_id, target_hash, version, created_by, moved_by, moved_at
 		FROM tag
-		WHERE tag_name LIKE $1 || '%'
+		WHERE username = $1
 		ORDER BY tag_name ASC
 	`
 
-	rows, err := r.db.Query(ctx, query, prefix)
+	rows, err := r.db.Query(ctx, query, username)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list tags by prefix: %w", err)
+		return nil, fmt.Errorf("failed to list tags by username: %w", err)
 	}
 	defer rows.Close()
 
@@ -200,11 +207,13 @@ func (r *TagRepository) ListByPrefix(ctx context.Context, prefix string) ([]*mod
 	for rows.Next() {
 		tag := &models.Tag{}
 		err := rows.Scan(
+			&tag.Username,
 			&tag.TagName,
 			&tag.TargetKind,
 			&tag.TargetID,
 			&tag.TargetHash,
 			&tag.Version,
+			&tag.CreatedBy,
 			&tag.MovedBy,
 			&tag.MovedAt,
 		)
@@ -221,12 +230,12 @@ func (r *TagRepository) ListByPrefix(ctx context.Context, prefix string) ([]*mod
 	return tags, nil
 }
 
-// Exists checks if a tag exists
-func (r *TagRepository) Exists(ctx context.Context, tagName string) (bool, error) {
-	query := `SELECT EXISTS(SELECT 1 FROM tag WHERE tag_name = $1)`
+// Exists checks if a tag exists for a specific user
+func (r *TagRepository) Exists(ctx context.Context, username, tagName string) (bool, error) {
+	query := `SELECT EXISTS(SELECT 1 FROM tag WHERE username = $1 AND tag_name = $2)`
 
 	var exists bool
-	err := r.db.QueryRow(ctx, query, tagName).Scan(&exists)
+	err := r.db.QueryRow(ctx, query, username, tagName).Scan(&exists)
 	if err != nil {
 		return false, fmt.Errorf("failed to check tag existence: %w", err)
 	}
@@ -234,17 +243,17 @@ func (r *TagRepository) Exists(ctx context.Context, tagName string) (bool, error
 	return exists, nil
 }
 
-// GetHistory retrieves the tag move history
-func (r *TagRepository) GetHistory(ctx context.Context, tagName string, limit int) ([]*models.TagMove, error) {
+// GetHistory retrieves the tag move history for a specific user's tag
+func (r *TagRepository) GetHistory(ctx context.Context, username, tagName string, limit int) ([]*models.TagMove, error) {
 	query := `
-		SELECT id, tag_name, from_kind, from_id, to_kind, to_id, expected_hash, moved_by, moved_at
+		SELECT id, username, tag_name, from_kind, from_id, to_kind, to_id, expected_hash, moved_by, moved_at
 		FROM tag_move
-		WHERE tag_name = $1
+		WHERE username = $1 AND tag_name = $2
 		ORDER BY moved_at DESC
-		LIMIT $2
+		LIMIT $3
 	`
 
-	rows, err := r.db.Query(ctx, query, tagName, limit)
+	rows, err := r.db.Query(ctx, query, username, tagName, limit)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get tag history: %w", err)
 	}
@@ -255,6 +264,7 @@ func (r *TagRepository) GetHistory(ctx context.Context, tagName string, limit in
 		move := &models.TagMove{}
 		err := rows.Scan(
 			&move.ID,
+			&move.Username,
 			&move.TagName,
 			&move.FromKind,
 			&move.FromID,

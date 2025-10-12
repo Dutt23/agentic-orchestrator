@@ -36,7 +36,7 @@ func (s *ArtifactService) CreateDAGVersion(ctx context.Context, casID, versionHa
 		NodesCount:  &nodesCount,
 		EdgesCount:  &edgesCount,
 		Meta:        make(map[string]interface{}),
-		CreatedBy:   &createdBy,
+		CreatedBy:   createdBy,
 		CreatedAt:   time.Now(),
 	}
 
@@ -64,7 +64,7 @@ func (s *ArtifactService) CreatePatchSet(ctx context.Context, casID string, base
 		Depth:       &depth,
 		OpCount:     &opCount,
 		Meta:        make(map[string]interface{}),
-		CreatedBy:   &createdBy,
+		CreatedBy:   createdBy,
 		CreatedAt:   time.Now(),
 	}
 
@@ -92,7 +92,7 @@ func (s *ArtifactService) CreateRunSnapshot(ctx context.Context, casID, planHash
 		NodesCount:  &nodesCount,
 		EdgesCount:  &edgesCount,
 		Meta:        make(map[string]interface{}),
-		CreatedBy:   &createdBy,
+		CreatedBy:   createdBy,
 		CreatedAt:   time.Now(),
 	}
 

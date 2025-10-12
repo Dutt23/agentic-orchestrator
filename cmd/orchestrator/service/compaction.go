@@ -194,7 +194,7 @@ func (s *CompactionService) CompactWorkflow(ctx context.Context, patchID uuid.UU
 			"original_depth":   depth,
 			"original_patches": len(patchChain),
 		},
-		CreatedBy: &compactedBy,
+		CreatedBy: compactedBy,
 		CreatedAt: time.Now(),
 	}
 
@@ -232,14 +232,14 @@ func (s *CompactionService) CompactWorkflow(ctx context.Context, patchID uuid.UU
 // This updates the tag and records the move in tag_move for undo/redo support
 func (s *CompactionService) MigrateTagToCompactedBase(
 	ctx context.Context,
-	tagName string,
+	username, tagName string,
 	newBaseID uuid.UUID,
 	movedBy string,
 ) error {
-	s.log.Info("migrating tag to compacted base", "tag_name", tagName, "new_base_id", newBaseID)
+	s.log.Info("migrating tag to compacted base", "username", username, "tag_name", tagName, "new_base_id", newBaseID)
 
 	// Get current tag position
-	tag, err := s.tagRepo.GetByName(ctx, tagName)
+	tag, err := s.tagRepo.GetByName(ctx, username, tagName)
 	if err != nil {
 		return fmt.Errorf("failed to get tag: %w", err)
 	}
