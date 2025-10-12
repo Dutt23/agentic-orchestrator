@@ -152,6 +152,11 @@ CREATE TABLE artifact (
     nodes_count INT CHECK (nodes_count >= 0),
     edges_count INT CHECK (edges_count >= 0),
 
+    -- For compaction tracking (dag_version only)
+    -- Points to the patch that was compacted into this base version
+    -- Example: V2 (new base) compacted_from_id → P20 (old head)
+    compacted_from_id UUID REFERENCES artifact(artifact_id) ON DELETE RESTRICT,
+
     -- ========================================================================
     -- FLEXIBLE METADATA (rarely queried, extensions)
     -- ========================================================================
@@ -160,7 +165,7 @@ CREATE TABLE artifact (
     -- Examples:
     --   {"author": "user@example.com", "message": "Add retry logic"}
     --   {"materializer_version": "1.0.0"}
-    --   {"compacted_from": ["P1", "P2", "P3"]}
+    --   {"original_depth": 20, "compacted_at": "2025-10-12T..."}
     meta JSONB NOT NULL DEFAULT '{}'::jsonb,
 
     -- Audit fields
@@ -203,6 +208,11 @@ CREATE INDEX idx_artifact_depth
     ON artifact(depth DESC)
     WHERE kind = 'patch_set' AND depth > 10;
 
+-- Compaction reverse lookup (find compacted versions)
+CREATE INDEX idx_artifact_compacted_from
+    ON artifact(compacted_from_id)
+    WHERE compacted_from_id IS NOT NULL;
+
 -- Flexible metadata (GIN index for rare queries)
 CREATE INDEX idx_artifact_meta_gin
     ON artifact USING GIN(meta jsonb_path_ops);
@@ -212,6 +222,7 @@ COMMENT ON COLUMN artifact.plan_hash IS 'Snapshot cache key (run_snapshot only)'
 COMMENT ON COLUMN artifact.version_hash IS 'Integrity hash (dag_version, run_snapshot)';
 COMMENT ON COLUMN artifact.base_version IS 'Parent DAG version for patches';
 COMMENT ON COLUMN artifact.depth IS 'Chain depth from base version';
+COMMENT ON COLUMN artifact.compacted_from_id IS 'Original patch ID that was compacted into this base version';
 
 -- ============================================================================
 -- 3. TAG (Mutable Branch/Release Pointers)
