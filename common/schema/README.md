@@ -5,6 +5,7 @@ This directory contains JSON Schema definitions that serve as the single source 
 ## Schemas
 
 - **workflow.schema.json** - Core workflow DAG definition (nodes, edges, metadata)
+- **api-responses.schema.json** - API response formats (WorkflowListResponse, CreateWorkflowResponse, etc.)
 - More schemas will be added as needed (patch, run, etc.)
 
 ## Usage

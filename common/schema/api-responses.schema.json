@@ -1,0 +1,243 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://orchestrator.lyzr.ai/schemas/api-responses.json",
+  "title": "API Response Schemas",
+  "description": "Schema definitions for orchestrator API responses",
+  "definitions": {
+    "WorkflowListResponse": {
+      "type": "object",
+      "description": "Response from GET /api/v1/workflows",
+      "required": ["workflows", "count"],
+      "properties": {
+        "workflows": {
+          "type": "array",
+          "description": "List of workflow tags",
+          "items": {
+            "$ref": "#/definitions/WorkflowTag"
+          }
+        },
+        "count": {
+          "type": "integer",
+          "description": "Total number of workflows"
+        },
+        "scope": {
+          "type": "string",
+          "description": "Scope filter applied (user, global, all)",
+          "enum": ["user", "global", "all"]
+        }
+      }
+    },
+    "WorkflowTag": {
+      "type": "object",
+      "description": "A workflow tag (pointer to a workflow DAG version)",
+      "required": ["tag", "owner", "target_kind", "target_id", "version", "moved_at"],
+      "properties": {
+        "tag": {
+          "type": "string",
+          "description": "Tag name within user namespace (e.g., 'main', 'dev', 'prod')",
+          "pattern": "^[a-zA-Z0-9_/-]+$",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "owner": {
+          "type": "string",
+          "description": "Username who owns the tag (e.g., 'sdutt') or '_global_' for system-wide tags",
+          "pattern": "^[a-zA-Z0-9_-]+$",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "target_kind": {
+          "type": "string",
+          "description": "Type of artifact the tag points to",
+          "enum": ["dag_version", "patch_set"]
+        },
+        "target_id": {
+          "type": "string",
+          "description": "UUID of the target artifact",
+          "format": "uuid"
+        },
+        "target_hash": {
+          "type": "string",
+          "description": "Optional content hash of the target for optimistic locking"
+        },
+        "version": {
+          "type": "integer",
+          "description": "Tag version number (incremented on each move)",
+          "minimum": 1
+        },
+        "created_by": {
+          "type": "string",
+          "description": "Username who originally created this tag"
+        },
+        "moved_by": {
+          "type": "string",
+          "description": "Username who last moved this tag"
+        },
+        "moved_at": {
+          "type": "string",
+          "description": "Timestamp when tag was last moved",
+          "format": "date-time"
+        }
+      }
+    },
+    "CreateWorkflowResponse": {
+      "type": "object",
+      "description": "Response from POST /api/v1/workflows",
+      "required": ["artifact_id", "cas_id", "version_hash", "tag", "owner", "nodes_count", "edges_count", "created_at"],
+      "properties": {
+        "artifact_id": {
+          "type": "string",
+          "description": "UUID of the created artifact",
+          "format": "uuid"
+        },
+        "cas_id": {
+          "type": "string",
+          "description": "Content-addressed storage ID (hash of the workflow)"
+        },
+        "version_hash": {
+          "type": "string",
+          "description": "Version hash for integrity verification"
+        },
+        "tag": {
+          "type": "string",
+          "description": "Tag name (e.g., 'main')"
+        },
+        "owner": {
+          "type": "string",
+          "description": "Username who owns the tag"
+        },
+        "nodes_count": {
+          "type": "integer",
+          "description": "Number of nodes in the workflow",
+          "minimum": 0
+        },
+        "edges_count": {
+          "type": "integer",
+          "description": "Number of edges in the workflow",
+          "minimum": 0
+        },
+        "created_at": {
+          "type": "string",
+          "description": "Timestamp when workflow was created",
+          "format": "date-time"
+        }
+      }
+    },
+    "GetWorkflowResponse": {
+      "type": "object",
+      "description": "Response from GET /api/v1/workflows/:tag",
+      "required": ["tag", "owner", "artifact_id", "kind", "depth", "patch_count", "created_at"],
+      "properties": {
+        "tag": {
+          "type": "string",
+          "description": "Tag name"
+        },
+        "owner": {
+          "type": "string",
+          "description": "Username who owns the tag"
+        },
+        "artifact_id": {
+          "type": "string",
+          "description": "UUID of the artifact",
+          "format": "uuid"
+        },
+        "kind": {
+          "type": "string",
+          "description": "Artifact kind",
+          "enum": ["dag_version", "patch_set"]
+        },
+        "depth": {
+          "type": "integer",
+          "description": "Patch chain depth (0 for base versions)",
+          "minimum": 0
+        },
+        "patch_count": {
+          "type": "integer",
+          "description": "Number of patches in the chain",
+          "minimum": 0
+        },
+        "created_at": {
+          "type": "string",
+          "description": "Timestamp when artifact was created",
+          "format": "date-time"
+        },
+        "created_by": {
+          "type": "string",
+          "description": "Username who created the artifact"
+        },
+        "components": {
+          "type": "object",
+          "description": "Workflow components (base + patches)",
+          "properties": {
+            "base_cas_id": {
+              "type": "string"
+            },
+            "base_version_hash": {
+              "type": "string"
+            },
+            "base_version": {
+              "type": "integer"
+            },
+            "patches": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "seq": {
+                    "type": "integer"
+                  },
+                  "artifact_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "cas_id": {
+                    "type": "string"
+                  },
+                  "depth": {
+                    "type": "integer"
+                  },
+                  "op_count": {
+                    "type": "integer"
+                  },
+                  "created_at": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "created_by": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "workflow": {
+          "description": "Materialized workflow (only if materialize=true)",
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "workflow.schema.json" }
+          ]
+        }
+      }
+    },
+    "ErrorResponse": {
+      "type": "object",
+      "description": "Standard error response",
+      "required": ["error"],
+      "properties": {
+        "error": {
+          "type": "string",
+          "description": "Error message"
+        },
+        "code": {
+          "type": "string",
+          "description": "Optional error code"
+        },
+        "details": {
+          "type": "object",
+          "description": "Optional additional error details"
+        }
+      }
+    }
+  }
+}
