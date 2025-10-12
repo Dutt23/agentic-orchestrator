@@ -1,15 +1,25 @@
-# Rust
+# === Rust Build Artifacts ===
 /target/
 **/*.rs.bk
 Cargo.lock
 
-# IDE
+# === IDE / Editor ===
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
+*.sublime-project
+*.sublime-workspace
 
-# OS
+# === OS ===
 .DS_Store
 Thumbs.db
+._*
+
+# === Logs ===
+*.log
+
+# === Environment ===
+.env
+.env.local

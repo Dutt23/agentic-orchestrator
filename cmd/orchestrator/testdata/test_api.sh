@@ -6,7 +6,7 @@
 set -e  # Exit on error
 
 # Configuration
-API_BASE="http://localhost:8080/api/v1"
+API_BASE="http://localhost:8081/api/v1"
 CONTENT_TYPE="Content-Type: application/json"
 USER_ID="X-User-ID: test-user"
 
@@ -20,6 +20,17 @@ NC='\033[0m' # No Color
 echo -e "${BLUE}========================================${NC}"
 echo -e "${BLUE}  Workflow Orchestrator API Tests${NC}"
 echo -e "${BLUE}========================================${NC}\n"
+
+# Check API availability
+echo -e "${YELLOW}Checking API server availability...${NC}"
+if ! curl --max-time 2 --silent --fail "$API_BASE/workflows" > /dev/null 2>&1; then
+    echo -e "${RED}ERROR: Cannot connect to API server at $API_BASE${NC}"
+    echo -e "${YELLOW}Please start the API server first:${NC}"
+    echo -e "${YELLOW}  cd /Users/sdutt/Documents/practice/lyzr/orchestrator/cmd/orchestrator${NC}"
+    echo -e "${YELLOW}  go run main.go${NC}"
+    exit 1
+fi
+echo -e "${GREEN}✓ API server is running${NC}\n"
 
 # Function to print test results
 function test_result() {
@@ -38,7 +49,7 @@ RESPONSE=$(curl -s -X POST "$API_BASE/workflows" \
     -H "$USER_ID" \
     -d '{
         "tag_name": "main",
-        "workflow": '"$(cat testdata/workflow_simple.json)"',
+        "workflow": '"$(cat workflow_simple.json)"',
         "created_by": "test-user"
     }')
 
@@ -63,7 +74,7 @@ curl -s -X POST "$API_BASE/workflows" \
     -H "$USER_ID" \
     -d '{
         "tag_name": "dev",
-        "workflow": '"$(cat testdata/workflow_complex.json)"',
+        "workflow": '"$(cat workflow_complex.json)"',
         "created_by": "test-user"
     }' | jq '.'
 test_result "Create Complex Workflow"
@@ -80,7 +91,7 @@ curl -s -X POST "$API_BASE/workflows" \
     -H "$USER_ID" \
     -d '{
         "tag_name": "prod",
-        "workflow": '"$(cat testdata/workflow_simple.json)"',
+        "workflow": '"$(cat workflow_simple.json)"',
         "created_by": "test-user"
     }' | jq '.'
 test_result "Create Production Workflow"

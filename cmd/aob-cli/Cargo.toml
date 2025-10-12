@@ -48,6 +48,9 @@ futures = "0.3"
 chrono = "0.4"
 tokio-util = { version = "0.7", features = ["codec"] }
 
+# Shared workflow types
+dag-optimizer = { path = "../../crates/dag-optimizer" }
+
 [[bin]]
 name = "aob"
 path = "src/main.rs"

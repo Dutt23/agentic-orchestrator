@@ -1,27 +1,12 @@
 use anyhow::Result;
 use colored::Colorize;
-use serde::{Deserialize, Serialize};
 
 use crate::client::ApiClient;
 use crate::commands::WorkflowCommands;
 use crate::OutputFormat;
 
-#[derive(Deserialize, Serialize)]
-struct WorkflowTag {
-    tag_name: String,
-    target_kind: String,
-    target_id: String,
-    target_hash: Option<String>,
-    version: i64,
-    moved_by: Option<String>,
-    moved_at: String,
-}
-
-#[derive(Deserialize, Serialize)]
-struct WorkflowListResponse {
-    workflows: Vec<WorkflowTag>,
-    count: usize,
-}
+// Use shared types from dag-optimizer
+use dag_optimizer::WorkflowListResponse;
 
 pub async fn handle(
     client: ApiClient,

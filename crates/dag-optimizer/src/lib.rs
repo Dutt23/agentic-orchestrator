@@ -20,7 +20,16 @@
 pub mod types;
 
 // Re-export common types
-pub use types::{Workflow, Node, Edge};
+pub use types::{
+    Workflow,
+    Node,
+    Edge,
+    Config,
+    Retry,
+    Metadata,
+    WorkflowListResponse,
+    WorkflowTag,
+};
 
 use anyhow::Result;
 
@@ -36,13 +45,13 @@ impl Optimizer {
     }
 
     /// Analyze a workflow and generate optimization suggestions
-    pub fn analyze(&self, workflow: &Workflow) -> Result<Vec<Suggestion>> {
+    pub fn analyze(&self, _workflow: &Workflow) -> Result<Vec<Suggestion>> {
         // TODO: Implement analysis logic
         Ok(vec![])
     }
 
     /// Apply an optimization to a workflow
-    pub fn optimize(&self, workflow: &Workflow, suggestion: &Suggestion) -> Result<Workflow> {
+    pub fn optimize(&self, workflow: &Workflow, _suggestion: &Suggestion) -> Result<Workflow> {
         // TODO: Implement optimization logic
         Ok(workflow.clone())
     }

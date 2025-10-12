@@ -10,7 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 # Configuration
-API_BASE="http://localhost:8080/api/v1"
+API_BASE="http://localhost:8081/api/v1"
 DB_NAME="orchestrator"
 DB_USER="sdutt"
 
@@ -24,6 +24,17 @@ NC='\033[0m' # No Color
 echo -e "${BLUE}========================================${NC}"
 echo -e "${BLUE}  Patch Materialization Test${NC}"
 echo -e "${BLUE}========================================${NC}\n"
+
+# Check API availability
+echo -e "${YELLOW}Checking API server availability...${NC}"
+if ! curl --max-time 2 --silent --fail "$API_BASE/workflows" > /dev/null 2>&1; then
+    echo -e "${RED}ERROR: Cannot connect to API server at $API_BASE${NC}"
+    echo -e "${YELLOW}Please start the API server first:${NC}"
+    echo -e "${YELLOW}  cd /Users/sdutt/Documents/practice/lyzr/orchestrator/cmd/orchestrator${NC}"
+    echo -e "${YELLOW}  go run main.go${NC}"
+    exit 1
+fi
+echo -e "${GREEN}✓ API server is running${NC}\n"
 
 # Step 1: Create Base Workflow
 echo -e "${YELLOW}Step 1: Creating Base Workflow${NC}"
