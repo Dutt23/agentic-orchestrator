@@ -177,9 +177,10 @@ VALUES (
     :'patch3_artifact_id'::uuid
 );
 
--- Create tags (with new username column for multi-user support)
+-- Create ONE tag that moves through versions (correct workflow lifecycle)
+-- Initially tag points to patch 3 (latest version)
 INSERT INTO tag (username, tag_name, target_kind, target_id, created_by, moved_by, moved_at)
-VALUES ('test-user', 'patch-test-1', 'patch_set', :'patch1_artifact_id'::uuid, 'test-user', 'test-user', now())
+VALUES ('test-user', 'main', 'patch_set', :'patch3_artifact_id'::uuid, 'test-user', 'test-user', now())
 ON CONFLICT (username, tag_name) DO UPDATE SET
     target_kind = EXCLUDED.target_kind,
     target_id = EXCLUDED.target_id,
@@ -187,23 +188,13 @@ ON CONFLICT (username, tag_name) DO UPDATE SET
     moved_by = EXCLUDED.moved_by,
     moved_at = EXCLUDED.moved_at;
 
-INSERT INTO tag (username, tag_name, target_kind, target_id, created_by, moved_by, moved_at)
-VALUES ('test-user', 'patch-test-2', 'patch_set', :'patch2_artifact_id'::uuid, 'test-user', 'test-user', now())
-ON CONFLICT (username, tag_name) DO UPDATE SET
-    target_kind = EXCLUDED.target_kind,
-    target_id = EXCLUDED.target_id,
-    version = tag.version + 1,
-    moved_by = EXCLUDED.moved_by,
-    moved_at = EXCLUDED.moved_at;
-
-INSERT INTO tag (username, tag_name, target_kind, target_id, created_by, moved_by, moved_at)
-VALUES ('test-user', 'patch-test-3', 'patch_set', :'patch3_artifact_id'::uuid, 'test-user', 'test-user', now())
-ON CONFLICT (username, tag_name) DO UPDATE SET
-    target_kind = EXCLUDED.target_kind,
-    target_id = EXCLUDED.target_id,
-    version = tag.version + 1,
-    moved_by = EXCLUDED.moved_by,
-    moved_at = EXCLUDED.moved_at;
+-- Record tag history for undo/redo (simulating the tag moves)
+INSERT INTO tag_move (username, tag_name, from_kind, from_id, to_kind, to_id, moved_by, moved_at)
+VALUES
+    ('test-user', 'main', NULL, NULL, 'dag_version', :base_artifact_id::uuid, 'test-user', now() - interval '15 minutes'),
+    ('test-user', 'main', 'dag_version', :base_artifact_id::uuid, 'patch_set', :'patch1_artifact_id'::uuid, 'test-user', now() - interval '10 minutes'),
+    ('test-user', 'main', 'patch_set', :'patch1_artifact_id'::uuid, 'patch_set', :'patch2_artifact_id'::uuid, 'test-user', now() - interval '5 minutes'),
+    ('test-user', 'main', 'patch_set', :'patch2_artifact_id'::uuid, 'patch_set', :'patch3_artifact_id'::uuid, 'test-user', now());
 
 \echo 'Patches inserted successfully!'
 SQL
@@ -215,44 +206,41 @@ fi
 
 echo -e "${GREEN}✓ Patches inserted successfully${NC}\n"
 
-# Step 3: Test Patch Materialization
-echo -e "${YELLOW}Step 3: Testing Patch Materialization${NC}\n"
+# Step 3: Test Version History and Materialization
+echo -e "${YELLOW}Step 3: Testing Version History${NC}\n"
 
-# Test Patch 1 (depth=1)
-echo -e "${BLUE}Test 3a: Patch-test-1 (depth=1, adds Slack node)${NC}"
-curl -s -H "$USER_ID" "$API_BASE/workflows/patch-test-1?materialize=false" | jq '{tag, kind, depth, patch_count}'
+# Test current version (main → patch 3, depth=3)
+echo -e "${BLUE}Test 3a: Get current workflow (main, latest version)${NC}"
+curl -s -H "$USER_ID" "$API_BASE/workflows/main?materialize=false" | jq '{tag, kind, depth, patch_count}'
 echo ""
-curl -s -H "$USER_ID" "$API_BASE/workflows/patch-test-1?materialize=true" | jq '.workflow.nodes | length'
+
+# Test version history access
+echo -e "${BLUE}Test 3b: Get version 1 (base + patch 1)${NC}"
+curl -s -H "$USER_ID" "$API_BASE/workflows/main/versions/1?materialize=true" | jq '{seq: .seq, depth: .depth, patch_count: .patch_count, nodes: .workflow.nodes | length}'
 echo -e "${GREEN}✓ Should have 4 nodes (original 3 + 1 added)${NC}\n"
 
-# Test Patch 2 (depth=2)
-echo -e "${BLUE}Test 3b: Patch-test-2 (depth=2, also updates timeouts)${NC}"
-curl -s -H "$USER_ID" "$API_BASE/workflows/patch-test-2?materialize=false" | jq '{tag, kind, depth, patch_count}'
-echo ""
-curl -s -H "$USER_ID" "$API_BASE/workflows/patch-test-2?materialize=true" | jq '.workflow.nodes[0].config.timeout'
-echo -e "${GREEN}✓ Should be 60 (updated from 30)${NC}\n"
+echo -e "${BLUE}Test 3c: Get version 2 (base + patches 1,2)${NC}"
+curl -s -H "$USER_ID" "$API_BASE/workflows/main/versions/2?materialize=true" | jq '{seq: .seq, depth: .depth, patch_count: .patch_count, timeout: .workflow.nodes[0].config.timeout}'
+echo -e "${GREEN}✓ Should have timeout=60 (updated from 30)${NC}\n"
 
-# Test Patch 3 (depth=3)
-echo -e "${BLUE}Test 3c: Patch-test-3 (depth=3, also removes enrich node)${NC}"
-curl -s -H "$USER_ID" "$API_BASE/workflows/patch-test-3?materialize=false" | jq '{tag, kind, depth, patch_count}'
-echo ""
-curl -s -H "$USER_ID" "$API_BASE/workflows/patch-test-3?materialize=true" | jq '.workflow.nodes | length'
+echo -e "${BLUE}Test 3d: Get version 3 (base + all patches)${NC}"
+curl -s -H "$USER_ID" "$API_BASE/workflows/main/versions/3?materialize=true" | jq '{seq: .seq, depth: .depth, patch_count: .patch_count, nodes: .workflow.nodes | length}'
 echo -e "${GREEN}✓ Should have 3 nodes (removed enrich_data)${NC}\n"
 
-# Step 4: Show Full Workflows
-echo -e "${YELLOW}Step 4: Full Materialized Workflows${NC}\n"
+# Step 4: Show Full Workflows at Different Versions
+echo -e "${YELLOW}Step 4: Full Materialized Workflows at Each Version${NC}\n"
 
-echo -e "${BLUE}Original Base Workflow:${NC}"
-curl -s -H "$USER_ID" "$API_BASE/workflows/patch-base?materialize=true" | jq '.workflow.nodes[] | {id, type}'
+echo -e "${BLUE}Version 1 (added notify_slack):${NC}"
+curl -s -H "$USER_ID" "$API_BASE/workflows/main/versions/1?materialize=true" | jq '.workflow.nodes[] | {id, type}'
 
-echo -e "\n${BLUE}After Patch 1 (added notify_slack):${NC}"
-curl -s -H "$USER_ID" "$API_BASE/workflows/patch-test-1?materialize=true" | jq '.workflow.nodes[] | {id, type}'
+echo -e "\n${BLUE}Version 2 (updated timeouts):${NC}"
+curl -s -H "$USER_ID" "$API_BASE/workflows/main/versions/2?materialize=true" | jq '.workflow.nodes[] | {id, timeout: .config.timeout}'
 
-echo -e "\n${BLUE}After Patch 2 (updated timeouts):${NC}"
-curl -s -H "$USER_ID" "$API_BASE/workflows/patch-test-2?materialize=true" | jq '.workflow.nodes[] | {id, timeout: .config.timeout}'
+echo -e "\n${BLUE}Version 3 (removed enrich_data):${NC}"
+curl -s -H "$USER_ID" "$API_BASE/workflows/main/versions/3?materialize=true" | jq '.workflow.nodes[] | {id, type}'
 
-echo -e "\n${BLUE}After Patch 3 (removed enrich_data):${NC}"
-curl -s -H "$USER_ID" "$API_BASE/workflows/patch-test-3?materialize=true" | jq '.workflow.nodes[] | {id, type}'
+echo -e "\n${BLUE}Current (latest, same as version 3):${NC}"
+curl -s -H "$USER_ID" "$API_BASE/workflows/main?materialize=true" | jq '.workflow.nodes[] | {id, type}'
 
 # Summary
 echo -e "\n${BLUE}========================================${NC}"
@@ -262,8 +250,9 @@ echo -e "${BLUE}========================================${NC}"
 echo -e "\n${YELLOW}Summary:${NC}"
 echo -e "- Created base workflow: $BASE_ARTIFACT_ID"
 echo -e "- Inserted 3 patches (add, replace, remove operations)"
-echo -e "- Created 3 tags pointing to different patch depths"
-echo -e "- Verified materialization works correctly"
+echo -e "- Created ONE tag 'main' that moved through versions (correct lifecycle)"
+echo -e "- Verified version history API (versions/1, versions/2, versions/3)"
+echo -e "- Verified materialization works correctly at each version"
 echo -e "\n${YELLOW}Cleanup:${NC}"
 echo -e "To clean up test data, run:"
-echo -e "  psql -U $DB_USER -d $DB_NAME -c \"DELETE FROM tag WHERE username = 'test-user' AND tag_name LIKE 'patch-%'\""
+echo -e "  psql -U $DB_USER -d $DB_NAME -c \"DELETE FROM tag WHERE username = 'test-user' AND tag_name = 'main'\""
