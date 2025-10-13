@@ -381,3 +381,89 @@ func (s *WorkflowServiceV2) loadPatchChain(ctx context.Context, patchArtifacts [
 	s.log.Info("patch chain loaded successfully", "patch_count", len(components.PatchChain))
 	return nil
 }
+
+// GetWorkflowComponentsAtVersion fetches workflow components up to a specific version
+// seq is 1-indexed (e.g., seq=3 means apply patches 1, 2, 3)
+func (s *WorkflowServiceV2) GetWorkflowComponentsAtVersion(ctx context.Context, username, tagName string, seq int) (*models.WorkflowComponents, error) {
+	s.log.Info("fetching workflow components at version", "username", username, "tag", tagName, "seq", seq)
+
+	if seq < 1 {
+		return nil, fmt.Errorf("invalid seq: must be >= 1")
+	}
+
+	// Query 1: Resolve tag to artifact
+	artifact, err := s.resolveTagToArtifact(ctx, username, tagName)
+	if err != nil {
+		return nil, err
+	}
+
+	components := s.initializeComponents(username, tagName, artifact)
+
+	// Handle based on artifact kind
+	if artifact.IsDAGVersion() {
+		// DAG version has no patches, seq must be 0 or 1
+		if seq != 1 {
+			return nil, fmt.Errorf("dag_version only has seq=1, requested seq=%d", seq)
+		}
+		if err := s.loadDAGVersionComponents(ctx, artifact, components); err != nil {
+			return nil, err
+		}
+	} else if artifact.IsPatchSet() {
+		if err := s.loadPatchSetComponentsAtVersion(ctx, artifact, components, seq); err != nil {
+			return nil, err
+		}
+	} else {
+		return nil, fmt.Errorf("unsupported artifact kind: %s", artifact.Kind)
+	}
+
+	s.log.Info("workflow components at version fetched successfully",
+		"kind", components.Kind,
+		"depth", components.Depth,
+		"patch_count", components.PatchCount,
+		"requested_seq", seq,
+	)
+
+	return components, nil
+}
+
+// loadPatchSetComponentsAtVersion loads components for a patch set up to a specific version
+func (s *WorkflowServiceV2) loadPatchSetComponentsAtVersion(ctx context.Context, artifact *models.Artifact, components *models.WorkflowComponents, seq int) error {
+	s.log.Info("workflow is a patch_set, loading up to version", "artifact_id", artifact.ArtifactID, "seq", seq)
+
+	if artifact.BaseVersion == nil {
+		return fmt.Errorf("patch_set artifact missing base_version")
+	}
+
+	components.BaseVersion = artifact.BaseVersion
+	if artifact.Depth != nil {
+		components.Depth = *artifact.Depth
+	}
+
+	// Query 2: Get full patch chain
+	patchArtifacts, err := s.artifactService.GetPatchChain(ctx, artifact.ArtifactID)
+	if err != nil {
+		return fmt.Errorf("failed to get patch chain: %w", err)
+	}
+
+	// Validate seq is within bounds
+	if seq > len(patchArtifacts) {
+		return fmt.Errorf("requested seq %d exceeds patch chain length %d", seq, len(patchArtifacts))
+	}
+
+	// Take only patches up to seq
+	patchArtifacts = patchArtifacts[:seq]
+	components.PatchCount = len(patchArtifacts)
+	s.log.Info("loaded partial patch chain", "requested_seq", seq, "patch_count", components.PatchCount)
+
+	// Load base DAG
+	if err := s.loadBaseDAG(ctx, artifact, components); err != nil {
+		return err
+	}
+
+	// Query 4: Load patches up to seq from CAS
+	if err := s.loadPatchChain(ctx, patchArtifacts, components); err != nil {
+		return err
+	}
+
+	return nil
+}

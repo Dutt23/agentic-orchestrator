@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 
 	"github.com/labstack/echo/v4"
 	"github.com/lyzr/orchestrator/cmd/orchestrator/middleware"
@@ -122,13 +123,23 @@ func (h *WorkflowHandler) CreateWorkflow(c echo.Context) error {
 //     If false, returns components only (base + patch chain metadata)
 func (h *WorkflowHandler) GetWorkflow(c echo.Context) error {
 	ctx := c.Request().Context()
-	tagName := c.Param("tag") // User provides: "main"
+	tagNameEncoded := c.Param("tag") // User provides: "main" or "release%2Fv1.0"
+
+	// URL-decode the tag name (Echo doesn't decode path parameters automatically)
+	tagName, err := url.QueryUnescape(tagNameEncoded)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{
+			"error": "invalid tag name encoding",
+		})
+	}
 
 	// Extract username from context (set by middleware)
 	username, err := middleware.RequireUsername(c)
 	if err != nil {
 		return err
 	}
+
+	h.components.Logger.Info("GetWorkflow called", "username", username, "tag", tagName)
 
 	// Parse materialize flag (default: false)
 	materializeParam := c.QueryParam("materialize")
@@ -337,7 +348,15 @@ func (h *WorkflowHandler) ListWorkflows(c echo.Context) error {
 // DELETE /api/v1/workflows/:tag
 func (h *WorkflowHandler) DeleteWorkflow(c echo.Context) error {
 	ctx := c.Request().Context()
-	tagName := c.Param("tag") // User provides: "main"
+	tagNameEncoded := c.Param("tag") // User provides: "main" or "release%2Fv1.0"
+
+	// URL-decode the tag name
+	tagName, err := url.QueryUnescape(tagNameEncoded)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{
+			"error": "invalid tag name encoding",
+		})
+	}
 
 	// Extract username from context
 	username, err := middleware.RequireUsername(c)
@@ -372,4 +391,94 @@ func (h *WorkflowHandler) DeleteWorkflow(c echo.Context) error {
 		"tag":     tagName,
 		"owner":   username,
 	})
+}
+
+// GetWorkflowVersion retrieves a workflow at a specific version/sequence number
+// GET /api/v1/workflows/:tag/versions/:seq?materialize=false
+//
+// Path parameters:
+//   - tag: Tag name (e.g., "main")
+//   - seq: Sequence number (1-indexed, e.g., 3 means apply patches 1,2,3)
+//
+// Query parameters:
+//   - materialize: "true" or "false" (default: "false")
+func (h *WorkflowHandler) GetWorkflowVersion(c echo.Context) error {
+	ctx := c.Request().Context()
+	tagNameEncoded := c.Param("tag")
+	seqStr := c.Param("seq")
+
+	// URL-decode the tag name
+	tagName, err := url.QueryUnescape(tagNameEncoded)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{
+			"error": "invalid tag name encoding",
+		})
+	}
+
+	// Extract username from context (set by middleware)
+	username, err := middleware.RequireUsername(c)
+	if err != nil {
+		return err
+	}
+
+	// Parse materialize flag (default: false)
+	materializeParam := c.QueryParam("materialize")
+	materialize := materializeParam == "true"
+
+	if tagName == "" {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{
+			"error": "tag name is required",
+		})
+	}
+
+	if seqStr == "" {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{
+			"error": "seq is required",
+		})
+	}
+
+	// Parse seq as integer
+	var seq int
+	if _, err := fmt.Sscanf(seqStr, "%d", &seq); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{
+			"error": "seq must be a valid integer",
+		})
+	}
+
+	// Validate tag name
+	if errMsg := service.ValidateUserTagName(tagName); errMsg != "" {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{
+			"error": fmt.Sprintf("invalid tag name: %s", errMsg),
+		})
+	}
+
+	// Fetch workflow components at specific version
+	components, err := h.workflowService.GetWorkflowComponentsAtVersion(ctx, username, tagName, seq)
+	if err != nil {
+		h.components.Logger.Error("failed to get workflow components at version",
+			"username", username,
+			"tag", tagName,
+			"seq", seq,
+			"error", err)
+		return c.JSON(http.StatusNotFound, map[string]interface{}{
+			"error": fmt.Sprintf("workflow version not found: %v", err),
+		})
+	}
+
+	// Build response
+	response := h.buildWorkflowResponse(tagName, username, components)
+	response["seq"] = seq
+
+	// Optionally materialize the workflow
+	if materialize {
+		if err := h.addMaterializedWorkflow(response, components); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]interface{}{
+				"error": fmt.Sprintf("failed to materialize workflow: %v", err),
+			})
+		}
+	} else {
+		response["workflow"] = nil
+	}
+
+	return c.JSON(http.StatusOK, response)
 }

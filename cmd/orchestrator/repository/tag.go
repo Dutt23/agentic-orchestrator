@@ -189,6 +189,8 @@ func (r *TagRepository) List(ctx context.Context) ([]*models.Tag, error) {
 
 // ListByUsername retrieves all tags for a specific user (EXACT MATCH - no LIKE query!)
 // This is the secure replacement for ListByPrefix - uses exact username matching
+// Returns all tags regardless of target_kind (dag_version or patch_set)
+// Each tag represents one logical workflow, pointing to its latest version
 func (r *TagRepository) ListByUsername(ctx context.Context, username string) ([]*models.Tag, error) {
 	query := `
 		SELECT username, tag_name, target_kind, target_id, target_hash, version, created_by, moved_by, moved_at

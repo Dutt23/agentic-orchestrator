@@ -8,7 +8,7 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8081
 
 /**
  * Get username from environment variable or default
- * For development, defaults to 'sdutt'
+ * For development, defaults to 'test-user'
  */
 function getUsername() {
   return import.meta.env.VITE_DEV_USERNAME || 'test-user';
@@ -59,12 +59,14 @@ export async function listWorkflows(scope = 'user') {
 
 /**
  * Get a specific workflow by tag
- * @param {string} tag - Workflow tag name (e.g., 'main')
+ * @param {string} tag - Workflow tag name (e.g., 'main' or 'release/v1.0')
  * @param {boolean} materialize - Whether to materialize the workflow (default: true)
  * @returns {Promise<Object>} Workflow details
  */
 export async function getWorkflow(tag, materialize = true) {
-  return await apiRequest(`/workflows/${tag}?materialize=${materialize}`);
+  // URL-encode tag to handle slashes (e.g., "release/v1.0" -> "release%2Fv1.0")
+  const encodedTag = encodeURIComponent(tag);
+  return await apiRequest(`/workflows/${encodedTag}?materialize=${materialize}`);
 }
 
 /**
@@ -84,12 +86,26 @@ export async function createWorkflow(tagName, workflow) {
 }
 
 /**
+ * Get a specific workflow version by tag and sequence number
+ * @param {string} tag - Workflow tag name (e.g., 'main' or 'release/v1.0')
+ * @param {number} seq - Sequence number (1-indexed)
+ * @param {boolean} materialize - Whether to materialize the workflow (default: true)
+ * @returns {Promise<Object>} Workflow details at specific version
+ */
+export async function getWorkflowVersion(tag, seq, materialize = true) {
+  // URL-encode tag to handle slashes (e.g., "release/v1.0" -> "release%2Fv1.0")
+  const encodedTag = encodeURIComponent(tag);
+  return await apiRequest(`/workflows/${encodedTag}/versions/${seq}?materialize=${materialize}`);
+}
+
+/**
  * Delete a workflow tag
  * @param {string} tag - Workflow tag name to delete
  * @returns {Promise<Object>} Deletion confirmation
  */
 export async function deleteWorkflow(tag) {
-  return await apiRequest(`/workflows/${tag}`, {
+  const encodedTag = encodeURIComponent(tag);
+  return await apiRequest(`/workflows/${encodedTag}`, {
     method: 'DELETE',
   });
 }
@@ -97,6 +113,7 @@ export async function deleteWorkflow(tag) {
 export default {
   listWorkflows,
   getWorkflow,
+  getWorkflowVersion,
   createWorkflow,
   deleteWorkflow,
 };

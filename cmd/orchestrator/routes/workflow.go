@@ -16,9 +16,10 @@ func RegisterWorkflowRoutes(e *echo.Echo, components *bootstrap.Components) {
 	wf := e.Group("/api/v1/workflows")
 	wf.Use(middleware.ExtractUsername()) // Extract X-User-ID into context
 	{
-		wf.GET("/:tag", h.GetWorkflow)        // GET /api/v1/workflows/main
-		wf.POST("", h.CreateWorkflow)         // POST /api/v1/workflows
-		wf.GET("", h.ListWorkflows)           // GET /api/v1/workflows
-		wf.DELETE("/:tag", h.DeleteWorkflow)  // DELETE /api/v1/workflows/main
+		wf.GET("/:tag", h.GetWorkflow)                       // GET /api/v1/workflows/main
+		wf.GET("/:tag/versions/:seq", h.GetWorkflowVersion) // GET /api/v1/workflows/main/versions/3
+		wf.POST("", h.CreateWorkflow)                        // POST /api/v1/workflows
+		wf.GET("", h.ListWorkflows)                          // GET /api/v1/workflows
+		wf.DELETE("/:tag", h.DeleteWorkflow)                 // DELETE /api/v1/workflows/main
 	}
 }
