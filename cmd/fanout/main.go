@@ -43,10 +43,11 @@ func main() {
 	go subscriber.Start(ctx)
 
 	// Create HTTP server with WebSocket handler
-	server := NewServer(hub)
+	server := NewServer(hub, redisClient)
 
 	// Setup HTTP routes
 	http.HandleFunc("/ws", server.HandleWebSocket)
+	http.HandleFunc("/api/approval", server.HandleApproval)
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))

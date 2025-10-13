@@ -328,7 +328,8 @@ class AgentService:
             # Add workflow info from job if not in arguments
             if 'workflow_owner' not in arguments and job.get('workflow_owner'):
                 arguments['workflow_owner'] = job['workflow_owner']
-            return patch_workflow_tool(arguments, self.orchestrator_url)
+            # Pass run_id for run-specific patches
+            return patch_workflow_tool(arguments, self.orchestrator_url, run_id=job.get('run_id'))
 
         else:
             raise ValueError(f"Unknown tool: {tool_name}")

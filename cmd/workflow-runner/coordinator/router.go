@@ -32,6 +32,8 @@ func (r *StreamRouter) GetStreamForNodeType(nodeType string) string {
 		return "wf.tasks.function"
 	case "http":
 		return "wf.tasks.http"
+	case "hitl":
+		return "wf.tasks.hitl"
 	case "transform":
 		return "wf.tasks.transform"
 	case "aggregate":
@@ -68,6 +70,7 @@ func (r *StreamRouter) GetAllStreams() []string {
 		"wf.tasks.search",
 		"wf.tasks.function",
 		"wf.tasks.http",
+		"wf.tasks.hitl",
 		"wf.tasks.transform",
 		"wf.tasks.aggregate",
 		"wf.tasks.filter",

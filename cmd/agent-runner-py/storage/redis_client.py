@@ -90,17 +90,21 @@ class RedisClient:
             logger.info(f"Token metadata: {token.get('metadata', 'NO METADATA FIELD')}")
 
             # Convert token to job format expected by main.py
+            metadata = token.get('metadata', {})
             job = {
                 'job_id': token.get('id'),
                 'run_id': token.get('run_id'),
                 'node_id': token.get('to_node'),
-                'task': token.get('metadata', {}).get('task', ''),
-                'context': token.get('metadata', {}).get('context', {}),
+                'task': metadata.get('task', ''),
+                'context': metadata.get('context', {}),
+                'workflow_owner': 'test-user',  # Required for patch_workflow
+                'workflow_tag': metadata.get('workflow_tag', ''),      # Optional, for context
                 'token': token,  # Store full token for later
                 'message_id': message_id  # Store for ACK
             }
 
-            logger.info(f"Converted job: job_id={job.get('job_id')}, task='{job.get('task')}'")
+            logger.info(f"Converted job: job_id={job.get('job_id')}, task='{job.get('task')}', "
+                       f"workflow_owner='{job.get('workflow_owner')}'")
             logger.info(f"Received job from stream: {job.get('job_id')}")
             return job
 

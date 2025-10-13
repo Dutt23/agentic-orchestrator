@@ -538,7 +538,7 @@ func (c *Coordinator) handleBranch(ctx context.Context, signal *CompletionSignal
 }
 
 // publishToken publishes a token to a Redis stream with resolved config
-func (c *Coordinator) publishToken(ctx context.Context, stream, runID, fromNode, toNode, payloadRef string, resolvedConfig map[string]interface{}) error {
+func (c *Coordinator) publishToken(ctx context.Context, stream, runID, fromNode, toNode, payloadRef string, resolvedConfig map[string]interface{}, ir *sdk.IR) error {
 	// Generate unique job ID for this token
 	jobID := fmt.Sprintf("%s-%s-%s", runID, toNode, time.Now().UnixNano())
 
@@ -583,11 +583,26 @@ func (c *Coordinator) publishToken(ctx context.Context, stream, runID, fromNode,
 			metadata["workflow"] = workflow
 		}
 	}
+
+	// Add workflow_owner from IR metadata (required for patch_workflow tool)
+	if ir.Metadata != nil {
+		if username, ok := ir.Metadata["username"].(string); ok {
+			token["workflow_owner"] = username
+			c.logger.Info("added workflow_owner to metadata", "workflow_owner", username)
+		}
+		// Also add tag if available
+		if tag, ok := ir.Metadata["tag"].(string); ok {
+			metadata["workflow_tag"] = tag
+			c.logger.Info("added workflow_tag to metadata", "workflow_tag", tag)
+		}
+	}
+
 	if len(metadata) > 0 {
 		token["metadata"] = metadata
 		c.logger.Info("added metadata to token",
 			"metadata", metadata,
-			"task_value", metadata["task"])
+			"task_value", metadata["task"],
+			"workflow_owner", metadata["workflow_owner"])
 	} else {
 		c.logger.Warn("metadata is empty, not adding to token",
 			"resolvedConfig_nil", resolvedConfig == nil)

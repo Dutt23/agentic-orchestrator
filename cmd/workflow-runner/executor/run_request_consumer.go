@@ -360,6 +360,8 @@ func (c *RunRequestConsumer) getStreamForNodeType(nodeType string) string {
 		return "wf.tasks.agent"
 	case "http":
 		return "wf.tasks.http"
+	case "hitl":
+		return "wf.tasks.hitl"
 	case "function":
 		return "wf.tasks.function"
 	default:

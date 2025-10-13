@@ -69,6 +69,9 @@ func main() {
 	// Create HTTP worker
 	httpWorker := worker.NewHTTPWorker(redisClient, workflowSDK, components.Logger)
 
+	// Create HITL worker
+	hitlWorker := worker.NewHITLWorker(redisClient, workflowSDK, components.Logger)
+
 	// Create run request consumer
 	orchestratorURL := getEnv("ORCHESTRATOR_URL", "http://localhost:8081")
 	runConsumer := executor.NewRunRequestConsumer(redisClient, workflowSDK, components.Logger, orchestratorURL)
@@ -79,7 +82,7 @@ func main() {
 	_ = supervisor.NewTimeoutDetector
 
 	// Start components in goroutines
-	errChan := make(chan error, 3)
+	errChan := make(chan error, 4)
 
 	// Start coordinator
 	go func() {
@@ -97,6 +100,14 @@ func main() {
 		}
 	}()
 
+	// Start HITL worker
+	go func() {
+		components.Logger.Info("starting HITL worker")
+		if err := hitlWorker.Start(ctx); err != nil && err != context.Canceled {
+			errChan <- fmt.Errorf("HITL worker error: %w", err)
+		}
+	}()
+
 	// Start run request consumer
 	go func() {
 		components.Logger.Info("starting run request consumer")
@@ -106,7 +117,7 @@ func main() {
 	}()
 
 	components.Logger.Info("workflow-runner started successfully",
-		"components", []string{"coordinator", "http_worker", "run_request_consumer"})
+		"components", []string{"coordinator", "http_worker", "hitl_worker", "run_request_consumer"})
 
 	// Wait for shutdown signal or error
 	sigChan := make(chan os.Signal, 1)
