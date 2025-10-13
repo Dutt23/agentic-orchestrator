@@ -6,12 +6,20 @@ import {
   useToast,
   IconButton,
   useMediaQuery,
+  Modal,
+  ModalOverlay,
+  ModalContent,
+  ModalHeader,
+  ModalBody,
+  ModalCloseButton,
 } from '@chakra-ui/react';
 import { ChevronLeftIcon, ChevronRightIcon } from '@chakra-ui/icons';
 import { applyNodeChanges, applyEdgeChanges, addEdge } from '@xyflow/react';
 import FlowCanvas from '../components/flow/FlowCanvas';
 import NodesPanel from '../components/NodesPanel';
 import Header from '../components/ui/header/Header';
+import BranchComparison from '../components/BranchComparison';
+import BranchDiffCanvas from '../components/BranchDiffCanvas';
 import { mockWorkflows, getAllWorkflows, getBranches, getLatestVersion } from '../data/mockWorkflows';
 
 // Function to validate the flow
@@ -76,6 +84,11 @@ export default function App() {
   const [selectedVersionIndex, setSelectedVersionIndex] = useState(0);
   const [currentWorkflow, setCurrentWorkflow] = useState(null);
   const [workflowVersions, setWorkflowVersions] = useState([]);
+
+  // Compare mode state
+  const [isComparing, setIsComparing] = useState(false);
+  const [showCompareModal, setShowCompareModal] = useState(false);
+  const [comparisonData, setComparisonData] = useState(null);
 
   // Sidebar fixed width for desktop
   const sidebarDesktopWidth = 320; // px
@@ -230,6 +243,53 @@ export default function App() {
     setSelectedVersionIndex(versionIndex);
   }, []);
 
+  // Helper function to get workflow for a specific branch
+  const getWorkflowForBranch = useCallback((workflowId, branchTag) => {
+    const workflow = mockWorkflows[workflowId];
+    if (!workflow || !workflow.branches[branchTag]) return null;
+
+    const branchData = workflow.branches[branchTag];
+    const latestVersion = branchData.versions[branchData.versions.length - 1];
+    return latestVersion;
+  }, []);
+
+  // Handle compare button click
+  const handleCompare = useCallback(() => {
+    setShowCompareModal(true);
+  }, []);
+
+  // Handle comparison result
+  const handleComparisonResult = useCallback((result) => {
+    const { branchA, branchB, workflowA, workflowB, diff } = result;
+
+    // Convert workflows to ReactFlow format
+    const nodesA = convertToReactFlowNodes(workflowA.nodes);
+    const edgesA = convertToReactFlowEdges(workflowA.edges);
+    const nodesB = convertToReactFlowNodes(workflowB.nodes);
+    const edgesB = convertToReactFlowEdges(workflowB.edges);
+
+    setComparisonData({
+      branchA,
+      branchB,
+      workflowA,
+      workflowB,
+      nodesA,
+      edgesA,
+      nodesB,
+      edgesB,
+      diff
+    });
+
+    setIsComparing(true);
+    setShowCompareModal(false);
+  }, []);
+
+  // Exit compare mode
+  const handleExitCompare = useCallback(() => {
+    setIsComparing(false);
+    setComparisonData(null);
+  }, []);
+
   return (
     <Flex direction="column" height="100vh" width="100vw" bg="#f7f8fa" overflow="hidden">
       <Header
@@ -241,7 +301,27 @@ export default function App() {
         selectedBranch={selectedBranch}
         onBranchChange={handleBranchChange}
         workflowName={currentWorkflow?.metadata?.name}
+        onCompare={isComparing ? handleExitCompare : handleCompare}
+        isComparing={isComparing}
       />
+
+      {/* Branch Comparison Modal */}
+      <Modal isOpen={showCompareModal} onClose={() => setShowCompareModal(false)} size="md">
+        <ModalOverlay />
+        <ModalContent>
+          <ModalHeader>Compare Branches</ModalHeader>
+          <ModalCloseButton />
+          <ModalBody pb={6}>
+            <BranchComparison
+              branches={branches}
+              workflowId={selectedWorkflowId}
+              onCompare={handleComparisonResult}
+              onClose={() => setShowCompareModal(false)}
+              getWorkflowForBranch={getWorkflowForBranch}
+            />
+          </ModalBody>
+        </ModalContent>
+      </Modal>
 
       <Flex flex="1" mt="48px">
         {/* Main Canvas Area */}
@@ -251,15 +331,27 @@ export default function App() {
           onClick={handleNodeDeselect}
           style={{ cursor: 'default' }}
         >
-          <FlowCanvas
-            nodes={flowData.nodes}
-            edges={flowData.edges}
-            selectedNode={selectedNode}
-            setSelectedNode={setSelectedNode}
-            onNodesChange={handleNodesChange}
-            onEdgesChange={handleEdgesChange}
-            onConnect={handleConnect}
-          />
+          {!isComparing ? (
+            <FlowCanvas
+              nodes={flowData.nodes}
+              edges={flowData.edges}
+              selectedNode={selectedNode}
+              setSelectedNode={setSelectedNode}
+              onNodesChange={handleNodesChange}
+              onEdgesChange={handleEdgesChange}
+              onConnect={handleConnect}
+            />
+          ) : (
+            <BranchDiffCanvas
+              branchA={comparisonData?.branchA}
+              branchB={comparisonData?.branchB}
+              nodesA={comparisonData?.nodesA}
+              edgesA={comparisonData?.edgesA}
+              nodesB={comparisonData?.nodesB}
+              edgesB={comparisonData?.edgesB}
+              diff={comparisonData?.diff}
+            />
+          )}
         </Box>
 
         {/* Overlay for mobile when sidebar is open */}
@@ -347,6 +439,8 @@ export default function App() {
                 workflowVersions={workflowVersions}
                 selectedVersionIndex={selectedVersionIndex}
                 onVersionChange={handleVersionChange}
+                isComparing={isComparing}
+                comparisonData={comparisonData}
               />
             </Box>
           </Box>

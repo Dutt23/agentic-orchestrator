@@ -4,6 +4,7 @@ import SelectedNodeMessage from './SelectedNodeMessage';
 import NodeItem from './NodeItem';
 import CodeView from './CodeView';
 import VersionDiff from './VersionDiff';
+import DiffDetailsPanel from './DiffDetailsPanel';
 import nodeTypesData from '../data/nodeTypes.json';
 
 export default function NodesPanel({
@@ -13,7 +14,9 @@ export default function NodesPanel({
   currentWorkflow,
   workflowVersions = [],
   selectedVersionIndex = 0,
-  onVersionChange
+  onVersionChange,
+  isComparing = false,
+  comparisonData = null
 }) {
   const [nodeTypes, setNodeTypes] = useState([]);
 
@@ -42,11 +45,12 @@ export default function NodesPanel({
 
   return (
     <Box overflowY="auto" height="100%">
-      <Tabs size="sm" variant="enclosed" colorScheme="blue">
+      <Tabs size="sm" variant="enclosed" colorScheme="blue" defaultIndex={isComparing ? 3 : 0}>
         <TabList px={4} pt={2}>
           <Tab fontSize="xs">Nodes</Tab>
           <Tab fontSize="xs">Code</Tab>
           <Tab fontSize="xs">Versions</Tab>
+          {isComparing && <Tab fontSize="xs">Diff</Tab>}
         </TabList>
 
         <TabPanels>
@@ -86,6 +90,17 @@ export default function NodesPanel({
               onVersionChange={onVersionChange}
             />
           </TabPanel>
+
+          {/* Diff Tab (only visible in compare mode) */}
+          {isComparing && (
+            <TabPanel>
+              <DiffDetailsPanel
+                diff={comparisonData?.diff}
+                branchA={comparisonData?.branchA}
+                branchB={comparisonData?.branchB}
+              />
+            </TabPanel>
+          )}
         </TabPanels>
       </Tabs>
     </Box>

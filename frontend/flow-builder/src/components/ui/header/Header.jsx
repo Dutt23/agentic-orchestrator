@@ -1,4 +1,5 @@
-import { Box, Flex, Text, Select, HStack, Divider } from '@chakra-ui/react';
+import { Box, Flex, Text, Select, HStack, Divider, Button, IconButton, Tooltip } from '@chakra-ui/react';
+import { FiGitBranch } from 'react-icons/fi';
 import SaveButton from '../buttons/SaveButton';
 
 export default function Header({
@@ -9,7 +10,9 @@ export default function Header({
   branches = [],
   selectedBranch,
   onBranchChange,
-  workflowName
+  workflowName,
+  onCompare,
+  isComparing = false
 }) {
   return (
     <Box
@@ -79,9 +82,24 @@ export default function Header({
           )}
         </HStack>
 
-        <Box display="flex" alignItems="center" height="100%">
+        <HStack spacing={2}>
+          {/* Compare Button - Only show when workflow selected and has 2+ branches */}
+          {selectedWorkflowId && branches.length >= 2 && (
+            <Tooltip label="Compare branches" placement="bottom">
+              <Button
+                size="sm"
+                leftIcon={<FiGitBranch />}
+                variant={isComparing ? 'solid' : 'outline'}
+                colorScheme={isComparing ? 'purple' : 'gray'}
+                onClick={onCompare}
+              >
+                {isComparing ? 'Comparing' : 'Compare'}
+              </Button>
+            </Tooltip>
+          )}
+
           <SaveButton size="sm" onClick={onSave} />
-        </Box>
+        </HStack>
       </Flex>
     </Box>
   );
