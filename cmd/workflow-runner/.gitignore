@@ -1,0 +1,91 @@
+# Go executables
+workflow-runner
+workflow-runner.exe
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go test binary, built with `go test -c`
+*.test
+
+# Go coverage files
+*.out
+*.prof
+coverage.txt
+coverage.html
+
+# Go workspace file
+go.work
+
+# Go build artifacts
+/bin/
+/pkg/
+/vendor/
+
+# Test output and logs
+test_output.log
+*.log
+logs/
+*.log.*
+
+# E2E test artifacts
+/tmp/
+*.tmp
+*.temp
+
+# IDE - GoLand / IntelliJ
+.idea/
+*.iml
+*.iws
+*.ipr
+.idea_modules/
+
+# IDE - VSCode
+.vscode/
+*.code-workspace
+
+# IDE - Vim
+*.swp
+*.swo
+*~
+
+# OS specific
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+*.env
+
+# Debug files
+debug
+debug.test
+__debug_bin
+
+# Redis / Database
+*.db
+*.sqlite3
+*.rdb
+dump.rdb
+
+# Temporary test files
+*_test_temp*
+test_data/
+testdata/output/
+
+# Build directories
+build/
+dist/
+out/
+
+# Cache
+.cache/

@@ -1,0 +1,267 @@
+{
+  "simple_sequential": {
+    "description": "Simple A->B->C sequential workflow",
+    "nodes": [
+      {
+        "id": "fetch_data",
+        "type": "function",
+        "config": {
+          "function_name": "fetch_data",
+          "endpoint": "https://api.example.com/data"
+        },
+        "timeout_ms": 5000
+      },
+      {
+        "id": "transform",
+        "type": "transform",
+        "config": {
+          "transformation": "uppercase"
+        }
+      },
+      {
+        "id": "store",
+        "type": "function",
+        "config": {
+          "function_name": "store_result",
+          "destination": "database"
+        }
+      }
+    ],
+    "edges": [
+      {"from": "fetch_data", "to": "transform"},
+      {"from": "transform", "to": "store"}
+    ]
+  },
+
+  "parallel_fanout": {
+    "description": "A->(B,C)->D parallel execution with join",
+    "nodes": [
+      {
+        "id": "prepare",
+        "type": "function",
+        "config": {
+          "function_name": "prepare_data"
+        }
+      },
+      {
+        "id": "process_path1",
+        "type": "function",
+        "config": {
+          "function_name": "process_variant_1"
+        }
+      },
+      {
+        "id": "process_path2",
+        "type": "function",
+        "config": {
+          "function_name": "process_variant_2"
+        }
+      },
+      {
+        "id": "merge_results",
+        "type": "aggregate",
+        "config": {
+          "strategy": "merge"
+        }
+      }
+    ],
+    "edges": [
+      {"from": "prepare", "to": "process_path1"},
+      {"from": "prepare", "to": "process_path2"},
+      {"from": "process_path1", "to": "merge_results"},
+      {"from": "process_path2", "to": "merge_results"}
+    ]
+  },
+
+  "conditional_branching": {
+    "description": "Workflow with conditional branching based on node output",
+    "nodes": [
+      {
+        "id": "fetch_score",
+        "type": "http",
+        "config": {
+          "method": "GET",
+          "url": "https://api.example.com/score"
+        }
+      },
+      {
+        "id": "evaluate",
+        "type": "conditional",
+        "config": {
+          "evaluation_field": "score"
+        }
+      },
+      {
+        "id": "high_quality_path",
+        "type": "function",
+        "config": {
+          "function_name": "premium_processing"
+        }
+      },
+      {
+        "id": "low_quality_path",
+        "type": "function",
+        "config": {
+          "function_name": "basic_processing"
+        }
+      },
+      {
+        "id": "finalize",
+        "type": "function",
+        "config": {
+          "function_name": "finalize_result"
+        }
+      }
+    ],
+    "edges": [
+      {"from": "fetch_score", "to": "evaluate"},
+      {
+        "from": "evaluate",
+        "to": "high_quality_path",
+        "condition": "output.score >= 80"
+      },
+      {
+        "from": "evaluate",
+        "to": "low_quality_path",
+        "condition": "output.score < 80"
+      },
+      {"from": "high_quality_path", "to": "finalize"},
+      {"from": "low_quality_path", "to": "finalize"}
+    ]
+  },
+
+  "loop_workflow": {
+    "description": "Workflow with loop for retrying failed operations",
+    "nodes": [
+      {
+        "id": "start",
+        "type": "function",
+        "config": {
+          "function_name": "initialize"
+        }
+      },
+      {
+        "id": "retry_fetch",
+        "type": "loop",
+        "config": {
+          "function_name": "fetch_with_retry",
+          "max_iterations": 5,
+          "loop_back_to": "retry_fetch",
+          "condition": "output.status != 'success'",
+          "break_path": ["success_handler"],
+          "timeout_path": ["failure_handler"]
+        }
+      },
+      {
+        "id": "success_handler",
+        "type": "function",
+        "config": {
+          "function_name": "handle_success"
+        }
+      },
+      {
+        "id": "failure_handler",
+        "type": "function",
+        "config": {
+          "function_name": "handle_failure"
+        }
+      }
+    ],
+    "edges": [
+      {"from": "start", "to": "retry_fetch"}
+    ]
+  },
+
+  "complex_workflow": {
+    "description": "Complex workflow combining parallel, conditional, and aggregation",
+    "nodes": [
+      {
+        "id": "load_config",
+        "type": "function",
+        "config": {
+          "function_name": "load_workflow_config"
+        }
+      },
+      {
+        "id": "fetch_data_source1",
+        "type": "http",
+        "config": {
+          "url": "https://source1.example.com/data"
+        }
+      },
+      {
+        "id": "fetch_data_source2",
+        "type": "http",
+        "config": {
+          "url": "https://source2.example.com/data"
+        }
+      },
+      {
+        "id": "validate",
+        "type": "conditional",
+        "config": {
+          "validation_rules": ["schema", "completeness"]
+        }
+      },
+      {
+        "id": "transform_valid",
+        "type": "transform",
+        "config": {
+          "transformation": "normalize"
+        }
+      },
+      {
+        "id": "handle_invalid",
+        "type": "function",
+        "config": {
+          "function_name": "log_validation_error"
+        }
+      },
+      {
+        "id": "aggregate_results",
+        "type": "aggregate",
+        "config": {
+          "strategy": "union"
+        }
+      },
+      {
+        "id": "filter_results",
+        "type": "filter",
+        "config": {
+          "filter_expression": "value.score > 50"
+        }
+      },
+      {
+        "id": "store_final",
+        "type": "function",
+        "config": {
+          "function_name": "store_to_database"
+        }
+      }
+    ],
+    "edges": [
+      {"from": "load_config", "to": "fetch_data_source1"},
+      {"from": "load_config", "to": "fetch_data_source2"},
+      {"from": "fetch_data_source1", "to": "validate"},
+      {"from": "fetch_data_source2", "to": "validate"},
+      {
+        "from": "validate",
+        "to": "transform_valid",
+        "condition": "output.valid == true"
+      },
+      {
+        "from": "validate",
+        "to": "handle_invalid",
+        "condition": "output.valid == false"
+      },
+      {"from": "transform_valid", "to": "aggregate_results"},
+      {"from": "aggregate_results", "to": "filter_results"},
+      {"from": "filter_results", "to": "store_final"}
+    ],
+    "metadata": {
+      "name": "Complex Data Processing Pipeline",
+      "version": "1.0.0",
+      "tags": ["production", "data-processing"]
+    }
+  }
+}
