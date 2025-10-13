@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
 import {
   Flex,
   Box,
@@ -12,8 +13,11 @@ import {
   ModalHeader,
   ModalBody,
   ModalCloseButton,
+  Button,
+  HStack,
 } from '@chakra-ui/react';
 import { ChevronLeftIcon, ChevronRightIcon } from '@chakra-ui/icons';
+import { FiArrowLeft } from 'react-icons/fi';
 import { applyNodeChanges, applyEdgeChanges, addEdge } from '@xyflow/react';
 import FlowCanvas from '../components/flow/FlowCanvas';
 import NodesPanel from '../components/NodesPanel';
@@ -23,6 +27,7 @@ import BranchDiffCanvas from '../components/BranchDiffCanvas';
 import BranchDiffOverlay from '../components/BranchDiffOverlay';
 import { mockWorkflows, getAllWorkflows, getBranches, getLatestVersion } from '../data/mockWorkflows';
 import { applyDiffColorsToNodes, applyDiffColorsToEdges } from '../utils/workflowDiff';
+import { getWorkflow } from '../services/api';
 
 // Function to validate the flow
 const validateFlow = (nodes, edges) => {
@@ -73,9 +78,14 @@ const convertToReactFlowEdges = (workflowEdges) => {
 };
 
 export default function App() {
+  // Routing
+  const { owner, tag } = useParams();
+  const navigate = useNavigate();
+
+  // Component state
   const [selectedNode, setSelectedNode] = useState(null);
   const [flowData, setFlowData] = useState({ nodes: [], edges: [] });
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
   const [isPanelOpen, setIsPanelOpen] = useState(true);
   const [isMobile] = useMediaQuery('(max-width: 768px)');
   const toast = useToast();
@@ -86,6 +96,7 @@ export default function App() {
   const [selectedVersionIndex, setSelectedVersionIndex] = useState(0);
   const [currentWorkflow, setCurrentWorkflow] = useState(null);
   const [workflowVersions, setWorkflowVersions] = useState([]);
+  const [useMockData, setUseMockData] = useState(false); // Fallback to mock data if API fails
 
   // Compare mode state
   const [isComparing, setIsComparing] = useState(false);
@@ -102,8 +113,64 @@ export default function App() {
     }
   }, [selectedNode, isMobile]);
 
-  // Load workflow when selection changes
+  // Load workflow from API when URL params change
   useEffect(() => {
+    // If we have URL params (owner and tag), try to load from API
+    if (owner && tag) {
+      const loadFromAPI = async () => {
+        setIsLoading(true);
+        try {
+          const data = await getWorkflow(tag, true);
+
+          // Set workflow data from API response
+          if (data.workflow) {
+            const workflow = data.workflow;
+            setSelectedWorkflowId(tag);
+            setSelectedBranch(tag);
+            setCurrentWorkflow(workflow);
+
+            // Convert to ReactFlow format
+            const reactFlowNodes = convertToReactFlowNodes(workflow.nodes || []);
+            const reactFlowEdges = convertToReactFlowEdges(workflow.edges || []);
+
+            setFlowData({
+              nodes: reactFlowNodes,
+              edges: reactFlowEdges
+            });
+
+            setUseMockData(false);
+          }
+        } catch (error) {
+          console.error('Failed to load workflow from API:', error);
+
+          // Fallback to mock data
+          toast({
+            title: 'API Unavailable',
+            description: 'Using mock data instead',
+            status: 'warning',
+            duration: 3000,
+            isClosable: true,
+          });
+
+          setUseMockData(true);
+        } finally {
+          setIsLoading(false);
+        }
+      };
+
+      loadFromAPI();
+      return; // Don't execute the mock data loading below
+    } else {
+      // No URL params, use mock data
+      setUseMockData(true);
+      setIsLoading(false);
+    }
+  }, [owner, tag, toast]);
+
+  // Load workflow when selection changes (mock data only)
+  useEffect(() => {
+    if (!useMockData) return; // Skip if using API data
+
     if (!selectedWorkflowId) {
       setFlowData({ nodes: [], edges: [] });
       setCurrentWorkflow(null);
@@ -299,8 +366,31 @@ export default function App() {
     setComparisonData(null);
   }, []);
 
+  const handleBackToList = () => {
+    navigate('/');
+  };
+
   return (
     <Flex direction="column" height="100vh" width="100vw" bg="#f7f8fa" overflow="hidden">
+      {/* Back button - only show if we have URL params (came from list) */}
+      {owner && tag && (
+        <Box
+          position="absolute"
+          top="8px"
+          left="8px"
+          zIndex={20}
+        >
+          <Button
+            size="sm"
+            leftIcon={<FiArrowLeft />}
+            onClick={handleBackToList}
+            variant="ghost"
+          >
+            Back to List
+          </Button>
+        </Box>
+      )}
+
       <Header
         onSave={handleSave}
         workflows={allWorkflows}
