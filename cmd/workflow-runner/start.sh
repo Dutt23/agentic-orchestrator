@@ -25,6 +25,15 @@ echo "[${SERVICE_NAME}] Starting..."
 echo "[${SERVICE_NAME}] Environment: ${ENVIRONMENT:-development}"
 echo "[${SERVICE_NAME}] Orchestrator URL: ${ORCHESTRATOR_URL}"
 
-# Run the service
+# Build the service before running
+echo "[${SERVICE_NAME}] Building..."
 cd "${PROJECT_ROOT}"
+mkdir -p bin
+go build -o "bin/${SERVICE_NAME}" "./cmd/${SERVICE_NAME}" || {
+    echo "[${SERVICE_NAME}] Build failed!"
+    exit 1
+}
+echo "[${SERVICE_NAME}] Build complete"
+
+# Run the service
 exec "./bin/${SERVICE_NAME}" "$@"

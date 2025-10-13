@@ -128,6 +128,22 @@ export async function deleteWorkflow(tag) {
   });
 }
 
+/**
+ * Run a workflow
+ * @param {string} tag - Workflow tag name to run
+ * @param {Object} inputs - Input parameters for the workflow
+ * @returns {Promise<Object>} Run details including run_id
+ */
+export async function runWorkflow(tag, inputs = {}) {
+  const encodedTag = encodeURIComponent(tag);
+  return await apiRequest(`/workflows/${encodedTag}/execute`, {
+    method: 'POST',
+    body: JSON.stringify({
+      inputs: inputs,
+    }),
+  });
+}
+
 export default {
   listWorkflows,
   getWorkflow,
@@ -135,4 +151,5 @@ export default {
   createWorkflow,
   updateWorkflow,
   deleteWorkflow,
+  runWorkflow,
 };

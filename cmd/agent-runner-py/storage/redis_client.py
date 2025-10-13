@@ -85,17 +85,22 @@ class RedisClient:
 
             token = json.loads(token_json)
 
+            # Log the raw token received from coordinator for debugging
+            logger.info(f"Raw token from coordinator: {json.dumps(token, indent=2)}")
+            logger.info(f"Token metadata: {token.get('metadata', 'NO METADATA FIELD')}")
+
             # Convert token to job format expected by main.py
             job = {
                 'job_id': token.get('id'),
                 'run_id': token.get('run_id'),
                 'node_id': token.get('to_node'),
-                'prompt': token.get('metadata', {}).get('prompt', ''),
+                'task': token.get('metadata', {}).get('task', ''),
                 'context': token.get('metadata', {}).get('context', {}),
                 'token': token,  # Store full token for later
                 'message_id': message_id  # Store for ACK
             }
 
+            logger.info(f"Converted job: job_id={job.get('job_id')}, task='{job.get('task')}'")
             logger.info(f"Received job from stream: {job.get('job_id')}")
             return job
 

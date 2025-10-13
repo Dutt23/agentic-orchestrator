@@ -4,6 +4,9 @@
 
 set -e
 
+# Change to script directory
+cd "$(dirname "$0")"
+
 # Configuration
 export REDIS_HOST="${REDIS_HOST:-localhost}"
 export REDIS_PORT="${REDIS_PORT:-6379}"

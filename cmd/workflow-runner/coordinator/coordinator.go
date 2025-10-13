@@ -121,7 +121,59 @@ func (c *Coordinator) handleCompletion(ctx context.Context, signal *CompletionSi
 		c.logger.Error("node execution failed",
 			"run_id", signal.RunID,
 			"node_id", signal.NodeID,
-			"result_ref", signal.ResultRef)
+			"result_ref", signal.ResultRef,
+			"error", signal.Metadata)
+
+		// Store failure information in context for debugging and retry logic
+		failureData := map[string]interface{}{
+			"status":     "failed",
+			"node_id":    signal.NodeID,
+			"error":      signal.Metadata,
+			"timestamp":  time.Now().Unix(),
+			"retryable":  signal.Metadata["retryable"],
+			"error_type": signal.Metadata["error_type"],
+		}
+
+		// Marshal to JSON for storage
+		failureJSON, err := json.Marshal(failureData)
+		if err != nil {
+			c.logger.Error("failed to marshal failure data",
+				"run_id", signal.RunID,
+				"node_id", signal.NodeID,
+				"error", err)
+		} else {
+			// Store in Redis context so it can be retrieved later
+			failureKey := fmt.Sprintf("%s:failure", signal.NodeID)
+			if err := c.sdk.StoreContext(ctx, signal.RunID, failureKey, string(failureJSON)); err != nil {
+				c.logger.Error("failed to store failure context",
+					"run_id", signal.RunID,
+					"node_id", signal.NodeID,
+					"error", err)
+			}
+		}
+
+		// Publish node_failed event
+		if ir.Metadata != nil {
+			if username, ok := ir.Metadata["username"].(string); ok {
+				c.publishWorkflowEvent(ctx, username, map[string]interface{}{
+					"type":      "node_failed",
+					"run_id":    signal.RunID,
+					"node_id":   signal.NodeID,
+					"error":     signal.Metadata,
+					"timestamp": time.Now().Unix(),
+				})
+
+				// Also publish workflow_failed event to indicate the entire workflow failed
+				c.publishWorkflowEvent(ctx, username, map[string]interface{}{
+					"type":      "workflow_failed",
+					"run_id":    signal.RunID,
+					"node_id":   signal.NodeID,
+					"error":     signal.Metadata,
+					"timestamp": time.Now().Unix(),
+				})
+			}
+		}
+
 		// TODO: Handle failure (DLQ, retry, etc.)
 		return
 	}
@@ -192,10 +244,23 @@ func (c *Coordinator) handleCompletion(ctx context.Context, signal *CompletionSi
 			}
 
 			// Load node config (inline or CAS)
+			c.logger.Info("loading node config",
+				"run_id", signal.RunID,
+				"node_id", nextNodeID,
+				"node_type", nextNode.Type,
+				"has_inline_config", len(nextNode.Config) > 0,
+				"has_config_ref", nextNode.ConfigRef != "",
+				"inline_config", nextNode.Config,
+				"config_ref", nextNode.ConfigRef)
+
 			var config map[string]interface{}
+			c.logger.Info("config is ehre",
+				"config", nextNode.Config)
 			if len(nextNode.Config) > 0 {
 				config = nextNode.Config
+				c.logger.Info("using inline config", "config", config)
 			} else if nextNode.ConfigRef != "" {
+				c.logger.Info("loading config from CAS", "config_ref", nextNode.ConfigRef)
 				configData, err := c.sdk.LoadConfig(ctx, nextNode.ConfigRef)
 				if err != nil {
 					c.logger.Error("failed to load config from CAS",
@@ -208,15 +273,26 @@ func (c *Coordinator) handleCompletion(ctx context.Context, signal *CompletionSi
 				// Convert to map
 				if configMap, ok := configData.(map[string]interface{}); ok {
 					config = configMap
+					c.logger.Info("loaded config from CAS", "config", config)
 				} else {
 					c.logger.Error("config is not a map",
 						"run_id", signal.RunID,
 						"node_id", nextNodeID)
 					continue
 				}
+			} else {
+				c.logger.Warn("node has no config (neither inline nor CAS ref)",
+					"run_id", signal.RunID,
+					"node_id", nextNodeID)
 			}
 
 			// Resolve variables in config (e.g., $nodes.node_id)
+			c.logger.Info("about to resolve config",
+				"run_id", signal.RunID,
+				"node_id", nextNodeID,
+				"config_is_nil", config == nil,
+				"config", config)
+
 			var resolvedConfig map[string]interface{}
 			if config != nil {
 				var err error
@@ -229,10 +305,15 @@ func (c *Coordinator) handleCompletion(ctx context.Context, signal *CompletionSi
 					// Continue with unresolved config as fallback
 					resolvedConfig = config
 				} else {
-					c.logger.Debug("resolved config variables",
+					c.logger.Info("resolved config variables successfully",
 						"run_id", signal.RunID,
-						"node_id", nextNodeID)
+						"node_id", nextNodeID,
+						"resolvedConfig", resolvedConfig)
 				}
+			} else {
+				c.logger.Warn("config is nil, cannot resolve - resolvedConfig will be nil",
+					"run_id", signal.RunID,
+					"node_id", nextNodeID)
 			}
 
 			// Get appropriate stream for node type
@@ -458,7 +539,18 @@ func (c *Coordinator) handleBranch(ctx context.Context, signal *CompletionSignal
 
 // publishToken publishes a token to a Redis stream with resolved config
 func (c *Coordinator) publishToken(ctx context.Context, stream, runID, fromNode, toNode, payloadRef string, resolvedConfig map[string]interface{}) error {
+	// Generate unique job ID for this token
+	jobID := fmt.Sprintf("%s-%s-%s", runID, toNode, time.Now().UnixNano())
+
+	// Debug log the resolvedConfig
+	c.logger.Info("publishToken called",
+		"run_id", runID,
+		"to_node", toNode,
+		"resolvedConfig_nil", resolvedConfig == nil,
+		"resolvedConfig", resolvedConfig)
+
 	token := map[string]interface{}{
+		"id":          jobID, // Add job ID for agent-runner-py
 		"run_id":      runID,
 		"from_node":   fromNode,
 		"to_node":     toNode,
@@ -469,9 +561,40 @@ func (c *Coordinator) publishToken(ctx context.Context, stream, runID, fromNode,
 	// Include resolved config if available
 	if resolvedConfig != nil {
 		token["config"] = resolvedConfig
+		c.logger.Info("added config to token", "config", resolvedConfig)
+	} else {
+		c.logger.Warn("resolvedConfig is nil, skipping config and metadata")
+	}
+
+	// Extract task from config and add to metadata for agent-runner-py
+	// Agent runner expects metadata.task
+	// Support both "task" (new) and "prompt" (old) for backward compatibility
+	metadata := make(map[string]interface{})
+	if resolvedConfig != nil {
+		// Try "task" first (new field name)
+		if task, ok := resolvedConfig["task"]; ok {
+			metadata["task"] = task
+		} else if prompt, ok := resolvedConfig["prompt"]; ok {
+			// Fall back to "prompt" for backward compatibility
+			metadata["task"] = prompt
+		}
+		// Also pass the entire workflow context if available
+		if workflow, ok := resolvedConfig["workflow"]; ok {
+			metadata["workflow"] = workflow
+		}
+	}
+	if len(metadata) > 0 {
+		token["metadata"] = metadata
+		c.logger.Info("added metadata to token",
+			"metadata", metadata,
+			"task_value", metadata["task"])
+	} else {
+		c.logger.Warn("metadata is empty, not adding to token",
+			"resolvedConfig_nil", resolvedConfig == nil)
 	}
 
 	tokenJSON, err := json.Marshal(token)
+	c.logger.Info("marshaled token", "token_json", string(tokenJSON))
 	if err != nil {
 		return fmt.Errorf("failed to marshal token: %w", err)
 	}
@@ -488,6 +611,12 @@ func (c *Coordinator) publishToken(ctx context.Context, stream, runID, fromNode,
 	if err != nil {
 		return fmt.Errorf("failed to add to stream: %w", err)
 	}
+
+	c.logger.Debug("published token with job_id",
+		"run_id", runID,
+		"job_id", jobID,
+		"to_node", toNode,
+		"has_task", metadata["task"] != nil)
 
 	return nil
 }

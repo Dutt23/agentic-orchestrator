@@ -135,14 +135,28 @@ class AgentService:
         Args:
             job: Job dictionary from Redis queue
         """
+        # Log the received job for debugging
+        logger.info(f"Received job data: {json.dumps(job, indent=2)}")
+
         job_id = job.get('job_id')
         run_id = job.get('run_id')
         node_id = job.get('node_id')
-        prompt = job.get('prompt')
+        task = job.get('task')
         context = job.get('context', {})
 
-        if not all([job_id, run_id, node_id, prompt]):
-            logger.error(f"Invalid job: missing required fields")
+        # Validate required fields and report which ones are missing
+        missing_fields = []
+        if not job_id:
+            missing_fields.append('job_id')
+        if not run_id:
+            missing_fields.append('run_id')
+        if not node_id:
+            missing_fields.append('node_id')
+        if not task:
+            missing_fields.append('task')
+
+        if missing_fields:
+            logger.error(f"Invalid job: missing required fields: {', '.join(missing_fields)}")
             return
 
         try:
@@ -155,7 +169,7 @@ class AgentService:
                 logger.info(f"Job includes workflow with {len(job['current_workflow'].get('nodes', []))} nodes")
 
             # Classify intent before calling LLM
-            intent_result = self.intent_classifier.classify(prompt, enhanced_context)
+            intent_result = self.intent_classifier.classify(task, enhanced_context)
             logger.info(f"Intent classified: {intent_result['intent']} "
                        f"(confidence: {intent_result['confidence']:.2f}) - "
                        f"{intent_result['reasoning']}")
@@ -165,17 +179,24 @@ class AgentService:
 
             # Call LLM with tools
             logger.info(f"Calling LLM for job {job_id}")
-            llm_result = self.llm.chat(prompt, enhanced_context)
+            llm_result = self.llm.chat(task, enhanced_context)
 
             tool_calls = llm_result.get('tool_calls', [])
             logger.info(f"LLM returned {len(tool_calls)} tool calls")
 
-            # Execute tool calls
+            # Handle cases with or without tool calls
             if not tool_calls:
-                raise ValueError("LLM did not return any tool calls")
-
-            # Validate tool choice matches intent (log warning if mismatch)
-            if tool_calls:
+                # No tool calls - LLM responded without needing to execute tools
+                logger.info("LLM did not call any tools - storing text response")
+                result_data = {
+                    "status": "completed",
+                    "type": "text_response",
+                    "message": llm_result.get('message', 'No response message'),
+                    "finish_reason": llm_result.get('finish_reason'),
+                    "note": "LLM completed without calling any tools"
+                }
+            else:
+                # Validate tool choice matches intent (log warning if mismatch)
                 chosen_tool = tool_calls[0].get('function', {}).get('name')
                 expected_intent = intent_result['intent']
 
@@ -184,10 +205,10 @@ class AgentService:
                 elif expected_intent == 'execute' and chosen_tool != 'execute_pipeline':
                     logger.warning(f"Intent mismatch: classified as 'execute' but LLM chose '{chosen_tool}'")
 
-            # For MVP, we'll execute the first tool call
-            # In production, we might need to handle multiple tool calls in sequence
-            tool_call = tool_calls[0]
-            result_data = self._execute_tool(job, tool_call)
+                # For MVP, we'll execute the first tool call
+                # In production, we might need to handle multiple tool calls in sequence
+                tool_call = tool_calls[0]
+                result_data = self._execute_tool(job, tool_call)
 
             # Store result in database
             result_ref = self._store_result(
@@ -427,11 +448,11 @@ class AgentService:
             }
 
         @app.post("/test/chat")
-        def test_chat(prompt: str):
+        def test_chat(task: str):
             """Test chat endpoint for manual testing.
 
             Args:
-                prompt: Test prompt to send to LLM
+                task: Test task to send to LLM
 
             Returns:
                 LLM response with tool calls
@@ -440,7 +461,7 @@ class AgentService:
                 raise HTTPException(status_code=503, message="Service not running")
 
             try:
-                result = self.llm.chat(prompt, context={"session_id": "test"})
+                result = self.llm.chat(task, context={"session_id": "test"})
                 return {
                     "status": "success",
                     "result": result

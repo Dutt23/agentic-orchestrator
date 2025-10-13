@@ -16,13 +16,13 @@ import (
 
 // RunRequestConsumer listens to wf.run.requests stream and starts workflow execution
 type RunRequestConsumer struct {
-	redis            *redis.Client
-	sdk              *sdk.SDK
-	logger           sdk.Logger
-	stream           string
-	consumerGroup    string
-	consumerName     string
-	orchestratorURL  string
+	redis           *redis.Client
+	sdk             *sdk.SDK
+	logger          sdk.Logger
+	stream          string
+	consumerGroup   string
+	consumerName    string
+	orchestratorURL string
 }
 
 // RunRequest represents a workflow execution request
@@ -147,12 +147,13 @@ func (c *RunRequestConsumer) handleMessage(ctx context.Context, message redis.XM
 		return fmt.Errorf("failed to fetch workflow: %w", err)
 	}
 
+	c.logger.Info("wf", workflow)
 	// Compile workflow to IR
 	ir, err := compiler.CompileWorkflowSchema(workflow, c.sdk.CASClient)
 	if err != nil {
 		return fmt.Errorf("failed to compile workflow: %w", err)
 	}
-
+	c.logger.Info("compiled", ir)
 	// Store username in IR metadata for event publishing
 	if ir.Metadata == nil {
 		ir.Metadata = make(map[string]interface{})
@@ -189,12 +190,53 @@ func (c *RunRequestConsumer) handleMessage(ctx context.Context, message redis.XM
 	// Emit initial tokens for entry nodes
 	for _, nodeID := range entryNodes {
 		node := ir.Nodes[nodeID]
+
+		// Build metadata with task field from node config
+		metadata := make(map[string]interface{})
+
+		// Get node config (inline or from CAS)
+		var nodeConfig map[string]interface{}
+		if len(node.Config) > 0 {
+			nodeConfig = node.Config
+		} else if node.ConfigRef != "" {
+			// Load from CAS if needed
+			configData, err := c.sdk.LoadConfig(ctx, node.ConfigRef)
+			if err != nil {
+				c.logger.Error("failed to load config from CAS for initial token",
+					"node_id", nodeID,
+					"config_ref", node.ConfigRef,
+					"error", err)
+			} else if configMap, ok := configData.(map[string]interface{}); ok {
+				nodeConfig = configMap
+			}
+		}
+
+		// Extract task from node config (support both "task" and "prompt")
+		if nodeConfig != nil {
+			if task, ok := nodeConfig["task"]; ok {
+				metadata["task"] = task
+			} else if prompt, ok := nodeConfig["prompt"]; ok {
+				metadata["task"] = prompt
+			}
+		}
+
+		// Merge with run inputs
+		for k, v := range runRequest.Inputs {
+			metadata[k] = v
+		}
+
+		c.logger.Info("emitting initial token",
+			"run_id", runRequest.RunID,
+			"node_id", nodeID,
+			"has_task", metadata["task"] != nil,
+			"metadata", metadata)
+
 		token := sdk.Token{
 			ID:       uuid.New().String()[:12],
 			RunID:    runRequest.RunID,
 			FromNode: "",
 			ToNode:   nodeID,
-			Metadata: runRequest.Inputs,
+			Metadata: metadata,
 		}
 
 		tokenJSON, err := json.Marshal(token)

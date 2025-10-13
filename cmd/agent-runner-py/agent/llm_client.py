@@ -22,8 +22,8 @@ class LLMClient:
         """
         self.config = config
         self.client = OpenAI()  # Uses OPENAI_API_KEY env var
-        self.model = config.get('model', 'gpt-4o')
-        self.temperature = config.get('temperature', 0.1)
+        self.model = 'gpt-5-mini'
+        self.temperature = 1
         self.max_tokens = config.get('max_tokens', 4000)
         self.timeout = config.get('timeout_sec', 30)
 
@@ -57,12 +57,12 @@ class LLMClient:
             logger.info(f"Calling OpenAI with prompt: {user_prompt[:100]}...")
 
             response = self.client.chat.completions.create(
-                model=self.model,
+                model='gpt-5-mini',
                 messages=messages,
                 tools=self.tools,
                 tool_choice="auto",
                 temperature=self.temperature,
-                max_tokens=self.max_tokens,
+                max_completion_tokens=self.max_tokens,
                 timeout=self.timeout
             )
 
@@ -93,6 +93,7 @@ class LLMClient:
 
             result = {
                 "tool_calls": tool_calls,
+                "message": message.content if message.content else "",
                 "tokens_used": tokens_used,
                 "cache_hit": cache_hit,
                 "execution_time_ms": execution_time,

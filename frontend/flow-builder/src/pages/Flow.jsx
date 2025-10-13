@@ -25,9 +25,11 @@ import Header from '../components/ui/header/Header';
 import BranchComparison from '../components/BranchComparison';
 import BranchDiffCanvas from '../components/BranchDiffCanvas';
 import BranchDiffOverlay from '../components/BranchDiffOverlay';
+import ExecutionDrawer from '../components/workflow/ExecutionDrawer';
 import { mockWorkflows, getAllWorkflows, getBranches, getLatestVersion } from '../data/mockWorkflows';
 import { applyDiffColorsToNodes, applyDiffColorsToEdges, computeWorkflowDiff } from '../utils/workflowDiff';
-import { getWorkflow, getWorkflowVersion, updateWorkflow } from '../services/api';
+import { getWorkflow, getWorkflowVersion, updateWorkflow, runWorkflow } from '../services/api';
+import { useWorkflowWebSocket } from '../hooks/useWorkflowWebSocket';
 
 // Function to validate the flow
 const validateFlow = (nodes, edges) => {
@@ -224,6 +226,42 @@ export default function App() {
   const [isComparing, setIsComparing] = useState(false);
   const [showCompareModal, setShowCompareModal] = useState(false);
   const [comparisonData, setComparisonData] = useState(null);
+
+  // Workflow execution state
+  const [isExecutionDrawerOpen, setIsExecutionDrawerOpen] = useState(false);
+  const [isRunning, setIsRunning] = useState(false);
+  const [executionEvents, setExecutionEvents] = useState([]);
+  const [executionError, setExecutionError] = useState(null);
+  const username = import.meta.env.VITE_DEV_USERNAME || 'test-user';
+
+  // Memoized WebSocket event handler to prevent reconnection loop
+  // No dependencies - all state updates are functional
+  const handleWebSocketEvent = useCallback((event) => {
+    console.log('[Flow] WebSocket event received:', event);
+
+    // Use functional state update to avoid dependency on executionEvents
+    setExecutionEvents((prev) => [...prev, event]);
+
+    // Check if workflow completed
+    if (event.type === 'workflow_completed') {
+      setIsRunning(false);
+      // Show toast notification (toast function should be stable from Chakra)
+      // If toast is unstable, we accept it as this is a rare event
+      toast({
+        title: 'Workflow completed',
+        status: 'success',
+        duration: 3000,
+        isClosable: true,
+        position: 'top-right',
+      });
+    }
+  }, []); // No dependencies - prevents callback from changing
+
+  // WebSocket hook for real-time execution events
+  const { isConnected, connectionError, reconnect, disconnect } = useWorkflowWebSocket(
+    username,
+    handleWebSocketEvent
+  );
 
   // Sidebar fixed width for desktop
   const sidebarDesktopWidth = 320; // px
@@ -687,6 +725,59 @@ export default function App() {
     navigate('/');
   };
 
+  // Handle run button click - opens execution drawer
+  const handleRun = useCallback(() => {
+    // Reset execution state
+    setExecutionEvents([]);
+    setExecutionError(null);
+    setIsExecutionDrawerOpen(true);
+  }, []);
+
+  // Handle workflow execution with inputs
+  const handleRunWorkflow = useCallback(async (inputs) => {
+    if (!tag) {
+      toast({
+        title: 'No workflow selected',
+        description: 'Please select a workflow to run',
+        status: 'error',
+        duration: 3000,
+        isClosable: true,
+        position: 'top-right',
+      });
+      return;
+    }
+
+    setIsRunning(true);
+    setExecutionError(null);
+
+    try {
+      const result = await runWorkflow(tag, inputs);
+      console.log('[Flow] Workflow started:', result);
+
+      toast({
+        title: 'Workflow started',
+        description: `Run ID: ${result.run_id?.substring(0, 8)}...`,
+        status: 'success',
+        duration: 3000,
+        isClosable: true,
+        position: 'top-right',
+      });
+    } catch (error) {
+      console.error('[Flow] Failed to start workflow:', error);
+      setIsRunning(false);
+      setExecutionError(error.message || 'Failed to start workflow');
+
+      toast({
+        title: 'Failed to start workflow',
+        description: error.message,
+        status: 'error',
+        duration: 5000,
+        isClosable: true,
+        position: 'top-right',
+      });
+    }
+  }, [tag, toast]);
+
   // Get all workflows for selector (mock data only)
   const allWorkflows = useMockData ? getAllWorkflows() : [];
 
@@ -734,6 +825,8 @@ export default function App() {
         workflowName={currentWorkflow?.metadata?.name}
         onCompare={isComparing ? handleExitCompare : handleCompare}
         isComparing={isComparing}
+        onRun={handleRun}
+        isRunning={isRunning}
       />
 
       {/* Branch Comparison Modal */}
@@ -890,6 +983,18 @@ export default function App() {
           </Box>
         </Box>
       </Flex>
+
+      {/* Execution Drawer */}
+      <ExecutionDrawer
+        isOpen={isExecutionDrawerOpen}
+        onClose={() => setIsExecutionDrawerOpen(false)}
+        workflowTag={tag || selectedBranch}
+        onRunWorkflow={handleRunWorkflow}
+        isRunning={isRunning}
+        events={executionEvents}
+        connectionStatus={{ isConnected, error: connectionError }}
+        error={executionError}
+      />
     </Flex>
   );
 }

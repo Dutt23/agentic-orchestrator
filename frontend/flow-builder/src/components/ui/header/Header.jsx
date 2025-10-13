@@ -1,6 +1,7 @@
 import { Box, Flex, Text, Select, HStack, Divider, Button, IconButton, Tooltip } from '@chakra-ui/react';
 import { FiGitBranch } from 'react-icons/fi';
 import SaveButton from '../buttons/SaveButton';
+import RunButton from '../buttons/RunButton';
 
 export default function Header({
   onSave,
@@ -12,7 +13,9 @@ export default function Header({
   onBranchChange,
   workflowName,
   onCompare,
-  isComparing = false
+  isComparing = false,
+  onRun,
+  isRunning = false
 }) {
   return (
     <Box
@@ -96,6 +99,15 @@ export default function Header({
                 {isComparing ? 'Comparing' : 'Compare'}
               </Button>
             </Tooltip>
+          )}
+
+          {/* Run Button - Only show when workflow is selected */}
+          {selectedWorkflowId && onRun && (
+            <RunButton
+              onClick={onRun}
+              isRunning={isRunning}
+              size="sm"
+            />
           )}
 
           <SaveButton size="sm" onClick={onSave} />
