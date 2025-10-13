@@ -12,7 +12,7 @@ import {
   FiSearch,
   FiUser
 } from 'react-icons/fi';
-import { MdSmartToy } from 'react-icons/md';
+import { MdSmartToy, MdHttp } from 'react-icons/md';
 
 // Map orchestrator node types to icons and colors
 const nodeTypeConfig = {
@@ -25,6 +25,13 @@ const nodeTypeConfig = {
     label: 'Agent'
   },
   // Tools
+  http: {
+    icon: MdHttp,
+    color: 'teal',
+    bgColor: 'teal.50',
+    borderColor: 'teal.400',
+    label: 'HTTP'
+  },
   'file-search': {
     icon: FiSearch,
     color: 'blue',
@@ -172,18 +179,55 @@ export default function WorkflowNode({ data, selected }) {
         )}
       </Box>
 
-      {/* Source Handle */}
-      <Handle
-        type="source"
-        position={Position.Right}
-        style={{
-          background: `var(--chakra-colors-${config.color}-500)`,
-          width: '12px',
-          height: '12px',
-          border: '2px solid white',
-          right: '-6px'
-        }}
-      />
+      {/* Source Handle(s) */}
+      {data?.outputs && data.outputs.length > 1 ? (
+        // Multiple outputs (HITL, If/Else, etc.)
+        <>
+          {data.outputs.map((output, index) => {
+            const totalOutputs = data.outputs.length;
+            const offsetPercent = ((index + 1) / (totalOutputs + 1)) * 100;
+
+            return (
+              <Handle
+                key={output}
+                type="source"
+                position={Position.Right}
+                id={output}
+                style={{
+                  background: `var(--chakra-colors-${config.color}-500)`,
+                  width: '10px',
+                  height: '10px',
+                  border: '2px solid white',
+                  right: '-5px',
+                  top: `${offsetPercent}%`,
+                  transform: 'translateY(-50%)'
+                }}
+              />
+            );
+          })}
+          {/* Labels for outputs */}
+          <Box position="absolute" right="-60px" top="0" bottom="0" display="flex" flexDirection="column" justifyContent="space-around" py={2}>
+            {data.outputs.map((output) => (
+              <Text key={output} fontSize="9px" color="gray.500" fontWeight="medium" textTransform="capitalize">
+                {output}
+              </Text>
+            ))}
+          </Box>
+        </>
+      ) : (
+        // Single output (default)
+        <Handle
+          type="source"
+          position={Position.Right}
+          style={{
+            background: `var(--chakra-colors-${config.color}-500)`,
+            width: '12px',
+            height: '12px',
+            border: '2px solid white',
+            right: '-6px'
+          }}
+        />
+      )}
     </Box>
   );
 }

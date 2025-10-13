@@ -51,18 +51,37 @@ const validateFlow = (nodes, edges) => {
   return { isValid: true };
 };
 
+// Helper function to add outputs based on node type
+const getNodeOutputs = (nodeType) => {
+  const outputsMap = {
+    'conditional': ['if', 'else'],
+    'hitl': ['approve', 'reject']
+  };
+  return outputsMap[nodeType] || undefined;
+};
+
 // Helper function to convert workflow nodes to ReactFlow format
 const convertToReactFlowNodes = (workflowNodes) => {
-  return workflowNodes.map((node, index) => ({
-    id: node.id,
-    type: 'workflowNode',
-    position: { x: 250 * index, y: 150 },
-    data: {
+  return workflowNodes.map((node, index) => {
+    const outputs = getNodeOutputs(node.type);
+    const data = {
       type: node.type,
       config: node.config,
       id: node.id
+    };
+
+    // Add outputs array if this node type has multiple outputs
+    if (outputs) {
+      data.outputs = outputs;
     }
-  }));
+
+    return {
+      id: node.id,
+      type: 'workflowNode',
+      position: { x: 250 * index, y: 150 },
+      data
+    };
+  });
 };
 
 // Helper function to convert workflow edges to ReactFlow format

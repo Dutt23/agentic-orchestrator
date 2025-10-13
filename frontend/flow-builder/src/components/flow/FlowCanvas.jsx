@@ -93,13 +93,13 @@ function FlowCanvasInner({
     if (!nodeData) return;
 
     const { type, data } = JSON.parse(nodeData);
-    
+
     // Get the drop position relative to the React Flow container
     const position = reactFlowInstance.screenToFlowPosition({
       x: event.clientX - reactFlowBounds.left,
       y: event.clientY - reactFlowBounds.top,
     });
-    
+
     const newNode = {
       id: `${type}-${Date.now()}`,
       type: 'customNode',
@@ -133,6 +133,12 @@ function FlowCanvasInner({
     const handleKeyDown = (event) => {
       // Check if Delete or Backspace key is pressed
       if (event.key === 'Delete' || event.key === 'Backspace') {
+        // Don't interfere if user is typing in an input/textarea
+        const target = event.target;
+        if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+          return;
+        }
+
         // Prevent default browser behavior (like going back)
         event.preventDefault();
 
