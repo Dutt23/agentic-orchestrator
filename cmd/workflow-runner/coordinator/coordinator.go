@@ -319,8 +319,8 @@ func (c *Coordinator) handleCompletion(ctx context.Context, signal *CompletionSi
 			// Get appropriate stream for node type
 			stream := c.router.GetStreamForNodeType(nextNode.Type)
 
-			// Publish token to stream with resolved config
-			if err := c.publishToken(ctx, stream, signal.RunID, signal.NodeID, nextNodeID, signal.ResultRef, resolvedConfig); err != nil {
+			// Publish token to stream with resolved config and IR
+			if err := c.publishToken(ctx, stream, signal.RunID, signal.NodeID, nextNodeID, signal.ResultRef, resolvedConfig, ir); err != nil {
 				c.logger.Error("failed to publish token",
 					"run_id", signal.RunID,
 					"to_node", nextNodeID,

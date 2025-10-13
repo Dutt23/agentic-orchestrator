@@ -1,42 +1,23 @@
-"""Intent classification for user prompts."""
+"""Intent classification for user prompts using LLM."""
 import logging
 from typing import Dict, Any, List
-import re
+import json
+from openai import OpenAI
 
 logger = logging.getLogger(__name__)
 
 
 class IntentClassifier:
-    """Classifies user intent as 'patch' (permanent) or 'execute' (one-time)."""
-
-    # Keywords indicating permanent changes (patch lane)
-    PATCH_KEYWORDS = [
-        'always', 'whenever', 'every time', 'from now on',
-        'permanently', 'forever', 'each time', 'all the time',
-        'every', 'schedule', 'recurring', 'automated',
-        'automatically', 'continuous', 'ongoing'
-    ]
-
-    # Keywords indicating one-time operations (execute lane)
-    EXECUTE_KEYWORDS = [
-        'show', 'fetch', 'get', 'display', 'find',
-        'list', 'retrieve', 'search', 'look up',
-        'give me', 'tell me', 'what is', 'what are',
-        'how many', 'check', 'see', 'view'
-    ]
-
-    # Temporal indicators for patch
-    TEMPORAL_PATCH = [
-        'when', 'if', 'while', 'during', 'until',
-        'after', 'before', 'once'
-    ]
+    """Classifies user intent as 'patch' (permanent) or 'execute' (one-time) using LLM."""
 
     def __init__(self):
-        """Initialize intent classifier."""
-        logger.info("Intent classifier initialized")
+        """Initialize intent classifier with OpenAI client."""
+        self.client = OpenAI()  # Uses OPENAI_API_KEY env var
+        self.model = "gpt-4o-mini"  # Fast and cheap model for classification
+        logger.info("Intent classifier initialized with LLM")
 
     def classify(self, prompt: str, context: Dict[str, Any] = None) -> Dict[str, Any]:
-        """Classify user intent from prompt.
+        """Classify user intent from prompt using LLM.
 
         Args:
             prompt: User's natural language prompt
@@ -47,94 +28,87 @@ class IntentClassifier:
                 - intent: 'patch', 'execute', or 'unclear'
                 - confidence: 0.0-1.0
                 - reasoning: Explanation of classification
-                - matched_keywords: List of keywords that influenced decision
         """
-        prompt_lower = prompt.lower()
+        try:
+            # Build context information for LLM
+            context_info = ""
+            if context and context.get('current_workflow'):
+                workflow = context['current_workflow']
+                node_count = len(workflow.get('nodes', []))
+                edge_count = len(workflow.get('edges', []))
+                context_info = f"\n\nCurrent workflow context: {node_count} nodes, {edge_count} edges"
 
-        # Initialize scores
-        patch_score = 0.0
-        execute_score = 0.0
-        matched_keywords = {'patch': [], 'execute': []}
+            # System prompt for intent classification
+            system_prompt = """You are an intent classifier for a workflow automation system. Your job is to determine the user's intent:
 
-        # Check for patch keywords
-        for keyword in self.PATCH_KEYWORDS:
-            if keyword in prompt_lower:
-                patch_score += 1.0
-                matched_keywords['patch'].append(keyword)
-                logger.debug(f"Found patch keyword: {keyword}")
+1. **patch** - User wants to permanently modify the workflow structure (add/remove/update nodes, edges, logic)
+   - Examples: "add a node that...", "modify the workflow to...", "remove the X node", "change the condition to..."
+   - Key indicators: mentions of adding/removing/modifying workflow structure
 
-        # Check for execute keywords
-        for keyword in self.EXECUTE_KEYWORDS:
-            if keyword in prompt_lower:
-                execute_score += 0.7  # Slightly lower weight
-                matched_keywords['execute'].append(keyword)
-                logger.debug(f"Found execute keyword: {keyword}")
+2. **execute** - User wants to execute/run a pipeline or perform a one-time data operation
+   - Examples: "run this pipeline", "fetch data from...", "show me results of...", "calculate...", "process this data"
+   - Key indicators: asking for results, data processing, one-time operations
 
-        # Check for temporal indicators combined with actions
-        for temporal in self.TEMPORAL_PATCH:
-            if temporal in prompt_lower:
-                # Check if followed by action verbs (send, notify, update, etc.)
-                action_pattern = f"{temporal}.*?(send|notify|update|create|delete|add|remove|trigger|execute)"
-                if re.search(action_pattern, prompt_lower):
-                    patch_score += 1.5  # Strong indicator of patch
-                    matched_keywords['patch'].append(f"{temporal}+action")
-                    logger.debug(f"Found temporal+action pattern: {temporal}")
+3. **unclear** - Cannot determine intent with confidence
 
-        # Check for conditional patterns (strong patch indicator)
-        conditional_patterns = [
-            r'if .* then',
-            r'when .* (send|notify|do|execute)',
-            r'whenever .* (happens|occurs)',
-        ]
-        for pattern in conditional_patterns:
-            if re.search(pattern, prompt_lower):
-                patch_score += 2.0
-                matched_keywords['patch'].append('conditional_pattern')
-                logger.debug(f"Found conditional pattern: {pattern}")
+Respond ONLY with a JSON object in this exact format:
+{
+  "intent": "patch|execute|unclear",
+  "confidence": 0.0-1.0,
+  "reasoning": "brief explanation"
+}"""
 
-        # Check for question marks (strong execute indicator)
-        if '?' in prompt:
-            execute_score += 1.5
-            matched_keywords['execute'].append('question')
+            user_message = f"User prompt: {prompt}{context_info}\n\nClassify the intent."
 
-        # Check for workflow modification verbs (patch indicators)
-        modification_verbs = ['add', 'remove', 'delete', 'modify', 'change', 'update', 'insert', 'create']
-        for verb in modification_verbs:
-            # Check if verb is about modifying workflow structure
-            if re.search(rf'\b{verb}\b.*(node|edge|step|notification|alert|email|webhook)', prompt_lower):
-                patch_score += 1.5
-                matched_keywords['patch'].append(f'{verb}_workflow')
-                logger.debug(f"Found workflow modification: {verb}")
+            # Call OpenAI with JSON mode
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message}
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.3,  # Low temperature for consistent classification
+                max_tokens=150
+            )
 
-        # Determine intent based on scores
-        total_score = patch_score + execute_score
+            # Parse JSON response
+            result_text = response.choices[0].message.content
+            result = json.loads(result_text)
 
-        if total_score == 0:
-            intent = 'unclear'
-            confidence = 0.0
-            reasoning = "No clear indicators found in prompt"
-        elif patch_score > execute_score:
-            intent = 'patch'
-            confidence = min(patch_score / (total_score + 1), 1.0)
-            reasoning = f"Detected permanent change indicators (score: {patch_score:.1f} vs {execute_score:.1f})"
-        else:
-            intent = 'execute'
-            confidence = min(execute_score / (total_score + 1), 1.0)
-            reasoning = f"Detected one-time operation indicators (score: {execute_score:.1f} vs {patch_score:.1f})"
+            # Validate and normalize result
+            if 'intent' not in result or result['intent'] not in ['patch', 'execute', 'unclear']:
+                logger.warning(f"Invalid intent from LLM: {result.get('intent')}, defaulting to unclear")
+                result['intent'] = 'unclear'
+                result['confidence'] = 0.0
+                result['reasoning'] = "LLM returned invalid intent"
 
-        result = {
-            'intent': intent,
-            'confidence': confidence,
-            'reasoning': reasoning,
-            'matched_keywords': matched_keywords,
-            'scores': {
-                'patch': patch_score,
-                'execute': execute_score
+            if 'confidence' not in result:
+                result['confidence'] = 0.5
+
+            if 'reasoning' not in result:
+                result['reasoning'] = "No reasoning provided"
+
+            # Add metadata for backward compatibility
+            result['matched_keywords'] = {'patch': [], 'execute': []}  # Empty for LLM-based classification
+            result['scores'] = {
+                'patch': 1.0 if result['intent'] == 'patch' else 0.0,
+                'execute': 1.0 if result['intent'] == 'execute' else 0.0
             }
-        }
 
-        logger.info(f"Intent classified: {intent} (confidence: {confidence:.2f})")
-        return result
+            logger.info(f"Intent classified by LLM: {result['intent']} (confidence: {result['confidence']:.2f}) - {result['reasoning']}")
+            return result
+
+        except Exception as e:
+            logger.error(f"Failed to classify intent with LLM: {e}", exc_info=True)
+            # Fallback to unclear with low confidence
+            return {
+                'intent': 'unclear',
+                'confidence': 0.0,
+                'reasoning': f"Classification failed: {str(e)}",
+                'matched_keywords': {'patch': [], 'execute': []},
+                'scores': {'patch': 0.0, 'execute': 0.0}
+            }
 
     def should_constrain_tools(self, classification: Dict[str, Any], threshold: float = 0.7) -> bool:
         """Determine if we should constrain LLM to specific tool based on classification.
