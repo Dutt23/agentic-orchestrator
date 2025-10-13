@@ -12,7 +12,7 @@ import { applyNodeChanges, applyEdgeChanges, addEdge } from '@xyflow/react';
 import FlowCanvas from '../components/flow/FlowCanvas';
 import NodesPanel from '../components/NodesPanel';
 import Header from '../components/ui/header/Header';
-import fetchInitialFlowData from '../data/initialFlowData';
+import { mockWorkflows, getAllWorkflows, getBranches, getLatestVersion } from '../data/mockWorkflows';
 
 // Function to validate the flow
 const validateFlow = (nodes, edges) => {
@@ -37,13 +37,45 @@ const validateFlow = (nodes, edges) => {
   return { isValid: true };
 };
 
+// Helper function to convert workflow nodes to ReactFlow format
+const convertToReactFlowNodes = (workflowNodes) => {
+  return workflowNodes.map((node, index) => ({
+    id: node.id,
+    type: 'workflowNode',
+    position: { x: 250 * index, y: 150 },
+    data: {
+      type: node.type,
+      config: node.config,
+      id: node.id
+    }
+  }));
+};
+
+// Helper function to convert workflow edges to ReactFlow format
+const convertToReactFlowEdges = (workflowEdges) => {
+  return workflowEdges.map((edge, index) => ({
+    id: `e${edge.from}-${edge.to}-${index}`,
+    source: edge.from,
+    target: edge.to,
+    label: edge.condition || '',
+    type: 'smoothstep'
+  }));
+};
+
 export default function App() {
   const [selectedNode, setSelectedNode] = useState(null);
   const [flowData, setFlowData] = useState({ nodes: [], edges: [] });
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(false);
   const [isPanelOpen, setIsPanelOpen] = useState(true);
   const [isMobile] = useMediaQuery('(max-width: 768px)');
   const toast = useToast();
+
+  // Workflow state
+  const [selectedWorkflowId, setSelectedWorkflowId] = useState('flight-booking');
+  const [selectedBranch, setSelectedBranch] = useState('main');
+  const [selectedVersionIndex, setSelectedVersionIndex] = useState(0);
+  const [currentWorkflow, setCurrentWorkflow] = useState(null);
+  const [workflowVersions, setWorkflowVersions] = useState([]);
 
   // Sidebar fixed width for desktop
   const sidebarDesktopWidth = 320; // px
@@ -55,21 +87,40 @@ export default function App() {
     }
   }, [selectedNode, isMobile]);
 
-  // Fetch initial data on component mount
+  // Load workflow when selection changes
   useEffect(() => {
-    const loadInitialData = async () => {
-      try {
-        setIsLoading(true);
-        const data = await fetchInitialFlowData();
-        setFlowData(data);
-      } catch (error) {
-        console.error('Failed to load flow data:', error);
-      } finally {
-        setIsLoading(false);
-      }
-    };
-    loadInitialData();
-  }, []);
+    if (!selectedWorkflowId) {
+      setFlowData({ nodes: [], edges: [] });
+      setCurrentWorkflow(null);
+      setWorkflowVersions([]);
+      return;
+    }
+
+    const workflow = mockWorkflows[selectedWorkflowId];
+    if (!workflow || !workflow.branches[selectedBranch]) {
+      return;
+    }
+
+    const branchData = workflow.branches[selectedBranch];
+    const versions = branchData.versions;
+    setWorkflowVersions(versions);
+
+    // Load latest version by default
+    const versionIndex = selectedVersionIndex < versions.length ? selectedVersionIndex : versions.length - 1;
+    setSelectedVersionIndex(versionIndex);
+
+    const version = versions[versionIndex];
+    setCurrentWorkflow(version);
+
+    // Convert to ReactFlow format
+    const reactFlowNodes = convertToReactFlowNodes(version.nodes);
+    const reactFlowEdges = convertToReactFlowEdges(version.edges);
+
+    setFlowData({
+      nodes: reactFlowNodes,
+      edges: reactFlowEdges
+    });
+  }, [selectedWorkflowId, selectedBranch, selectedVersionIndex]);
 
   const handleNodeDeselect = () => {
     setSelectedNode(null);
@@ -151,9 +202,46 @@ export default function App() {
     );
   }
 
+  // Get all workflows for selector
+  const allWorkflows = getAllWorkflows();
+
+  // Get branches for current workflow
+  const branches = selectedWorkflowId ? getBranches(selectedWorkflowId) : [];
+
+  // Handle workflow change
+  const handleWorkflowChange = useCallback((workflowId) => {
+    setSelectedWorkflowId(workflowId);
+    if (workflowId) {
+      const workflow = mockWorkflows[workflowId];
+      const firstBranch = Object.keys(workflow.branches)[0];
+      setSelectedBranch(firstBranch);
+      setSelectedVersionIndex(0);
+    }
+  }, []);
+
+  // Handle branch change
+  const handleBranchChange = useCallback((branch) => {
+    setSelectedBranch(branch);
+    setSelectedVersionIndex(0);
+  }, []);
+
+  // Handle version change
+  const handleVersionChange = useCallback((versionIndex) => {
+    setSelectedVersionIndex(versionIndex);
+  }, []);
+
   return (
     <Flex direction="column" height="100vh" width="100vw" bg="#f7f8fa" overflow="hidden">
-      <Header onSave={handleSave} />
+      <Header
+        onSave={handleSave}
+        workflows={allWorkflows}
+        selectedWorkflowId={selectedWorkflowId}
+        onWorkflowChange={handleWorkflowChange}
+        branches={branches}
+        selectedBranch={selectedBranch}
+        onBranchChange={handleBranchChange}
+        workflowName={currentWorkflow?.metadata?.name}
+      />
 
       <Flex flex="1" mt="48px">
         {/* Main Canvas Area */}
@@ -255,6 +343,10 @@ export default function App() {
                   if (isMobile) setIsPanelOpen(false);
                 }}
                 onNodeUpdate={handleNodeUpdate}
+                currentWorkflow={currentWorkflow}
+                workflowVersions={workflowVersions}
+                selectedVersionIndex={selectedVersionIndex}
+                onVersionChange={handleVersionChange}
               />
             </Box>
           </Box>

@@ -11,9 +11,11 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import CustomNode from '../nodes/CustomNode';
+import WorkflowNode from '../nodes/WorkflowNode';
 
-const nodeTypes = { 
+const nodeTypes = {
   customNode: (props) => <CustomNode {...props} />,
+  workflowNode: (props) => <WorkflowNode {...props} />,
 };
 
 function FlowCanvasInner({ 
