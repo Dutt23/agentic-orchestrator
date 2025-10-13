@@ -41,7 +41,7 @@ export default function NodeItem({ nodeType, onDragStart }) {
         userSelect="none"
       >
         <Center mb={2}>
-          <IconComponent size={24} />
+          <IconComponent size={18} />
         </Center>
         <Text fontWeight="semibold" fontSize="sm">
           {nodeType.label}

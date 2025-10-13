@@ -22,7 +22,13 @@ export default function NodesPanel({
 
   useEffect(() => {
     // In a real app, you might fetch this from an API
-    setNodeTypes(nodeTypesData.nodes);
+    // Handle both old format (flat nodes array) and new format (categorized)
+    if (nodeTypesData.categories) {
+      setNodeTypes(nodeTypesData.categories);
+    } else if (nodeTypesData.nodes) {
+      // Legacy format - wrap in a single category
+      setNodeTypes([{ name: 'Nodes', id: 'all', nodes: nodeTypesData.nodes }]);
+    }
   }, []);
 
   const handleDragStart = (event, nodeType) => {
@@ -63,13 +69,34 @@ export default function NodesPanel({
               Drag and drop nodes onto the canvas
             </Text>
 
-            <VStack spacing={3} align="stretch">
-              {nodeTypes.map((nodeType) => (
-                <NodeItem
-                  key={nodeType.type}
-                  nodeType={nodeType}
-                  onDragStart={handleDragStart}
-                />
+            <VStack spacing={4} align="stretch">
+              {nodeTypes.map((category) => (
+                <Box key={category.id}>
+                  <Text
+                    fontSize="xs"
+                    fontWeight="bold"
+                    textTransform="uppercase"
+                    color="gray.600"
+                    mb={2}
+                    letterSpacing="wide"
+                  >
+                    {category.name}
+                  </Text>
+                  {category.description && (
+                    <Text fontSize="xs" color="gray.500" mb={2}>
+                      {category.description}
+                    </Text>
+                  )}
+                  <VStack spacing={2} align="stretch">
+                    {category.nodes.map((nodeType) => (
+                      <NodeItem
+                        key={nodeType.type}
+                        nodeType={nodeType}
+                        onDragStart={handleDragStart}
+                      />
+                    ))}
+                  </VStack>
+                </Box>
               ))}
             </VStack>
           </TabPanel>

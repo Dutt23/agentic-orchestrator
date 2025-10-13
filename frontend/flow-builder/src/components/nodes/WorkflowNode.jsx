@@ -8,46 +8,31 @@ import {
   FiLayers,
   FiFilter,
   FiZap,
-  FiPackage
+  FiPackage,
+  FiSearch,
+  FiUser
 } from 'react-icons/fi';
+import { MdSmartToy } from 'react-icons/md';
 
 // Map orchestrator node types to icons and colors
 const nodeTypeConfig = {
-  function: {
-    icon: FiCode,
-    color: 'blue',
-    bgColor: 'blue.50',
-    borderColor: 'blue.400',
-    label: 'Function'
-  },
-  http: {
-    icon: FiGlobe,
-    color: 'green',
-    bgColor: 'green.50',
-    borderColor: 'green.400',
-    label: 'HTTP'
-  },
-  conditional: {
-    icon: FiGitBranch,
+  // Core
+  agent: {
+    icon: MdSmartToy,
     color: 'purple',
     bgColor: 'purple.50',
     borderColor: 'purple.400',
-    label: 'Conditional'
+    label: 'Agent'
   },
-  loop: {
-    icon: FiRepeat,
-    color: 'orange',
-    bgColor: 'orange.50',
-    borderColor: 'orange.400',
-    label: 'Loop'
+  // Tools
+  'file-search': {
+    icon: FiSearch,
+    color: 'blue',
+    bgColor: 'blue.50',
+    borderColor: 'blue.400',
+    label: 'File Search'
   },
-  parallel: {
-    icon: FiLayers,
-    color: 'teal',
-    bgColor: 'teal.50',
-    borderColor: 'teal.400',
-    label: 'Parallel'
-  },
+  // Data
   transform: {
     icon: FiZap,
     color: 'yellow',
@@ -68,6 +53,50 @@ const nodeTypeConfig = {
     bgColor: 'cyan.50',
     borderColor: 'cyan.400',
     label: 'Filter'
+  },
+  // Logic
+  conditional: {
+    icon: FiGitBranch,
+    color: 'orange',
+    bgColor: 'orange.50',
+    borderColor: 'orange.400',
+    label: 'Conditional'
+  },
+  loop: {
+    icon: FiRepeat,
+    color: 'red',
+    bgColor: 'red.50',
+    borderColor: 'red.400',
+    label: 'Loop'
+  },
+  hitl: {
+    icon: FiUser,
+    color: 'green',
+    bgColor: 'green.50',
+    borderColor: 'green.400',
+    label: 'Human Review'
+  },
+  // Legacy (for backward compatibility)
+  function: {
+    icon: FiCode,
+    color: 'blue',
+    bgColor: 'blue.50',
+    borderColor: 'blue.400',
+    label: 'Function'
+  },
+  http: {
+    icon: FiGlobe,
+    color: 'green',
+    bgColor: 'green.50',
+    borderColor: 'green.400',
+    label: 'HTTP'
+  },
+  parallel: {
+    icon: FiLayers,
+    color: 'teal',
+    bgColor: 'teal.50',
+    borderColor: 'teal.400',
+    label: 'Parallel'
   }
 };
 
@@ -108,7 +137,7 @@ export default function WorkflowNode({ data, selected }) {
       {/* Node Header */}
       <Box bg={config.bgColor} px={3} py={2} borderTopRadius="lg">
         <HStack spacing={2}>
-          <Icon color={`var(--chakra-colors-${config.color}-600)`} size={16} />
+          <Icon color={`var(--chakra-colors-${config.color}-600)`} size={14} />
           <Badge
             colorScheme={config.color}
             fontSize="xs"

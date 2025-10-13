@@ -81,7 +81,7 @@ export default function App() {
   const toast = useToast();
 
   // Workflow state
-  const [selectedWorkflowId, setSelectedWorkflowId] = useState('flight-booking');
+  const [selectedWorkflowId, setSelectedWorkflowId] = useState('document-analysis');
   const [selectedBranch, setSelectedBranch] = useState('main');
   const [selectedVersionIndex, setSelectedVersionIndex] = useState(0);
   const [currentWorkflow, setCurrentWorkflow] = useState(null);
