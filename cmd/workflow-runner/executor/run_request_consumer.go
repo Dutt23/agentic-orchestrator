@@ -153,6 +153,13 @@ func (c *RunRequestConsumer) handleMessage(ctx context.Context, message redis.XM
 		return fmt.Errorf("failed to compile workflow: %w", err)
 	}
 
+	// Store username in IR metadata for event publishing
+	if ir.Metadata == nil {
+		ir.Metadata = make(map[string]interface{})
+	}
+	ir.Metadata["username"] = runRequest.Username
+	ir.Metadata["tag"] = runRequest.Tag
+
 	c.logger.Info("compiled workflow to IR",
 		"run_id", runRequest.RunID,
 		"nodes", len(ir.Nodes))
@@ -220,6 +227,16 @@ func (c *RunRequestConsumer) handleMessage(ctx context.Context, message redis.XM
 		"run_id", runRequest.RunID,
 		"nodes", len(ir.Nodes),
 		"entry_nodes", len(entryNodes))
+
+	// Publish workflow_started event
+	c.publishWorkflowEvent(ctx, runRequest.Username, map[string]interface{}{
+		"type":        "workflow_started",
+		"run_id":      runRequest.RunID,
+		"tag":         runRequest.Tag,
+		"nodes":       len(ir.Nodes),
+		"entry_nodes": len(entryNodes),
+		"timestamp":   time.Now().Unix(),
+	})
 
 	return nil
 }
@@ -306,4 +323,27 @@ func (c *RunRequestConsumer) getStreamForNodeType(nodeType string) string {
 	default:
 		return "wf.tasks.function"
 	}
+}
+
+// publishWorkflowEvent publishes an event to Redis PubSub for fanout service
+func (c *RunRequestConsumer) publishWorkflowEvent(ctx context.Context, username string, event map[string]interface{}) {
+	channel := fmt.Sprintf("workflow:events:%s", username)
+
+	eventJSON, err := json.Marshal(event)
+	if err != nil {
+		c.logger.Error("failed to marshal workflow event", "error", err)
+		return
+	}
+
+	err = c.redis.Publish(ctx, channel, eventJSON).Err()
+	if err != nil {
+		c.logger.Error("failed to publish workflow event",
+			"channel", channel,
+			"error", err)
+		return
+	}
+
+	c.logger.Debug("published workflow event",
+		"channel", channel,
+		"type", event["type"])
 }

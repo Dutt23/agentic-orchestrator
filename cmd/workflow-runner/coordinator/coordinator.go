@@ -135,6 +135,24 @@ func (c *Coordinator) handleCompletion(ctx context.Context, signal *CompletionSi
 		return
 	}
 
+	// Get counter after consumption for event
+	counter, _ := c.sdk.GetCounter(ctx, signal.RunID)
+
+	// Publish node_completed event
+	if ir.Metadata != nil {
+		if username, ok := ir.Metadata["username"].(string); ok {
+			c.publishWorkflowEvent(ctx, username, map[string]interface{}{
+				"type":       "node_completed",
+				"run_id":     signal.RunID,
+				"node_id":    signal.NodeID,
+				"status":     signal.Status,
+				"counter":    counter,
+				"result_ref": signal.ResultRef,
+				"timestamp":  time.Now().Unix(),
+			})
+		}
+	}
+
 	// 4. Load result from CAS for context
 	if signal.ResultRef != "" {
 		// Store in context for downstream nodes
@@ -490,11 +508,47 @@ func (c *Coordinator) checkCompletion(ctx context.Context, runID string) {
 		"counter", counter)
 
 	if counter == 0 {
-		// TODO: Verify no pending work (messages in streams, pending approvals, etc.)
 		c.logger.Info("workflow completed",
 			"run_id", runID)
+
+		// Load IR to get username for event publishing
+		ir, err := c.loadIR(ctx, runID)
+		if err == nil && ir.Metadata != nil {
+			if username, ok := ir.Metadata["username"].(string); ok {
+				// Publish workflow_completed event
+				c.publishWorkflowEvent(ctx, username, map[string]interface{}{
+					"type":      "workflow_completed",
+					"run_id":    runID,
+					"counter":   0,
+					"timestamp": time.Now().Unix(),
+				})
+			}
+		}
 
 		// TODO: Mark run as COMPLETED in database
 		// TODO: Cleanup Redis keys
 	}
+}
+
+// publishWorkflowEvent publishes an event to Redis PubSub for fanout service
+func (c *Coordinator) publishWorkflowEvent(ctx context.Context, username string, event map[string]interface{}) {
+	channel := fmt.Sprintf("workflow:events:%s", username)
+
+	eventJSON, err := json.Marshal(event)
+	if err != nil {
+		c.logger.Error("failed to marshal workflow event", "error", err)
+		return
+	}
+
+	err = c.redis.Publish(ctx, channel, eventJSON).Err()
+	if err != nil {
+		c.logger.Error("failed to publish workflow event",
+			"channel", channel,
+			"error", err)
+		return
+	}
+
+	c.logger.Debug("published workflow event",
+		"channel", channel,
+		"type", event["type"])
 }

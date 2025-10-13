@@ -112,8 +112,9 @@ type Condition struct {
 
 // IR represents the intermediate representation of a workflow
 type IR struct {
-	Version string           `json:"version"`
-	Nodes   map[string]*Node `json:"nodes"`
+	Version  string                 `json:"version"`
+	Nodes    map[string]*Node       `json:"nodes"`
+	Metadata map[string]interface{} `json:"metadata,omitempty"`
 }
 
 // ApplyDeltaResult holds the result from the Lua script
