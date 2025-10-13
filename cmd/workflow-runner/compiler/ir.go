@@ -179,17 +179,21 @@ func convertWorkflowNode(wfNode *WorkflowNode, conditionalEdges map[string][]Wor
 		Dependents:   []string{},
 	}
 
-	// Store config in CAS
+	// Store config in CAS and inline for MVP
 	if len(wfNode.Config) > 0 {
+		// Always include inline config for MVP (fallback if CAS unavailable)
+		node.Config = wfNode.Config
+
+		// Also try to store in CAS for future optimization
 		configJSON, err := json.Marshal(wfNode.Config)
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal config: %w", err)
 		}
 		casID, err := casClient.Put(configJSON, "application/json;type=node_config")
-		if err != nil {
-			return nil, fmt.Errorf("failed to store config in CAS: %w", err)
+		if err == nil {
+			node.ConfigRef = casID
 		}
-		node.ConfigRef = casID
+		// If CAS fails, we still have inline config
 	}
 
 	// Type mapping: workflow.schema.json type → IR type + additional config

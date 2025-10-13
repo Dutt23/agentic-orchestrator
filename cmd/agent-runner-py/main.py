@@ -235,8 +235,16 @@ class AgentService:
 
             logger.info(f"Job {job_id} completed successfully")
 
+            # ACK message from stream
+            if job.get('message_id'):
+                self.redis.ack_message(job['message_id'])
+
         except Exception as e:
             logger.error(f"Job {job_id} failed: {e}", exc_info=True)
+
+            # ACK message even on failure to remove from pending
+            if job.get('message_id'):
+                self.redis.ack_message(job['message_id'])
 
             # Signal failure to coordinator (new architecture)
             failure_signal = {

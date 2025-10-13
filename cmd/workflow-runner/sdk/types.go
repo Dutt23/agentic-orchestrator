@@ -23,6 +23,11 @@ type Token struct {
 	// Payload reference (CAS)
 	PayloadRef string `json:"payload_ref"`
 
+	// Pre-resolved configuration (resolved by coordinator)
+	// This allows polyglot workers to receive ready-to-use configs
+	// without implementing resolvers in each language
+	Config map[string]interface{} `json:"config,omitempty"`
+
 	// Hop count (for tracking traversal depth)
 	Hop int `json:"hop"`
 
@@ -58,15 +63,16 @@ type NodeContext struct {
 
 // Node represents a workflow node in the IR
 type Node struct {
-	ID           string        `json:"id"`
-	Type         string        `json:"type"`
-	ConfigRef    string        `json:"config_ref"`
-	Dependencies []string      `json:"dependencies"`
-	Dependents   []string      `json:"dependents"`
-	WaitForAll   bool          `json:"wait_for_all"` // Join pattern
-	IsTerminal   bool          `json:"is_terminal"`  // Pre-computed terminal flag
-	Loop         *LoopConfig   `json:"loop,omitempty"`
-	Branch       *BranchConfig `json:"branch,omitempty"`
+	ID           string                 `json:"id"`
+	Type         string                 `json:"type"`
+	ConfigRef    string                 `json:"config_ref,omitempty"`           // CAS reference for config
+	Config       map[string]interface{} `json:"config,omitempty"`               // Inline config (fallback if no CAS)
+	Dependencies []string               `json:"dependencies"`
+	Dependents   []string               `json:"dependents"`
+	WaitForAll   bool                   `json:"wait_for_all"` // Join pattern
+	IsTerminal   bool                   `json:"is_terminal"`  // Pre-computed terminal flag
+	Loop         *LoopConfig            `json:"loop,omitempty"`
+	Branch       *BranchConfig          `json:"branch,omitempty"`
 }
 
 // LoopConfig defines loop behavior for a node

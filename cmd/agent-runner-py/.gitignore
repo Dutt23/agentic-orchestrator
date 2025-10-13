@@ -70,6 +70,7 @@ dmypy.json
 *.log
 logs/
 *.log.*
+/tmp/
 
 # Database
 *.db
@@ -84,6 +85,22 @@ config.*.local.yaml
 *.temp
 .cache/
 
+# Test artifacts
+test_data/
+.test_output/
+
+# Runtime artifacts
+*.pid
+*.sock
+
+# Credentials and secrets
+*.pem
+*.key
+*.crt
+credentials.json
+service-account.json
+
 # OS
 Thumbs.db
 .DS_Store
+._*

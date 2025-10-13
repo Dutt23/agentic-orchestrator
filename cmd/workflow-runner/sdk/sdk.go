@@ -182,6 +182,39 @@ func (s *SDK) LoadContext(ctx context.Context, runID string) (map[string]interfa
 	return context, nil
 }
 
+// LoadNodeOutput loads a specific node's output from context
+func (s *SDK) LoadNodeOutput(ctx context.Context, runID, nodeID string) (interface{}, error) {
+	contextKey := fmt.Sprintf("context:%s", runID)
+	outputKey := fmt.Sprintf("%s:output", nodeID)
+
+	// Get CAS reference for this node's output
+	casRef, err := s.redis.HGet(ctx, contextKey, outputKey).Result()
+	if err == redis.Nil {
+		return nil, fmt.Errorf("node output not found: %s", nodeID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get node output reference: %w", err)
+	}
+
+	// Load from CAS
+	data, err := s.CASClient.Get(casRef)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load node output from CAS: %w", err)
+	}
+
+	// If it's JSON bytes, unmarshal it
+	if bytes, ok := data.([]byte); ok {
+		var result interface{}
+		if err := json.Unmarshal(bytes, &result); err != nil {
+			// If unmarshal fails, return raw bytes
+			return bytes, nil
+		}
+		return result, nil
+	}
+
+	return data, nil
+}
+
 // LoadConfig loads node configuration from CAS
 func (s *SDK) LoadConfig(ctx context.Context, configRef string) (interface{}, error) {
 	return s.CASClient.Get(configRef)

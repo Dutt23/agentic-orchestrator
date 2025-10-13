@@ -5,9 +5,11 @@ import (
 	"os"
 
 	"github.com/labstack/echo/v4"
-	"github.com/lyzr/Canorchestrator/common/bootstrap"
 	"github.com/lyzr/orchestrator/cmd/orchestrator/handlers"
+	"github.com/lyzr/orchestrator/cmd/orchestrator/middleware"
 	_ "github.com/lyzr/orchestrator/cmd/workflow-runner/sdk"
+	"github.com/lyzr/orchestrator/common/bootstrap"
+	"github.com/lyzr/orchestrator/common/logger"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -25,14 +27,20 @@ func RegisterRunRoutes(e *echo.Echo, components *bootstrap.Components) {
 	// Placeholder handler for unimplemented routes
 	placeholder := handlers.NewPlaceholderHandler(components)
 
+	// Workflow execution routes
+	workflows := e.Group("/api/v1/workflows")
+	workflows.Use(middleware.ExtractUsername()) // Extract X-User-ID into context
+	{
+		workflows.POST("/:tag/execute", runHandler.ExecuteWorkflow) // POST /api/v1/workflows/:tag/execute
+	}
+
 	// Run routes
 	runs := e.Group("/api/v1/runs")
 	{
-		runs.POST("", placeholder.NotImplemented)            // POST /api/v1/runs (TODO)
 		runs.GET("/:id", runHandler.GetRun)                  // GET /api/v1/runs/{run_id}
 		runs.GET("", placeholder.NotImplemented)             // GET /api/v1/runs?status=running (TODO)
 		runs.POST("/:id/cancel", placeholder.NotImplemented) // POST /api/v1/runs/{run_id}/cancel (TODO)
-		runs.POST("/:id/patch", runHandler.PatchRun)         // POST /api/v1/runs/{run_id}/patch (NEW)
+		runs.POST("/:id/patch", runHandler.PatchRun)         // POST /api/v1/runs/{run_id}/patch
 	}
 
 	// Patch routes (not yet implemented)
@@ -68,7 +76,7 @@ func getEnv(key, defaultValue string) string {
 
 // mockCASClient is a placeholder CAS client for MVP
 type mockCASClient struct {
-	logger bootstrap.Logger
+	logger *logger.Logger
 }
 
 func (m *mockCASClient) Put(data []byte, contentType string) (string, error) {
@@ -77,7 +85,13 @@ func (m *mockCASClient) Put(data []byte, contentType string) (string, error) {
 	return casID, nil
 }
 
-func (m *mockCASClient) Get(casID string) ([]byte, error) {
+func (m *mockCASClient) Get(casID string) (interface{}, error) {
 	m.logger.Debug("mock CAS Get", "cas_id", casID)
 	return []byte("{}"), nil
+}
+
+func (m *mockCASClient) Store(data interface{}) (string, error) {
+	casID := fmt.Sprintf("cas://mock/store")
+	m.logger.Debug("mock CAS Store", "cas_id", casID)
+	return casID, nil
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/compiler"
@@ -270,6 +271,74 @@ func (h *RunHandler) applyPatch(schema *compiler.WorkflowSchema, operations []Pa
 	}
 
 	return schema, nil
+}
+
+// ExecuteWorkflow publishes a workflow execution request to Redis stream
+func (h *RunHandler) ExecuteWorkflow(c echo.Context) error {
+	ctx := c.Request().Context()
+	tagName := c.Param("tag")
+
+	// Parse request
+	var req struct {
+		Inputs map[string]interface{} `json:"inputs"`
+	}
+
+	if err := c.Bind(&req); err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "invalid request")
+	}
+
+	// Extract username from context
+	username, ok := c.Get("username").(string)
+	if !ok || username == "" {
+		username = "system"
+	}
+
+	// Generate idempotent run_id: tag:timestamp_hash
+	timestamp := time.Now().UnixNano()
+	runID := fmt.Sprintf("%s:%x", tagName, timestamp)
+
+	h.components.Logger.Info("execute workflow request",
+		"tag", tagName,
+		"run_id", runID,
+		"username", username)
+
+	// Publish run request to Redis stream
+	runRequest := map[string]interface{}{
+		"run_id":     runID,
+		"tag":        tagName,
+		"username":   username,
+		"inputs":     req.Inputs,
+		"created_at": time.Now().Unix(),
+	}
+
+	requestJSON, err := json.Marshal(runRequest)
+	if err != nil {
+		h.components.Logger.Error("failed to marshal run request", "error", err)
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to create run request")
+	}
+
+	// Publish to wf.run.requests stream
+	err = h.redis.XAdd(ctx, &redis.XAddArgs{
+		Stream: "wf.run.requests",
+		Values: map[string]interface{}{
+			"request": string(requestJSON),
+		},
+	}).Err()
+
+	if err != nil {
+		h.components.Logger.Error("failed to publish run request", "run_id", runID, "error", err)
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to publish run request")
+	}
+
+	h.components.Logger.Info("published run request",
+		"run_id", runID,
+		"tag", tagName)
+
+	return c.JSON(http.StatusCreated, map[string]interface{}{
+		"run_id": runID,
+		"status": "queued",
+		"tag":    tagName,
+	})
 }
 
 // GetRun returns run status and metadata

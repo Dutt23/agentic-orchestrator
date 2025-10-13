@@ -7,6 +7,10 @@ redis:
   host: localhost
   port: 6379
   db: 0
+  # Redis Streams configuration (new architecture)
+  stream: wf.tasks.agent
+  consumer_group: agent_workers
+  # Legacy queue names (backward compatibility)
   job_queue: agent:jobs
   result_queue_prefix: agent:results
   timeout: 5

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/condition"
+	"github.com/lyzr/orchestrator/cmd/workflow-runner/resolver"
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/sdk"
 	"github.com/redis/go-redis/v9"
 )
@@ -29,6 +30,7 @@ type Coordinator struct {
 	logger    Logger
 	router    *StreamRouter
 	evaluator *condition.Evaluator
+	resolver  *resolver.Resolver
 }
 
 // Logger interface for logging
@@ -47,6 +49,7 @@ func NewCoordinator(redis *redis.Client, sdk *sdk.SDK, logger Logger) *Coordinat
 		logger:    logger,
 		router:    NewStreamRouter(),
 		evaluator: condition.NewEvaluator(),
+		resolver:  resolver.NewResolver(sdk, logger),
 	}
 }
 
@@ -170,11 +173,55 @@ func (c *Coordinator) handleCompletion(ctx context.Context, signal *CompletionSi
 				continue
 			}
 
+			// Load node config (inline or CAS)
+			var config map[string]interface{}
+			if len(nextNode.Config) > 0 {
+				config = nextNode.Config
+			} else if nextNode.ConfigRef != "" {
+				configData, err := c.sdk.LoadConfig(ctx, nextNode.ConfigRef)
+				if err != nil {
+					c.logger.Error("failed to load config from CAS",
+						"run_id", signal.RunID,
+						"node_id", nextNodeID,
+						"config_ref", nextNode.ConfigRef,
+						"error", err)
+					continue
+				}
+				// Convert to map
+				if configMap, ok := configData.(map[string]interface{}); ok {
+					config = configMap
+				} else {
+					c.logger.Error("config is not a map",
+						"run_id", signal.RunID,
+						"node_id", nextNodeID)
+					continue
+				}
+			}
+
+			// Resolve variables in config (e.g., $nodes.node_id)
+			var resolvedConfig map[string]interface{}
+			if config != nil {
+				var err error
+				resolvedConfig, err = c.resolver.ResolveConfig(ctx, signal.RunID, config)
+				if err != nil {
+					c.logger.Error("failed to resolve config variables",
+						"run_id", signal.RunID,
+						"node_id", nextNodeID,
+						"error", err)
+					// Continue with unresolved config as fallback
+					resolvedConfig = config
+				} else {
+					c.logger.Debug("resolved config variables",
+						"run_id", signal.RunID,
+						"node_id", nextNodeID)
+				}
+			}
+
 			// Get appropriate stream for node type
 			stream := c.router.GetStreamForNodeType(nextNode.Type)
 
-			// Publish token to stream
-			if err := c.publishToken(ctx, stream, signal.RunID, signal.NodeID, nextNodeID, signal.ResultRef); err != nil {
+			// Publish token to stream with resolved config
+			if err := c.publishToken(ctx, stream, signal.RunID, signal.NodeID, nextNodeID, signal.ResultRef, resolvedConfig); err != nil {
 				c.logger.Error("failed to publish token",
 					"run_id", signal.RunID,
 					"to_node", nextNodeID,
@@ -391,14 +438,19 @@ func (c *Coordinator) handleBranch(ctx context.Context, signal *CompletionSignal
 	return node.Branch.Default, nil
 }
 
-// publishToken publishes a token to a Redis stream
-func (c *Coordinator) publishToken(ctx context.Context, stream, runID, fromNode, toNode, payloadRef string) error {
+// publishToken publishes a token to a Redis stream with resolved config
+func (c *Coordinator) publishToken(ctx context.Context, stream, runID, fromNode, toNode, payloadRef string, resolvedConfig map[string]interface{}) error {
 	token := map[string]interface{}{
 		"run_id":      runID,
 		"from_node":   fromNode,
 		"to_node":     toNode,
 		"payload_ref": payloadRef,
 		"created_at":  time.Now().UTC().Format(time.RFC3339),
+	}
+
+	// Include resolved config if available
+	if resolvedConfig != nil {
+		token["config"] = resolvedConfig
 	}
 
 	tokenJSON, err := json.Marshal(token)

@@ -13,12 +13,11 @@ def get_tool_schemas() -> List[Dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "execute_pipeline",
-                "strict": True,
                 "description": "Execute ephemeral data pipeline using composable primitives. Use this for one-time data operations that don't need to persist in the workflow.",
                 "parameters": {
                     "type": "object",
                     "required": ["session_id", "pipeline"],
-                    "additionalProperties": False,
+                    "additionalProperties": True,
                     "properties": {
                         "session_id": {
                             "type": "string",
@@ -30,7 +29,7 @@ def get_tool_schemas() -> List[Dict[str, Any]]:
                             "items": {
                                 "type": "object",
                                 "required": ["step"],
-                                "additionalProperties": False,
+                                "additionalProperties": True,
                                 "properties": {
                                     "step": {
                                         "type": "string",
@@ -49,7 +48,7 @@ def get_tool_schemas() -> List[Dict[str, Any]]:
                                     "params": {
                                         "type": "object",
                                         "description": "Query parameters or POST body",
-                                        "additionalProperties": False,
+                                        "additionalProperties": True,
                                         "properties": {}
                                     },
                                     # table_sort params
@@ -60,7 +59,7 @@ def get_tool_schemas() -> List[Dict[str, Any]]:
                                         "type": "object",
                                         "description": "Filter condition",
                                         "required": ["field", "op", "value"],
-                                        "additionalProperties": False,
+                                        "additionalProperties": True,
                                         "properties": {
                                             "field": {"type": "string"},
                                             "op": {"type": "string", "enum": ["<", ">", "<=", ">=", "==", "!="]},
@@ -97,12 +96,11 @@ def get_tool_schemas() -> List[Dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "patch_workflow",
-                "strict": True,
                 "description": "Create persistent workflow modifications. Use this for 'always', 'whenever', or 'schedule' type requests that should permanently change the workflow.",
                 "parameters": {
                     "type": "object",
                     "required": ["workflow_tag", "patch_spec"],
-                    "additionalProperties": False,
+                    "additionalProperties": True,
                     "properties": {
                         "workflow_tag": {
                             "type": "string",
@@ -116,14 +114,14 @@ def get_tool_schemas() -> List[Dict[str, Any]]:
                             "type": "object",
                             "description": "JSON Patch operations to apply",
                             "required": ["operations"],
-                            "additionalProperties": False,
+                            "additionalProperties": True,
                             "properties": {
                                 "operations": {
                                     "type": "array",
                                     "items": {
                                         "type": "object",
                                         "required": ["op", "path"],
-                                        "additionalProperties": False,
+                                        "additionalProperties": True,
                                         "properties": {
                                             "op": {
                                                 "type": "string",

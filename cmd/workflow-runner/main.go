@@ -2,14 +2,19 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/coordinator"
+	"github.com/lyzr/orchestrator/cmd/workflow-runner/executor"
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/sdk"
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/supervisor"
+	"github.com/lyzr/orchestrator/cmd/workflow-runner/worker"
 	"github.com/lyzr/orchestrator/common/bootstrap"
 	"github.com/redis/go-redis/v9"
 )
@@ -49,8 +54,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Create CAS client (placeholder for now)
-	casClient := &simpleCASClient{logger: components.Logger}
+	// Create Redis-based CAS client for storing execution results
+	casClient := &redisCASClient{
+		redis:  redisClient,
+		logger: components.Logger,
+	}
 
 	// Create SDK
 	workflowSDK := sdk.NewSDK(redisClient, casClient, components.Logger, string(luaScript))
@@ -58,13 +66,20 @@ func main() {
 	// Create coordinator
 	coord := coordinator.NewCoordinator(redisClient, workflowSDK, components.Logger)
 
+	// Create HTTP worker
+	httpWorker := worker.NewHTTPWorker(redisClient, workflowSDK, components.Logger)
+
+	// Create run request consumer
+	orchestratorURL := getEnv("ORCHESTRATOR_URL", "http://localhost:8081")
+	runConsumer := executor.NewRunRequestConsumer(redisClient, workflowSDK, components.Logger, orchestratorURL)
+
 	// TODO: Create and start supervisors when needed
 	// For MVP integration tests, we only need the coordinator
 	_ = supervisor.NewCompletionSupervisor // Avoid unused import error
 	_ = supervisor.NewTimeoutDetector
 
 	// Start components in goroutines
-	errChan := make(chan error, 1)
+	errChan := make(chan error, 3)
 
 	// Start coordinator
 	go func() {
@@ -74,8 +89,24 @@ func main() {
 		}
 	}()
 
+	// Start HTTP worker
+	go func() {
+		components.Logger.Info("starting HTTP worker")
+		if err := httpWorker.Start(ctx); err != nil && err != context.Canceled {
+			errChan <- fmt.Errorf("HTTP worker error: %w", err)
+		}
+	}()
+
+	// Start run request consumer
+	go func() {
+		components.Logger.Info("starting run request consumer")
+		if err := runConsumer.Start(ctx); err != nil && err != context.Canceled {
+			errChan <- fmt.Errorf("run request consumer error: %w", err)
+		}
+	}()
+
 	components.Logger.Info("workflow-runner started successfully",
-		"components", []string{"coordinator"})
+		"components", []string{"coordinator", "http_worker", "run_request_consumer"})
 
 	// Wait for shutdown signal or error
 	sigChan := make(chan os.Signal, 1)
@@ -118,30 +149,49 @@ func getEnv(key, defaultValue string) string {
 	return defaultValue
 }
 
-// simpleCASClient is a placeholder CAS client for MVP
-type simpleCASClient struct {
+// redisCASClient stores CAS blobs in Redis (for workflow execution results)
+type redisCASClient struct {
+	redis  *redis.Client
 	logger sdk.Logger
 }
 
-func (m *simpleCASClient) Put(data []byte, contentType string) (string, error) {
-	// For MVP, just return a mock CAS ID
-	// TODO: Implement actual CAS integration (S3/MinIO)
-	casID := fmt.Sprintf("cas://mock/%d", len(data))
-	m.logger.Debug("mock CAS Put", "cas_id", casID, "size", len(data))
-	return casID, nil
+func (c *redisCASClient) Put(data []byte, contentType string) (string, error) {
+	// Generate SHA256 hash as CAS ID
+	hash := fmt.Sprintf("sha256:%x", sha256.Sum256(data))
+	casKey := fmt.Sprintf("cas:%s", hash)
+
+	// Store in Redis with 24 hour TTL (adjust based on needs)
+	err := c.redis.Set(context.Background(), casKey, data, 24*time.Hour).Err()
+	if err != nil {
+		c.logger.Error("failed to store in CAS", "cas_id", hash, "error", err)
+		return "", fmt.Errorf("failed to store in CAS: %w", err)
+	}
+
+	c.logger.Debug("stored in CAS", "cas_id", hash, "size", len(data))
+	return hash, nil
 }
 
-func (m *simpleCASClient) Get(casID string) (interface{}, error) {
-	// For MVP, return empty data
-	// TODO: Implement actual CAS integration
-	m.logger.Debug("mock CAS Get", "cas_id", casID)
-	return []byte("{}"), nil
+func (c *redisCASClient) Get(casID string) (interface{}, error) {
+	casKey := fmt.Sprintf("cas:%s", casID)
+
+	data, err := c.redis.Get(context.Background(), casKey).Bytes()
+	if err == redis.Nil {
+		c.logger.Warn("CAS entry not found", "cas_id", casID)
+		return nil, fmt.Errorf("CAS entry not found: %s", casID)
+	}
+	if err != nil {
+		c.logger.Error("failed to get from CAS", "cas_id", casID, "error", err)
+		return nil, fmt.Errorf("failed to get from CAS: %w", err)
+	}
+
+	c.logger.Debug("retrieved from CAS", "cas_id", casID, "size", len(data))
+	return data, nil
 }
 
-func (m *simpleCASClient) Store(data interface{}) (string, error) {
-	// For MVP, just return a mock CAS ID
-	// TODO: Implement actual CAS integration
-	casID := fmt.Sprintf("cas://mock/store")
-	m.logger.Debug("mock CAS Store", "cas_id", casID)
-	return casID, nil
+func (c *redisCASClient) Store(data interface{}) (string, error) {
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal data: %w", err)
+	}
+	return c.Put(jsonData, "application/json")
 }
