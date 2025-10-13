@@ -20,7 +20,9 @@ import NodesPanel from '../components/NodesPanel';
 import Header from '../components/ui/header/Header';
 import BranchComparison from '../components/BranchComparison';
 import BranchDiffCanvas from '../components/BranchDiffCanvas';
+import BranchDiffOverlay from '../components/BranchDiffOverlay';
 import { mockWorkflows, getAllWorkflows, getBranches, getLatestVersion } from '../data/mockWorkflows';
+import { applyDiffColorsToNodes, applyDiffColorsToEdges } from '../utils/workflowDiff';
 
 // Function to validate the flow
 const validateFlow = (nodes, edges) => {
@@ -260,13 +262,19 @@ export default function App() {
 
   // Handle comparison result
   const handleComparisonResult = useCallback((result) => {
-    const { branchA, branchB, workflowA, workflowB, diff } = result;
+    const { branchA, branchB, workflowA, workflowB, diff, viewMode } = result;
 
     // Convert workflows to ReactFlow format
-    const nodesA = convertToReactFlowNodes(workflowA.nodes);
-    const edgesA = convertToReactFlowEdges(workflowA.edges);
-    const nodesB = convertToReactFlowNodes(workflowB.nodes);
-    const edgesB = convertToReactFlowEdges(workflowB.edges);
+    let nodesA = convertToReactFlowNodes(workflowA.nodes);
+    let edgesA = convertToReactFlowEdges(workflowA.edges);
+    let nodesB = convertToReactFlowNodes(workflowB.nodes);
+    let edgesB = convertToReactFlowEdges(workflowB.edges);
+
+    // Apply diff colors to nodes and edges
+    nodesA = applyDiffColorsToNodes(nodesA, diff, 'before');
+    edgesA = applyDiffColorsToEdges(edgesA, diff, 'before');
+    nodesB = applyDiffColorsToNodes(nodesB, diff, 'after');
+    edgesB = applyDiffColorsToEdges(edgesB, diff, 'after');
 
     setComparisonData({
       branchA,
@@ -277,7 +285,8 @@ export default function App() {
       edgesA,
       nodesB,
       edgesB,
-      diff
+      diff,
+      viewMode // Store view mode
     });
 
     setIsComparing(true);
@@ -340,6 +349,16 @@ export default function App() {
               onNodesChange={handleNodesChange}
               onEdgesChange={handleEdgesChange}
               onConnect={handleConnect}
+            />
+          ) : comparisonData?.viewMode === 'overlay' ? (
+            <BranchDiffOverlay
+              branchA={comparisonData?.branchA}
+              branchB={comparisonData?.branchB}
+              nodesA={comparisonData?.nodesA}
+              edgesA={comparisonData?.edgesA}
+              nodesB={comparisonData?.nodesB}
+              edgesB={comparisonData?.edgesB}
+              diff={comparisonData?.diff}
             />
           ) : (
             <BranchDiffCanvas

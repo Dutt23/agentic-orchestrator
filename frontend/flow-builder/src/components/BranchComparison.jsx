@@ -11,9 +11,10 @@ import {
   AlertIcon,
   AlertTitle,
   AlertDescription,
+  ButtonGroup,
 } from '@chakra-ui/react';
 import { useState, useEffect } from 'react';
-import { FiGitBranch, FiX } from 'react-icons/fi';
+import { FiGitBranch, FiX, FiColumns, FiLayers } from 'react-icons/fi';
 import { computeWorkflowDiff, getDiffSummaryText } from '../utils/workflowDiff';
 
 export default function BranchComparison({
@@ -27,6 +28,7 @@ export default function BranchComparison({
   const [branchB, setBranchB] = useState('');
   const [comparing, setComparing] = useState(false);
   const [diff, setDiff] = useState(null);
+  const [viewMode, setViewMode] = useState('side-by-side'); // 'side-by-side' or 'overlay'
 
   // Auto-select first two branches if available
   useEffect(() => {
@@ -59,7 +61,8 @@ export default function BranchComparison({
           branchB,
           workflowA,
           workflowB,
-          diff: diffResult
+          diff: diffResult,
+          viewMode // Pass view mode to parent
         });
       }
     } catch (error) {
@@ -156,6 +159,38 @@ export default function BranchComparison({
             </Select>
           </Box>
         </VStack>
+
+        {/* View Mode Selector */}
+        <Box>
+          <Text fontSize="sm" fontWeight="medium" mb={2}>
+            View Mode
+          </Text>
+          <ButtonGroup size="sm" isAttached variant="outline" w="100%">
+            <Button
+              flex="1"
+              leftIcon={<FiColumns />}
+              onClick={() => setViewMode('side-by-side')}
+              colorScheme={viewMode === 'side-by-side' ? 'blue' : 'gray'}
+              variant={viewMode === 'side-by-side' ? 'solid' : 'outline'}
+            >
+              Side-by-Side
+            </Button>
+            <Button
+              flex="1"
+              leftIcon={<FiLayers />}
+              onClick={() => setViewMode('overlay')}
+              colorScheme={viewMode === 'overlay' ? 'blue' : 'gray'}
+              variant={viewMode === 'overlay' ? 'solid' : 'outline'}
+            >
+              Overlay
+            </Button>
+          </ButtonGroup>
+          <Text fontSize="xs" color="gray.500" mt={1}>
+            {viewMode === 'overlay'
+              ? 'Compare branch shown with dashed lines, semi-transparent'
+              : 'View branches side-by-side for comparison'}
+          </Text>
+        </Box>
 
         {/* Compare Button */}
         <Button
