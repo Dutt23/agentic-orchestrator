@@ -113,14 +113,19 @@ const generatePatchOperations = (original, current) => {
     }
   });
 
-  // Removed nodes (in reverse to maintain indices)
+  // Removed nodes - collect indices first, then remove in reverse order
+  const removedNodeIndices = [];
   original.nodes.forEach((node, index) => {
     if (!currentNodeIds.has(node.id)) {
-      operations.push({
-        op: 'remove',
-        path: `/nodes/${index}`
-      });
+      removedNodeIndices.push(index);
     }
+  });
+  // Sort in descending order and create remove operations
+  removedNodeIndices.sort((a, b) => b - a).forEach(index => {
+    operations.push({
+      op: 'remove',
+      path: `/nodes/${index}`
+    });
   });
 
   // Modified nodes
@@ -152,15 +157,20 @@ const generatePatchOperations = (original, current) => {
     }
   });
 
-  // Removed edges
+  // Removed edges - collect indices first, then remove in reverse order
+  const removedEdgeIndices = [];
   original.edges.forEach((edge, index) => {
     const key = `${edge.from}-${edge.to}`;
     if (!currentEdgeKeys.has(key)) {
-      operations.push({
-        op: 'remove',
-        path: `/edges/${index}`
-      });
+      removedEdgeIndices.push(index);
     }
+  });
+  // Sort in descending order and create remove operations
+  removedEdgeIndices.sort((a, b) => b - a).forEach(index => {
+    operations.push({
+      op: 'remove',
+      path: `/edges/${index}`
+    });
   });
 
   return operations;

@@ -128,6 +128,74 @@ function FlowCanvasInner({
     event.dataTransfer.dropEffect = 'move';
   }, []);
 
+  // Handle keyboard shortcuts (Delete/Backspace to remove selected nodes)
+  useEffect(() => {
+    const handleKeyDown = (event) => {
+      // Check if Delete or Backspace key is pressed
+      if (event.key === 'Delete' || event.key === 'Backspace') {
+        // Prevent default browser behavior (like going back)
+        event.preventDefault();
+
+        // Get all selected nodes and edges
+        const selectedNodes = nodes.filter(node => node.selected);
+        const selectedEdges = edges.filter(edge => edge.selected);
+
+        if (selectedNodes.length > 0 || selectedEdges.length > 0) {
+          // Create remove changes for nodes
+          const nodeChanges = selectedNodes.map(node => ({
+            id: node.id,
+            type: 'remove'
+          }));
+
+          // Create remove changes for edges
+          const edgeChanges = selectedEdges.map(edge => ({
+            id: edge.id,
+            type: 'remove'
+          }));
+
+          // Also remove edges connected to deleted nodes
+          const nodesToRemove = new Set(selectedNodes.map(n => n.id));
+          const connectedEdgeChanges = edges
+            .filter(edge => nodesToRemove.has(edge.source) || nodesToRemove.has(edge.target))
+            .filter(edge => !edge.selected) // Don't duplicate already selected edges
+            .map(edge => ({
+              id: edge.id,
+              type: 'remove'
+            }));
+
+          // Apply changes
+          if (nodeChanges.length > 0) {
+            onNodesChange(nodeChanges);
+          }
+          if (edgeChanges.length > 0 || connectedEdgeChanges.length > 0) {
+            onEdgesChange([...edgeChanges, ...connectedEdgeChanges]);
+          }
+
+          // Clear selection
+          setSelectedNode(null);
+
+          // Show toast
+          toast({
+            title: 'Deleted',
+            description: `Removed ${nodeChanges.length} node(s) and ${edgeChanges.length + connectedEdgeChanges.length} edge(s)`,
+            status: 'info',
+            duration: 2000,
+            isClosable: true,
+            position: 'bottom-right'
+          });
+        }
+      }
+    };
+
+    // Add event listener
+    window.addEventListener('keydown', handleKeyDown);
+
+    // Cleanup
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [nodes, edges, onNodesChange, onEdgesChange, setSelectedNode, toast]);
+
   // Update nodes with selected state
   const nodesWithSelection = nodes.map(node => ({
     ...node,

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
+	"strings"
 
 	"github.com/labstack/echo/v4"
 	"github.com/lyzr/orchestrator/cmd/orchestrator/middleware"
@@ -524,10 +526,21 @@ func (h *WorkflowHandler) PatchWorkflow(c echo.Context) error {
 
 // applyJSONPatchToWorkflow applies JSON Patch operations to a workflow
 func (h *WorkflowHandler) applyJSONPatchToWorkflow(workflow map[string]interface{}, operations []map[string]interface{}) (map[string]interface{}, error) {
-	// Create a copy of the workflow to avoid modifying the original
+	// Create a deep copy of the workflow to avoid modifying the original
 	patchedWorkflow := make(map[string]interface{})
 	for k, v := range workflow {
-		patchedWorkflow[k] = v
+		// Deep copy arrays
+		if k == "nodes" || k == "edges" {
+			if arr, ok := v.([]interface{}); ok {
+				copyArr := make([]interface{}, len(arr))
+				copy(copyArr, arr)
+				patchedWorkflow[k] = copyArr
+			} else {
+				patchedWorkflow[k] = v
+			}
+		} else {
+			patchedWorkflow[k] = v
+		}
 	}
 
 	// Apply each operation
@@ -596,11 +609,16 @@ func (h *WorkflowHandler) applyAddOperation(workflow map[string]interface{}, pat
 // applyRemoveOperation handles "remove" operations
 func (h *WorkflowHandler) applyRemoveOperation(workflow map[string]interface{}, path string) error {
 	// Parse path like "/nodes/2" or "/edges/1"
-	var collection string
-	var index int
+	// Split by "/" and parse components
+	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	if len(parts) != 2 {
+		return fmt.Errorf("invalid remove path format: %s (expected format: /collection/index)", path)
+	}
 
-	if n, err := fmt.Sscanf(path, "/%[^/]/%d", &collection, &index); err != nil || n != 2 {
-		return fmt.Errorf("invalid remove path format: %s", path)
+	collection := parts[0]
+	index, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return fmt.Errorf("invalid index in path %s: %v", path, err)
 	}
 
 	if collection == "nodes" {
@@ -627,11 +645,15 @@ func (h *WorkflowHandler) applyRemoveOperation(workflow map[string]interface{}, 
 // applyReplaceOperation handles "replace" operations
 func (h *WorkflowHandler) applyReplaceOperation(workflow map[string]interface{}, path string, value interface{}) error {
 	// Parse path like "/nodes/2" or "/edges/1"
-	var collection string
-	var index int
+	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	if len(parts) != 2 {
+		return fmt.Errorf("invalid replace path format: %s (expected format: /collection/index)", path)
+	}
 
-	if n, err := fmt.Sscanf(path, "/%[^/]/%d", &collection, &index); err != nil || n != 2 {
-		return fmt.Errorf("invalid replace path format: %s", path)
+	collection := parts[0]
+	index, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return fmt.Errorf("invalid index in path %s: %v", path, err)
 	}
 
 	if collection == "nodes" {
