@@ -316,6 +316,31 @@ func (r *ArtifactRepository) FindCompactedBase(ctx context.Context, patchID uuid
 	return artifact, nil
 }
 
+// InsertPatchChain inserts patch chain members for a new head artifact
+// This links all patches (including the new one) to the new head
+func (r *ArtifactRepository) InsertPatchChain(ctx context.Context, headID uuid.UUID, memberIDs []uuid.UUID) error {
+	if len(memberIDs) == 0 {
+		return nil
+	}
+
+	// Build batch insert query
+	query := `
+		INSERT INTO patch_chain_member (head_id, member_id, seq)
+		VALUES ($1, $2, $3)
+	`
+
+	// Insert each member with its sequence number
+	for i, memberID := range memberIDs {
+		seq := i + 1 // 1-indexed
+		_, err := r.db.Exec(ctx, query, headID, memberID, seq)
+		if err != nil {
+			return fmt.Errorf("failed to insert patch chain member (seq=%d): %w", seq, err)
+		}
+	}
+
+	return nil
+}
+
 // GetCompactionCandidates returns patches exceeding depth threshold
 func (r *ArtifactRepository) GetCompactionCandidates(ctx context.Context, depthThreshold int) ([]*models.Artifact, error) {
 	query := `

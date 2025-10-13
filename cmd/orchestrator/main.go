@@ -43,7 +43,7 @@ func main() {
 	// Register routes (modular)
 	routes.RegisterWorkflowRoutes(e, components)
 	routes.RegisterTagRoutes(e, components)
-	routes.RegisterRunRoutes(e, components)
+	// routes.RegisterRunRoutes(e, components) // TODO: Enable when run routes are ready
 
 	// Start server
 	port := components.Config.Service.Port

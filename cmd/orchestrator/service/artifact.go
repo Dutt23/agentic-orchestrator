@@ -81,6 +81,58 @@ func (s *ArtifactService) CreatePatchSet(ctx context.Context, casID string, base
 	return artifact.ArtifactID, nil
 }
 
+// CreatePatch creates a patch artifact with proper chain linking
+// Note: previousPatchSet is used for metadata/logging but not stored in the artifact
+// The patch chain is reconstructed via the patch_chain_member table
+func (s *ArtifactService) CreatePatch(ctx context.Context, casID string, baseVersion uuid.UUID, previousPatchSet *uuid.UUID, depth, opCount int, createdBy string) (uuid.UUID, error) {
+	artifact := &models.Artifact{
+		ArtifactID:  uuid.New(),
+		Kind:        models.KindPatchSet,
+		CasID:       casID,
+		BaseVersion: &baseVersion,
+		Depth:       &depth,
+		OpCount:     &opCount,
+		Meta:        make(map[string]interface{}),
+		CreatedBy:   createdBy,
+		CreatedAt:   time.Now(),
+	}
+
+	if err := s.repo.Create(ctx, artifact); err != nil {
+		return uuid.Nil, fmt.Errorf("failed to create patch artifact: %w", err)
+	}
+
+	// Build patch chain: get all previous patches + add this new one
+	var patchChain []uuid.UUID
+	if previousPatchSet != nil {
+		// Get existing patch chain from previous head
+		previousPatches, err := s.repo.GetPatchChain(ctx, *previousPatchSet)
+		if err != nil {
+			return uuid.Nil, fmt.Errorf("failed to get previous patch chain: %w", err)
+		}
+		// Add all previous patch IDs
+		for _, p := range previousPatches {
+			patchChain = append(patchChain, p.ArtifactID)
+		}
+	}
+	// Add new patch as the last member
+	patchChain = append(patchChain, artifact.ArtifactID)
+
+	// Insert patch chain members
+	if err := s.repo.InsertPatchChain(ctx, artifact.ArtifactID, patchChain); err != nil {
+		return uuid.Nil, fmt.Errorf("failed to insert patch chain: %w", err)
+	}
+
+	s.log.Info("created patch artifact",
+		"artifact_id", artifact.ArtifactID,
+		"base_version", baseVersion,
+		"depth", depth,
+		"op_count", opCount,
+		"chain_length", len(patchChain),
+	)
+
+	return artifact.ArtifactID, nil
+}
+
 // CreateRunSnapshot creates a run snapshot artifact
 func (s *ArtifactService) CreateRunSnapshot(ctx context.Context, casID, planHash, versionHash string, nodesCount, edgesCount int, createdBy string) (uuid.UUID, error) {
 	artifact := &models.Artifact{

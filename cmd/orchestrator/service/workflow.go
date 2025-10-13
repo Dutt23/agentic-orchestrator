@@ -123,6 +123,116 @@ func (s *WorkflowServiceV2) CreateWorkflow(ctx context.Context, req *CreateWorkf
 	}, nil
 }
 
+// CreatePatchRequest represents the input for creating a patch
+type CreatePatchRequest struct {
+	Username    string                   `json:"username" validate:"required"`
+	TagName     string                   `json:"tag_name" validate:"required"`
+	Operations  []map[string]interface{} `json:"operations" validate:"required"`
+	Description string                   `json:"description"`
+	CreatedBy   string                   `json:"created_by"`
+}
+
+// CreatePatchResponse represents the output after creating a patch
+type CreatePatchResponse struct {
+	ArtifactID  uuid.UUID `json:"artifact_id"`
+	CASID       string    `json:"cas_id"`
+	Depth       int       `json:"depth"`
+	OpCount     int       `json:"op_count"`
+	Username    string    `json:"username"`
+	TagName     string    `json:"tag_name"`
+	Description string    `json:"description"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+// CreatePatch creates a new patch artifact and updates the tag
+func (s *WorkflowServiceV2) CreatePatch(ctx context.Context, req *CreatePatchRequest) (*CreatePatchResponse, error) {
+	s.log.Info("creating patch", "tag", req.TagName, "op_count", len(req.Operations), "created_by", req.CreatedBy)
+
+	// 1. Resolve current tag to get current artifact
+	currentArtifact, err := s.resolveTagToArtifact(ctx, req.Username, req.TagName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve tag: %w", err)
+	}
+
+	// 2. Determine base version and previous patch set
+	var baseVersionID uuid.UUID
+	var previousPatchSetID *uuid.UUID
+	var newDepth int
+
+	if currentArtifact.IsDAGVersion() {
+		// Current is a DAG version, it becomes the base
+		baseVersionID = currentArtifact.ArtifactID
+		previousPatchSetID = nil
+		newDepth = 1
+	} else if currentArtifact.IsPatchSet() {
+		// Current is a patch set, use its base version
+		if currentArtifact.BaseVersion == nil {
+			return nil, fmt.Errorf("patch_set missing base_version")
+		}
+		baseVersionID = *currentArtifact.BaseVersion
+		previousPatchSetID = &currentArtifact.ArtifactID
+		if currentArtifact.Depth != nil {
+			newDepth = *currentArtifact.Depth + 1
+		} else {
+			newDepth = 1
+		}
+	} else {
+		return nil, fmt.Errorf("unsupported artifact kind: %s", currentArtifact.Kind)
+	}
+
+	// 3. Serialize patch operations
+	patchJSON, err := json.Marshal(req.Operations)
+	if err != nil {
+		return nil, fmt.Errorf("failed to serialize patch operations: %w", err)
+	}
+
+	// 4. Store patch in CAS
+	casID, err := s.casService.StoreContent(ctx, patchJSON, "application/json;type=patch")
+	if err != nil {
+		return nil, fmt.Errorf("failed to store patch content: %w", err)
+	}
+
+	// 5. Create patch artifact
+	opCount := len(req.Operations)
+	patchArtifactID, err := s.artifactService.CreatePatch(
+		ctx,
+		casID,
+		baseVersionID,
+		previousPatchSetID,
+		newDepth,
+		opCount,
+		req.CreatedBy,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create patch artifact: %w", err)
+	}
+
+	// 6. Move tag to new patch artifact
+	// For patches, version_hash is the patch's cas_id
+	if err := s.tagService.CreateOrMoveTag(ctx, req.Username, req.TagName, "patch_set", patchArtifactID, casID, req.CreatedBy); err != nil {
+		return nil, fmt.Errorf("failed to move tag: %w", err)
+	}
+
+	s.log.Info("patch created successfully",
+		"artifact_id", patchArtifactID,
+		"cas_id", casID,
+		"depth", newDepth,
+		"username", req.Username,
+		"tag", req.TagName,
+	)
+
+	return &CreatePatchResponse{
+		ArtifactID:  patchArtifactID,
+		CASID:       casID,
+		Depth:       newDepth,
+		OpCount:     opCount,
+		Username:    req.Username,
+		TagName:     req.TagName,
+		Description: req.Description,
+		CreatedAt:   time.Now(),
+	}, nil
+}
+
 // GetWorkflowByTag retrieves a workflow by tag name
 // NOTE: This function is incomplete and not currently used
 // TODO: Update to accept username parameter
@@ -383,12 +493,16 @@ func (s *WorkflowServiceV2) loadPatchChain(ctx context.Context, patchArtifacts [
 }
 
 // GetWorkflowComponentsAtVersion fetches workflow components up to a specific version
-// seq is 1-indexed (e.g., seq=3 means apply patches 1, 2, 3)
+// seq indexing:
+//   - seq=0: returns base DAG version only (no patches)
+//   - seq=1: returns base + patch 1
+//   - seq=2: returns base + patches 1,2
+//   - etc.
 func (s *WorkflowServiceV2) GetWorkflowComponentsAtVersion(ctx context.Context, username, tagName string, seq int) (*models.WorkflowComponents, error) {
 	s.log.Info("fetching workflow components at version", "username", username, "tag", tagName, "seq", seq)
 
-	if seq < 1 {
-		return nil, fmt.Errorf("invalid seq: must be >= 1")
+	if seq < 0 {
+		return nil, fmt.Errorf("invalid seq: must be >= 0")
 	}
 
 	// Query 1: Resolve tag to artifact
@@ -401,16 +515,24 @@ func (s *WorkflowServiceV2) GetWorkflowComponentsAtVersion(ctx context.Context, 
 
 	// Handle based on artifact kind
 	if artifact.IsDAGVersion() {
-		// DAG version has no patches, seq must be 0 or 1
-		if seq != 1 {
-			return nil, fmt.Errorf("dag_version only has seq=1, requested seq=%d", seq)
+		// DAG version has no patches, seq must be 0 or 1 (both return same thing)
+		if seq > 1 {
+			return nil, fmt.Errorf("dag_version only supports seq=0 or seq=1, requested seq=%d", seq)
 		}
 		if err := s.loadDAGVersionComponents(ctx, artifact, components); err != nil {
 			return nil, err
 		}
 	} else if artifact.IsPatchSet() {
-		if err := s.loadPatchSetComponentsAtVersion(ctx, artifact, components, seq); err != nil {
-			return nil, err
+		// Special case: seq=0 means return just the base version
+		if seq == 0 {
+			if err := s.loadBaseVersionOnly(ctx, artifact, components); err != nil {
+				return nil, err
+			}
+		} else {
+			// seq >= 1: apply patches up to seq
+			if err := s.loadPatchSetComponentsAtVersion(ctx, artifact, components, seq); err != nil {
+				return nil, err
+			}
 		}
 	} else {
 		return nil, fmt.Errorf("unsupported artifact kind: %s", artifact.Kind)
@@ -424,6 +546,29 @@ func (s *WorkflowServiceV2) GetWorkflowComponentsAtVersion(ctx context.Context, 
 	)
 
 	return components, nil
+}
+
+// loadBaseVersionOnly loads only the base DAG version without any patches (for seq=0)
+func (s *WorkflowServiceV2) loadBaseVersionOnly(ctx context.Context, artifact *models.Artifact, components *models.WorkflowComponents) error {
+	s.log.Info("loading base version only (seq=0)", "artifact_id", artifact.ArtifactID)
+
+	if artifact.BaseVersion == nil {
+		return fmt.Errorf("patch_set artifact missing base_version")
+	}
+
+	components.BaseVersion = artifact.BaseVersion
+	components.Depth = 0        // Base version has depth 0
+	components.PatchCount = 0   // No patches for version 0
+
+	// Load base DAG
+	if err := s.loadBaseDAG(ctx, artifact, components); err != nil {
+		return err
+	}
+
+	// No patches to load
+	components.PatchChain = []models.PatchInfo{}
+
+	return nil
 }
 
 // loadPatchSetComponentsAtVersion loads components for a patch set up to a specific version

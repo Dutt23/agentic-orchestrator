@@ -26,29 +26,28 @@ import BranchComparison from '../components/BranchComparison';
 import BranchDiffCanvas from '../components/BranchDiffCanvas';
 import BranchDiffOverlay from '../components/BranchDiffOverlay';
 import { mockWorkflows, getAllWorkflows, getBranches, getLatestVersion } from '../data/mockWorkflows';
-import { applyDiffColorsToNodes, applyDiffColorsToEdges } from '../utils/workflowDiff';
-import { getWorkflow } from '../services/api';
+import { applyDiffColorsToNodes, applyDiffColorsToEdges, computeWorkflowDiff } from '../utils/workflowDiff';
+import { getWorkflow, getWorkflowVersion, updateWorkflow } from '../services/api';
 
 // Function to validate the flow
 const validateFlow = (nodes, edges) => {
-  if (nodes.length === 0) return { isValid: false, message: 'No nodes in the flow' };
-  if (edges.length === 0) return { isValid: false, message: 'No connecting nodes' };
-
-  // Create a Set of all source node IDs from edges
-  const sourceNodeIds = new Set(edges.map(edge => edge.source));
-  // Count nodes without outgoing edges
-  const nodesWithoutOutgoingEdges = nodes.filter(
-    node => !sourceNodeIds.has(node.id)
-  );
-  if (nodesWithoutOutgoingEdges.length === 0) {
-    return { isValid: false, message: 'Flow contains a cycle or all nodes are connected' };
+  // Must have at least one node
+  if (nodes.length === 0) {
+    return { isValid: false, message: 'Flow must have at least one node' };
   }
-  if (nodesWithoutOutgoingEdges.length > 1) {
+
+  // Must have at least one terminal node (node with no outgoing edges)
+  // Note: cycles are allowed (for loops)
+  const sourceNodeIds = new Set(edges.map(edge => edge.source));
+  const terminalNodes = nodes.filter(node => !sourceNodeIds.has(node.id));
+
+  if (terminalNodes.length === 0) {
     return {
       isValid: false,
-      message: `Multiple nodes (${nodesWithoutOutgoingEdges.length}) don't have outgoing edges. Only one node can be the end node.`,
+      message: 'Flow must have at least one terminal node (node with no outgoing edges)'
     };
   }
+
   return { isValid: true };
 };
 
@@ -77,6 +76,96 @@ const convertToReactFlowEdges = (workflowEdges) => {
   }));
 };
 
+// Helper function to convert ReactFlow nodes back to workflow format
+const convertFromReactFlowNodes = (reactFlowNodes) => {
+  return reactFlowNodes.map(node => ({
+    id: node.id,
+    type: node.data.type || 'task',
+    config: node.data.config || {}
+  }));
+};
+
+// Helper function to convert ReactFlow edges back to workflow format
+const convertFromReactFlowEdges = (reactFlowEdges) => {
+  return reactFlowEdges.map(edge => ({
+    from: edge.source,
+    to: edge.target,
+    condition: edge.label || undefined
+  }));
+};
+
+// Generate JSON Patch operations from workflow diff
+const generatePatchOperations = (original, current) => {
+  const operations = [];
+
+  // Track which original nodes/edges still exist
+  const originalNodeIds = new Set(original.nodes.map(n => n.id));
+  const currentNodeIds = new Set(current.nodes.map(n => n.id));
+
+  // Added nodes
+  current.nodes.forEach((node, index) => {
+    if (!originalNodeIds.has(node.id)) {
+      operations.push({
+        op: 'add',
+        path: '/nodes/-',
+        value: node
+      });
+    }
+  });
+
+  // Removed nodes (in reverse to maintain indices)
+  original.nodes.forEach((node, index) => {
+    if (!currentNodeIds.has(node.id)) {
+      operations.push({
+        op: 'remove',
+        path: `/nodes/${index}`
+      });
+    }
+  });
+
+  // Modified nodes
+  current.nodes.forEach((currentNode, currentIndex) => {
+    const originalNode = original.nodes.find(n => n.id === currentNode.id);
+    if (originalNode && JSON.stringify(originalNode) !== JSON.stringify(currentNode)) {
+      const originalIndex = original.nodes.findIndex(n => n.id === currentNode.id);
+      operations.push({
+        op: 'replace',
+        path: `/nodes/${originalIndex}`,
+        value: currentNode
+      });
+    }
+  });
+
+  // Similar for edges
+  const originalEdgeKeys = new Set(original.edges.map(e => `${e.from}-${e.to}`));
+  const currentEdgeKeys = new Set(current.edges.map(e => `${e.from}-${e.to}`));
+
+  // Added edges
+  current.edges.forEach(edge => {
+    const key = `${edge.from}-${edge.to}`;
+    if (!originalEdgeKeys.has(key)) {
+      operations.push({
+        op: 'add',
+        path: '/edges/-',
+        value: edge
+      });
+    }
+  });
+
+  // Removed edges
+  original.edges.forEach((edge, index) => {
+    const key = `${edge.from}-${edge.to}`;
+    if (!currentEdgeKeys.has(key)) {
+      operations.push({
+        op: 'remove',
+        path: `/edges/${index}`
+      });
+    }
+  });
+
+  return operations;
+};
+
 export default function App() {
   // Routing - owner comes from X-User-ID header, not URL
   // React Router automatically decodes URL parameters
@@ -97,7 +186,10 @@ export default function App() {
   const [selectedVersionIndex, setSelectedVersionIndex] = useState(0);
   const [currentWorkflow, setCurrentWorkflow] = useState(null);
   const [workflowVersions, setWorkflowVersions] = useState([]);
+  const [workflowMetadata, setWorkflowMetadata] = useState(null); // Store API metadata (kind, depth, patch_count, etc.)
+  const [patchChain, setPatchChain] = useState([]); // Store patch history from API
   const [useMockData, setUseMockData] = useState(false); // Fallback to mock data if API fails
+  const [originalWorkflow, setOriginalWorkflow] = useState(null); // Store original workflow for diff
 
   // Compare mode state
   const [isComparing, setIsComparing] = useState(false);
@@ -130,6 +222,23 @@ export default function App() {
             setSelectedBranch(tag);
             setCurrentWorkflow(workflow);
 
+            // Store metadata
+            setWorkflowMetadata({
+              kind: data.kind,
+              depth: data.depth,
+              patch_count: data.patch_count,
+              artifact_id: data.artifact_id,
+              created_at: data.created_at,
+              created_by: data.created_by
+            });
+
+            // Store patch chain if available
+            if (data.components && data.components.patches) {
+              setPatchChain(data.components.patches);
+            } else {
+              setPatchChain([]);
+            }
+
             // Convert to ReactFlow format
             const reactFlowNodes = convertToReactFlowNodes(workflow.nodes || []);
             const reactFlowEdges = convertToReactFlowEdges(workflow.edges || []);
@@ -137,6 +246,15 @@ export default function App() {
             setFlowData({
               nodes: reactFlowNodes,
               edges: reactFlowEdges
+            });
+
+            // Store original workflow for diff calculation
+            // Convert back to workflow format to ensure symmetric comparison
+            const originalNodes = convertFromReactFlowNodes(reactFlowNodes);
+            const originalEdges = convertFromReactFlowEdges(reactFlowEdges);
+            setOriginalWorkflow({
+              nodes: originalNodes,
+              edges: originalEdges
             });
 
             setUseMockData(false);
@@ -251,7 +369,8 @@ export default function App() {
     [selectedNode]
   );
 
-  const handleSave = useCallback(() => {
+  const handleSave = useCallback(async () => {
+    // Validate the flow first
     const validation = validateFlow(flowData.nodes, flowData.edges);
 
     if (!validation.isValid) {
@@ -266,16 +385,125 @@ export default function App() {
       return;
     }
 
-    toast({
-      title: 'Flow saved successfully',
-      status: 'success',
-      duration: 3000,
-      isClosable: true,
-      position: 'top-right',
-    });
+    // If using API data and we have a tag, generate patches and update
+    if (!useMockData && tag && originalWorkflow) {
+      try {
+        // Convert current ReactFlow data to workflow format
+        const currentWorkflowNodes = convertFromReactFlowNodes(flowData.nodes);
+        const currentWorkflowEdges = convertFromReactFlowEdges(flowData.edges);
 
-    // Here you would typically call your API to save the flow
-  }, [flowData, toast]);
+        const currentWorkflow = {
+          nodes: currentWorkflowNodes,
+          edges: currentWorkflowEdges,
+        };
+
+        // Generate JSON Patch operations
+        const operations = generatePatchOperations(originalWorkflow, currentWorkflow);
+
+        // Check if there are any changes
+        if (operations.length === 0) {
+          toast({
+            title: 'No changes to save',
+            status: 'info',
+            duration: 3000,
+            isClosable: true,
+            position: 'top-right',
+          });
+          return;
+        }
+
+        // Validate that patches can be applied (basic check)
+        // This is a simple validation - the backend will do more thorough validation
+        const hasValidOps = operations.every(op =>
+          ['add', 'remove', 'replace'].includes(op.op) && op.path
+        );
+
+        if (!hasValidOps) {
+          toast({
+            title: 'Invalid patch operations',
+            description: 'Generated patches contain invalid operations',
+            status: 'error',
+            duration: 5000,
+            isClosable: true,
+            position: 'top-right',
+          });
+          return;
+        }
+
+        // Send patches to backend
+        const result = await updateWorkflow(tag, operations, 'Manual workflow update');
+
+        toast({
+          title: 'Flow saved successfully',
+          description: `Applied ${operations.length} changes`,
+          status: 'success',
+          duration: 3000,
+          isClosable: true,
+          position: 'top-right',
+        });
+
+        console.log('Workflow updated:', result);
+
+        // Reload the workflow to get updated patch chain and metadata
+        try {
+          const data = await getWorkflow(tag, true);
+
+          if (data.workflow) {
+            const workflow = data.workflow;
+
+            // Update metadata
+            setWorkflowMetadata({
+              kind: data.kind,
+              depth: data.depth,
+              patch_count: data.patch_count,
+              artifact_id: data.artifact_id,
+              created_at: data.created_at,
+              created_by: data.created_by
+            });
+
+            // Update patch chain
+            if (data.components && data.components.patches) {
+              setPatchChain(data.components.patches);
+            } else {
+              setPatchChain([]);
+            }
+
+            // Update original workflow for future diffs
+            const originalNodes = convertFromReactFlowNodes(flowData.nodes);
+            const originalEdges = convertFromReactFlowEdges(flowData.edges);
+            setOriginalWorkflow({
+              nodes: originalNodes,
+              edges: originalEdges
+            });
+          }
+        } catch (reloadError) {
+          console.warn('Failed to reload workflow after save:', reloadError);
+          // Still update original workflow even if reload fails
+          setOriginalWorkflow(currentWorkflow);
+        }
+
+      } catch (error) {
+        console.error('Failed to save workflow:', error);
+        toast({
+          title: 'Failed to save flow',
+          description: error.message || 'An error occurred while saving',
+          status: 'error',
+          duration: 5000,
+          isClosable: true,
+          position: 'top-right',
+        });
+      }
+    } else {
+      // Mock data or no tag - just show success message
+      toast({
+        title: 'Flow saved successfully',
+        status: 'success',
+        duration: 3000,
+        isClosable: true,
+        position: 'top-right',
+      });
+    }
+  }, [flowData, toast, useMockData, tag, originalWorkflow]);
 
   // Handle workflow change
   const handleWorkflowChange = useCallback((workflowId) => {
@@ -352,6 +580,79 @@ export default function App() {
     setIsComparing(false);
     setComparisonData(null);
   }, []);
+
+  // Handle version comparison - reuses handleComparisonResult logic
+  const handleCompareVersions = useCallback(async (version1, version2, viewMode = 'sidebyside') => {
+    if (!tag) return;
+
+    try {
+      // Helper to fetch a specific version (0 = base, >0 = patch version)
+      const fetchVersion = async (seq) => {
+        if (seq === 0) {
+          // For version 0, we need to get the base dag_version
+          // First get the current workflow to find the base
+          const data = await getWorkflow(tag, true);
+
+          // If we have patches, we need to reconstruct the base workflow
+          // by subtracting all patches from the materialized workflow
+          // For now, we'll try to get version 1 and work backwards
+          // A better solution would be to have a dedicated API endpoint
+
+          // Temporary workaround: Get the unmaterialized workflow which should be the base
+          const baseData = await getWorkflow(tag, false);
+
+          // The workflow in baseData should be the base (before any patches)
+          if (baseData && baseData.workflow) {
+            return baseData;
+          }
+
+          throw new Error('Unable to fetch base version (version 0)');
+        } else {
+          // For versions >= 1, use the versions endpoint
+          return await getWorkflowVersion(tag, seq, true);
+        }
+      };
+
+      // Fetch both versions from API
+      const [data1, data2] = await Promise.all([
+        fetchVersion(version1),
+        fetchVersion(version2)
+      ]);
+
+      const workflowA = data1.workflow;
+      const workflowB = data2.workflow;
+
+      // Calculate diff using workflowDiff utility
+      const diff = computeWorkflowDiff(workflowA, workflowB);
+
+      // Reuse existing comparison result handler
+      handleComparisonResult({
+        branchA: `Version ${version1}`,
+        branchB: `Version ${version2}`,
+        workflowA,
+        workflowB,
+        diff,
+        viewMode
+      });
+
+      toast({
+        title: 'Comparing versions',
+        description: `Version ${version1} vs Version ${version2}`,
+        status: 'info',
+        duration: 2000,
+        isClosable: true,
+      });
+    } catch (error) {
+      console.error('Failed to compare versions:', error);
+      toast({
+        title: 'Comparison failed',
+        description: error.message,
+        status: 'error',
+        duration: 3000,
+        isClosable: true,
+      });
+    }
+  }, [tag, toast, handleComparisonResult]);
 
   const handleBackToList = () => {
     navigate('/');
@@ -552,6 +853,9 @@ export default function App() {
                 onVersionChange={handleVersionChange}
                 isComparing={isComparing}
                 comparisonData={comparisonData}
+                patchChain={patchChain}
+                workflowMetadata={workflowMetadata}
+                onCompareVersions={handleCompareVersions}
               />
             </Box>
           </Box>

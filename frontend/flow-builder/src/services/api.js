@@ -99,6 +99,24 @@ export async function getWorkflowVersion(tag, seq, materialize = true) {
 }
 
 /**
+ * Update a workflow by applying JSON Patch operations
+ * @param {string} tag - Workflow tag name
+ * @param {Array<Object>} operations - JSON Patch operations (add, remove, replace)
+ * @param {string} description - Optional description of the changes
+ * @returns {Promise<Object>} Updated workflow details
+ */
+export async function updateWorkflow(tag, operations, description = '') {
+  const encodedTag = encodeURIComponent(tag);
+  return await apiRequest(`/workflows/${encodedTag}/patch`, {
+    method: 'PATCH',
+    body: JSON.stringify({
+      operations: operations,
+      description: description,
+    }),
+  });
+}
+
+/**
  * Delete a workflow tag
  * @param {string} tag - Workflow tag name to delete
  * @returns {Promise<Object>} Deletion confirmation
@@ -115,5 +133,6 @@ export default {
   getWorkflow,
   getWorkflowVersion,
   createWorkflow,
+  updateWorkflow,
   deleteWorkflow,
 };

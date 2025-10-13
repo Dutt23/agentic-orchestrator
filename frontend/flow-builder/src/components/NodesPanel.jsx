@@ -5,6 +5,7 @@ import NodeItem from './NodeItem';
 import CodeView from './CodeView';
 import VersionDiff from './VersionDiff';
 import DiffDetailsPanel from './DiffDetailsPanel';
+import VersionHistory from './VersionHistory';
 import nodeTypesData from '../data/nodeTypes.json';
 
 export default function NodesPanel({
@@ -16,7 +17,10 @@ export default function NodesPanel({
   selectedVersionIndex = 0,
   onVersionChange,
   isComparing = false,
-  comparisonData = null
+  comparisonData = null,
+  patchChain = [],
+  workflowMetadata = null,
+  onCompareVersions
 }) {
   const [nodeTypes, setNodeTypes] = useState([]);
 
@@ -55,7 +59,7 @@ export default function NodesPanel({
         <TabList px={4} pt={2}>
           <Tab fontSize="xs">Nodes</Tab>
           <Tab fontSize="xs">Code</Tab>
-          <Tab fontSize="xs">Versions</Tab>
+          <Tab fontSize="xs">History</Tab>
           {isComparing && <Tab fontSize="xs">Diff</Tab>}
         </TabList>
 
@@ -109,12 +113,12 @@ export default function NodesPanel({
             />
           </TabPanel>
 
-          {/* Version Diff Tab */}
+          {/* Version History Tab */}
           <TabPanel>
-            <VersionDiff
-              versions={workflowVersions}
-              selectedVersionIndex={selectedVersionIndex}
-              onVersionChange={onVersionChange}
+            <VersionHistory
+              patches={patchChain}
+              metadata={workflowMetadata}
+              onCompareVersions={onCompareVersions}
             />
           </TabPanel>
 

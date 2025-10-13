@@ -393,6 +393,268 @@ func (h *WorkflowHandler) DeleteWorkflow(c echo.Context) error {
 	})
 }
 
+// PatchWorkflow applies JSON Patch operations to create a new workflow version
+// PATCH /api/v1/workflows/:tag/patch
+func (h *WorkflowHandler) PatchWorkflow(c echo.Context) error {
+	ctx := c.Request().Context()
+	tagNameEncoded := c.Param("tag")
+
+	// URL-decode the tag name
+	tagName, err := url.QueryUnescape(tagNameEncoded)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{
+			"error": "invalid tag name encoding",
+		})
+	}
+
+	// Extract username from context
+	username, err := middleware.RequireUsername(c)
+	if err != nil {
+		return err
+	}
+
+	// Parse request body
+	var req struct {
+		Operations  []map[string]interface{} `json:"operations"`
+		Description string                   `json:"description"`
+	}
+
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{
+			"error": "invalid request body",
+		})
+	}
+
+	if len(req.Operations) == 0 {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{
+			"error": "operations array is required and cannot be empty",
+		})
+	}
+
+	h.components.Logger.Info("patch workflow request",
+		"username", username,
+		"tag", tagName,
+		"operation_count", len(req.Operations),
+		"description", req.Description)
+
+	// Validate tag name
+	if errMsg := service.ValidateUserTagName(tagName); errMsg != "" {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{
+			"error": fmt.Sprintf("invalid tag name: %s", errMsg),
+		})
+	}
+
+	// Get current workflow with full materialization
+	components, err := h.workflowService.GetWorkflowComponents(ctx, username, tagName)
+	if err != nil {
+		h.components.Logger.Error("failed to get workflow for patching",
+			"username", username,
+			"tag", tagName,
+			"error", err)
+		return c.JSON(http.StatusNotFound, map[string]interface{}{
+			"error": "workflow not found",
+		})
+	}
+
+	// Materialize current workflow to apply patches
+	currentWorkflow, err := h.materializerService.Materialize(ctx, components)
+	if err != nil {
+		h.components.Logger.Error("failed to materialize workflow for patching",
+			"username", username,
+			"tag", tagName,
+			"error", err)
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{
+			"error": "failed to load current workflow",
+		})
+	}
+
+	// Validate patch operations by trying to apply them
+	_, err = h.applyJSONPatchToWorkflow(currentWorkflow, req.Operations)
+	if err != nil {
+		h.components.Logger.Warn("failed to validate patch operations",
+			"username", username,
+			"tag", tagName,
+			"error", err)
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{
+			"error": fmt.Sprintf("invalid patch operations: %v", err),
+		})
+	}
+
+	// Create patch artifact (stores operations, not the full patched workflow)
+	patchReq := &service.CreatePatchRequest{
+		Username:    username,
+		TagName:     tagName,
+		Operations:  req.Operations,
+		Description: req.Description,
+		CreatedBy:   username,
+	}
+
+	resp, err := h.workflowService.CreatePatch(ctx, patchReq)
+	if err != nil {
+		h.components.Logger.Error("failed to create patch",
+			"username", username,
+			"tag", tagName,
+			"error", err)
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{
+			"error": fmt.Sprintf("failed to save patch: %v", err),
+		})
+	}
+
+	h.components.Logger.Info("patch created successfully",
+		"username", username,
+		"tag", tagName,
+		"artifact_id", resp.ArtifactID,
+		"depth", resp.Depth,
+		"op_count", resp.OpCount)
+
+	// Build response
+	response := map[string]interface{}{
+		"artifact_id": resp.ArtifactID,
+		"cas_id":      resp.CASID,
+		"depth":       resp.Depth,
+		"op_count":    resp.OpCount,
+		"tag":         resp.TagName,
+		"owner":       resp.Username,
+		"description": req.Description,
+		"created_at":  resp.CreatedAt,
+	}
+
+	return c.JSON(http.StatusOK, response)
+}
+
+// applyJSONPatchToWorkflow applies JSON Patch operations to a workflow
+func (h *WorkflowHandler) applyJSONPatchToWorkflow(workflow map[string]interface{}, operations []map[string]interface{}) (map[string]interface{}, error) {
+	// Create a copy of the workflow to avoid modifying the original
+	patchedWorkflow := make(map[string]interface{})
+	for k, v := range workflow {
+		patchedWorkflow[k] = v
+	}
+
+	// Apply each operation
+	for i, op := range operations {
+		opType, ok := op["op"].(string)
+		if !ok {
+			return nil, fmt.Errorf("operation %d missing 'op' field", i)
+		}
+
+		path, ok := op["path"].(string)
+		if !ok {
+			return nil, fmt.Errorf("operation %d missing 'path' field", i)
+		}
+
+		switch opType {
+		case "add":
+			if err := h.applyAddOperation(patchedWorkflow, path, op["value"]); err != nil {
+				return nil, fmt.Errorf("operation %d (add) failed: %w", i, err)
+			}
+
+		case "remove":
+			if err := h.applyRemoveOperation(patchedWorkflow, path); err != nil {
+				return nil, fmt.Errorf("operation %d (remove) failed: %w", i, err)
+			}
+
+		case "replace":
+			if err := h.applyReplaceOperation(patchedWorkflow, path, op["value"]); err != nil {
+				return nil, fmt.Errorf("operation %d (replace) failed: %w", i, err)
+			}
+
+		default:
+			return nil, fmt.Errorf("unsupported operation type: %s", opType)
+		}
+	}
+
+	return patchedWorkflow, nil
+}
+
+// applyAddOperation handles "add" operations
+func (h *WorkflowHandler) applyAddOperation(workflow map[string]interface{}, path string, value interface{}) error {
+	if path == "/nodes/-" {
+		// Add node to the end of nodes array
+		nodes, ok := workflow["nodes"].([]interface{})
+		if !ok {
+			workflow["nodes"] = []interface{}{value}
+			return nil
+		}
+		workflow["nodes"] = append(nodes, value)
+		return nil
+	}
+
+	if path == "/edges/-" {
+		// Add edge to the end of edges array
+		edges, ok := workflow["edges"].([]interface{})
+		if !ok {
+			workflow["edges"] = []interface{}{value}
+			return nil
+		}
+		workflow["edges"] = append(edges, value)
+		return nil
+	}
+
+	return fmt.Errorf("unsupported add path: %s", path)
+}
+
+// applyRemoveOperation handles "remove" operations
+func (h *WorkflowHandler) applyRemoveOperation(workflow map[string]interface{}, path string) error {
+	// Parse path like "/nodes/2" or "/edges/1"
+	var collection string
+	var index int
+
+	if n, err := fmt.Sscanf(path, "/%[^/]/%d", &collection, &index); err != nil || n != 2 {
+		return fmt.Errorf("invalid remove path format: %s", path)
+	}
+
+	if collection == "nodes" {
+		nodes, ok := workflow["nodes"].([]interface{})
+		if !ok || index < 0 || index >= len(nodes) {
+			return fmt.Errorf("invalid node index: %d", index)
+		}
+		workflow["nodes"] = append(nodes[:index], nodes[index+1:]...)
+		return nil
+	}
+
+	if collection == "edges" {
+		edges, ok := workflow["edges"].([]interface{})
+		if !ok || index < 0 || index >= len(edges) {
+			return fmt.Errorf("invalid edge index: %d", index)
+		}
+		workflow["edges"] = append(edges[:index], edges[index+1:]...)
+		return nil
+	}
+
+	return fmt.Errorf("unsupported remove collection: %s", collection)
+}
+
+// applyReplaceOperation handles "replace" operations
+func (h *WorkflowHandler) applyReplaceOperation(workflow map[string]interface{}, path string, value interface{}) error {
+	// Parse path like "/nodes/2" or "/edges/1"
+	var collection string
+	var index int
+
+	if n, err := fmt.Sscanf(path, "/%[^/]/%d", &collection, &index); err != nil || n != 2 {
+		return fmt.Errorf("invalid replace path format: %s", path)
+	}
+
+	if collection == "nodes" {
+		nodes, ok := workflow["nodes"].([]interface{})
+		if !ok || index < 0 || index >= len(nodes) {
+			return fmt.Errorf("invalid node index: %d", index)
+		}
+		nodes[index] = value
+		return nil
+	}
+
+	if collection == "edges" {
+		edges, ok := workflow["edges"].([]interface{})
+		if !ok || index < 0 || index >= len(edges) {
+			return fmt.Errorf("invalid edge index: %d", index)
+		}
+		edges[index] = value
+		return nil
+	}
+
+	return fmt.Errorf("unsupported replace collection: %s", collection)
+}
+
 // GetWorkflowVersion retrieves a workflow at a specific version/sequence number
 // GET /api/v1/workflows/:tag/versions/:seq?materialize=false
 //

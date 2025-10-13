@@ -5,7 +5,7 @@ const AuthContext = createContext(null);
 export function AuthProvider({ children }) {
   // Get username from environment variable or default to 'sdutt'
   const [username] = useState(() => {
-    return import.meta.env.VITE_DEV_USERNAME || 'sdutt';
+    return import.meta.env.VITE_DEV_USERNAME || 'test-user';
   });
 
   const value = {

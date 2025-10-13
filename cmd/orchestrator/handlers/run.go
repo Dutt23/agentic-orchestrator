@@ -143,7 +143,9 @@ func (h *RunHandler) irToWorkflowSchema(ir *sdk.IR) *compiler.WorkflowSchema {
 		if node.ConfigRef != "" {
 			configData, err := h.casClient.Get(node.ConfigRef)
 			if err == nil {
-				json.Unmarshal(configData, &wfNode.Config)
+				if bytes, ok := configData.([]byte); ok {
+					json.Unmarshal(bytes, &wfNode.Config)
+				}
 			}
 		}
 
