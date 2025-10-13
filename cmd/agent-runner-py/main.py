@@ -199,7 +199,25 @@ class AgentService:
                 llm_metadata=llm_result
             )
 
-            # Publish success result to Redis
+            # Signal completion to coordinator (new architecture)
+            completion_signal = {
+                "version": "1.0",
+                "job_id": job_id,
+                "run_id": run_id,
+                "node_id": node_id,
+                "status": "completed",
+                "result_ref": result_ref,
+                "metadata": {
+                    "tool_calls": [tc.get('function', {}).get('name') for tc in tool_calls],
+                    "tokens_used": llm_result.get('tokens_used'),
+                    "cache_hit": llm_result.get('cache_hit'),
+                    "execution_time_ms": llm_result.get('execution_time_ms'),
+                    "llm_model": llm_result.get('model')
+                }
+            }
+            self.redis.signal_completion(completion_signal)
+
+            # Publish result to job-specific queue (backward compatibility)
             self.redis.publish_result(job_id, {
                 "version": "1.0",
                 "job_id": job_id,
@@ -220,7 +238,23 @@ class AgentService:
         except Exception as e:
             logger.error(f"Job {job_id} failed: {e}", exc_info=True)
 
-            # Publish failure result to Redis
+            # Signal failure to coordinator (new architecture)
+            failure_signal = {
+                "version": "1.0",
+                "job_id": job_id,
+                "run_id": run_id,
+                "node_id": node_id,
+                "status": "failed",
+                "result_ref": "",  # No result on failure
+                "metadata": {
+                    "error_type": type(e).__name__,
+                    "error_message": str(e),
+                    "retryable": self._is_retryable(e)
+                }
+            }
+            self.redis.signal_completion(failure_signal)
+
+            # Publish failure result to job-specific queue (backward compatibility)
             self.redis.publish_result(job_id, {
                 "version": "1.0",
                 "job_id": job_id,

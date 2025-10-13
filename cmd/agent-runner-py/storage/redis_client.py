@@ -65,6 +65,25 @@ class RedisClient:
             logger.error(f"Failed to publish result: {e}")
             raise
 
+    def signal_completion(self, completion_signal: Dict[str, Any]):
+        """Signal completion to workflow coordinator.
+
+        This publishes to the shared completion_signals queue that the
+        coordinator consumes for choreography.
+
+        Args:
+            completion_signal: CompletionSignal matching coordinator schema
+        """
+        try:
+            payload = json.dumps(completion_signal)
+            self.client.rpush("completion_signals", payload)
+            logger.info(f"Signaled completion to coordinator: run={completion_signal.get('run_id')}, "
+                       f"node={completion_signal.get('node_id')}, "
+                       f"status={completion_signal.get('status')}")
+        except Exception as e:
+            logger.error(f"Failed to signal completion: {e}")
+            raise
+
     def close(self):
         """Close Redis connection."""
         if self.client:
