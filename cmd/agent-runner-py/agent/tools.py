@@ -30,6 +30,7 @@ def get_tool_schemas() -> List[Dict[str, Any]]:
                             "items": {
                                 "type": "object",
                                 "required": ["step"],
+                                "additionalProperties": False,
                                 "properties": {
                                     "step": {
                                         "type": "string",
