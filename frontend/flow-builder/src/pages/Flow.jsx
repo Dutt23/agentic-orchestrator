@@ -78,8 +78,9 @@ const convertToReactFlowEdges = (workflowEdges) => {
 };
 
 export default function App() {
-  // Routing
-  const { owner, tag } = useParams();
+  // Routing - owner comes from X-User-ID header, not URL
+  // React Router automatically decodes URL parameters
+  const { tag } = useParams();
   const navigate = useNavigate();
 
   // Component state
@@ -115,8 +116,8 @@ export default function App() {
 
   // Load workflow from API when URL params change
   useEffect(() => {
-    // If we have URL params (owner and tag), try to load from API
-    if (owner && tag) {
+    // If we have tag in URL, try to load from API
+    if (tag) {
       const loadFromAPI = async () => {
         setIsLoading(true);
         try {
@@ -165,7 +166,7 @@ export default function App() {
       setUseMockData(true);
       setIsLoading(false);
     }
-  }, [owner, tag, toast]);
+  }, [tag, toast]);
 
   // Load workflow when selection changes (mock data only)
   useEffect(() => {
@@ -202,7 +203,7 @@ export default function App() {
       nodes: reactFlowNodes,
       edges: reactFlowEdges
     });
-  }, [selectedWorkflowId, selectedBranch, selectedVersionIndex]);
+  }, [useMockData, selectedWorkflowId, selectedBranch, selectedVersionIndex]);
 
   const handleNodeDeselect = () => {
     setSelectedNode(null);
@@ -275,20 +276,6 @@ export default function App() {
 
     // Here you would typically call your API to save the flow
   }, [flowData, toast]);
-
-  if (isLoading) {
-    return (
-      <Flex justify="center" align="center" height="100vh">
-        <Spinner size="xl" />
-      </Flex>
-    );
-  }
-
-  // Get all workflows for selector
-  const allWorkflows = getAllWorkflows();
-
-  // Get branches for current workflow
-  const branches = selectedWorkflowId ? getBranches(selectedWorkflowId) : [];
 
   // Handle workflow change
   const handleWorkflowChange = useCallback((workflowId) => {
@@ -370,10 +357,25 @@ export default function App() {
     navigate('/');
   };
 
+  // Get all workflows for selector (mock data only)
+  const allWorkflows = useMockData ? getAllWorkflows() : [];
+
+  // Get branches for current workflow (mock data only)
+  const branches = useMockData && selectedWorkflowId ? getBranches(selectedWorkflowId) : [];
+
+  // Early return after all hooks have been called
+  if (isLoading) {
+    return (
+      <Flex justify="center" align="center" height="100vh">
+        <Spinner size="xl" />
+      </Flex>
+    );
+  }
+
   return (
     <Flex direction="column" height="100vh" width="100vw" bg="#f7f8fa" overflow="hidden">
       {/* Back button - only show if we have URL params (came from list) */}
-      {owner && tag && (
+      {tag && (
         <Box
           position="absolute"
           top="8px"

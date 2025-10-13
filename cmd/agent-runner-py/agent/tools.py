@@ -46,7 +46,12 @@ def get_tool_schemas() -> List[Dict[str, Any]]:
                                     # http_request params
                                     "url": {"type": "string", "description": "URL for HTTP request"},
                                     "method": {"type": "string", "enum": ["GET", "POST"], "description": "HTTP method"},
-                                    "params": {"type": "object", "description": "Query parameters or POST body"},
+                                    "params": {
+                                        "type": "object",
+                                        "description": "Query parameters or POST body",
+                                        "additionalProperties": False,
+                                        "properties": {}
+                                    },
                                     # table_sort params
                                     "field": {"type": "string", "description": "Field name to sort/filter by"},
                                     "order": {"type": "string", "enum": ["asc", "desc"], "description": "Sort order"},
@@ -54,10 +59,19 @@ def get_tool_schemas() -> List[Dict[str, Any]]:
                                     "condition": {
                                         "type": "object",
                                         "description": "Filter condition",
+                                        "required": ["field", "op", "value"],
+                                        "additionalProperties": False,
                                         "properties": {
                                             "field": {"type": "string"},
                                             "op": {"type": "string", "enum": ["<", ">", "<=", ">=", "==", "!="]},
-                                            "value": {}
+                                            "value": {
+                                                "description": "Value to compare against",
+                                                "anyOf": [
+                                                    {"type": "string"},
+                                                    {"type": "number"},
+                                                    {"type": "boolean"}
+                                                ]
+                                            }
                                         }
                                     },
                                     # table_select params
@@ -101,12 +115,15 @@ def get_tool_schemas() -> List[Dict[str, Any]]:
                         "patch_spec": {
                             "type": "object",
                             "description": "JSON Patch operations to apply",
+                            "required": ["operations"],
+                            "additionalProperties": False,
                             "properties": {
                                 "operations": {
                                     "type": "array",
                                     "items": {
                                         "type": "object",
                                         "required": ["op", "path"],
+                                        "additionalProperties": False,
                                         "properties": {
                                             "op": {
                                                 "type": "string",
@@ -118,7 +135,15 @@ def get_tool_schemas() -> List[Dict[str, Any]]:
                                                 "description": "JSON Pointer path (e.g., '/nodes/-')"
                                             },
                                             "value": {
-                                                "description": "Value for add/replace operations"
+                                                "description": "Value for add/replace operations",
+                                                "anyOf": [
+                                                    {"type": "object", "additionalProperties": True},
+                                                    {"type": "array", "items": {}},
+                                                    {"type": "string"},
+                                                    {"type": "number"},
+                                                    {"type": "boolean"},
+                                                    {"type": "null"}
+                                                ]
                                             }
                                         }
                                     }

@@ -11,8 +11,8 @@ function App() {
           {/* Landing page - list of workflows */}
           <Route path="/" element={<WorkflowList />} />
 
-          {/* Workflow detail page */}
-          <Route path="/workflow/:owner/:tag" element={<Flow />} />
+          {/* Workflow detail page - owner comes from X-User-ID header */}
+          <Route path="/workflow/:tag" element={<Flow />} />
 
           {/* Redirect any unknown routes to home */}
           <Route path="*" element={<Navigate to="/" replace />} />

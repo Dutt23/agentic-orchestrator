@@ -14,7 +14,7 @@ fi
 
 # Service-specific configuration
 export SERVICE_NAME="${SERVICE_NAME}"
-export PORT="${ORCHESTRATOR_PORT:-8080}"
+export PORT="${ORCHESTRATOR_PORT:-8081}"
 export LOG_LEVEL="${LOG_LEVEL:-info}"
 export LOG_FORMAT="${LOG_FORMAT:-json}"
 
@@ -27,12 +27,10 @@ echo "[${SERVICE_NAME}] Starting on port ${PORT}..."
 echo "[${SERVICE_NAME}] Environment: ${ENVIRONMENT:-development}"
 echo "[${SERVICE_NAME}] GOMAXPROCS: ${GOMAXPROCS}"
 
-# Build if needed
-if [ ! -f "${PROJECT_ROOT}/bin/${SERVICE_NAME}" ]; then
-    echo "[${SERVICE_NAME}] Building..."
-    cd "${PROJECT_ROOT}"
-    go build -o "bin/${SERVICE_NAME}" "./cmd/${SERVICE_NAME}"
-fi
+# Always rebuild to ensure latest changes
+echo "[${SERVICE_NAME}] Building..."
+cd "${PROJECT_ROOT}"
+go build -o "bin/${SERVICE_NAME}" "./cmd/${SERVICE_NAME}"
 
 # Run the service
 cd "${PROJECT_ROOT}"

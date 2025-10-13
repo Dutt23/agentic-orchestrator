@@ -62,7 +62,9 @@ export default function WorkflowList() {
 
   const handleWorkflowClick = (workflow) => {
     // Navigate to detailed workflow view
-    navigate(`/workflow/${workflow.owner}/${workflow.tag}`);
+    // Owner is passed via X-User-ID header, so we only need tag in URL
+    // URL-encode the tag to handle slashes (e.g., "test-user/main")
+    navigate(`/workflow/${encodeURIComponent(workflow.tag)}`);
   };
 
   const handleRefresh = () => {
