@@ -75,6 +75,30 @@ type Node struct {
 	Branch       *BranchConfig          `json:"branch,omitempty"`
 }
 
+// IsExecutableType returns true if this node requires a worker to execute
+// Executable nodes must be sent to worker streams (http, agent, hitl, etc.)
+// Non-executable nodes are pure control flow (branch, loop) and handled inline
+func (n *Node) IsExecutableType() bool {
+	executableTypes := map[string]bool{
+		"hitl":      true,
+		"http":      true,
+		"agent":     true,
+		"function":  true,
+		"transform": true,
+		"aggregate": true,
+		"filter":    true,
+	}
+	return executableTypes[n.Type]
+}
+
+// IsAbsorber returns true if this node should be handled inline by the coordinator
+// Absorber nodes (branch/loop) evaluate conditions and route without worker execution
+// Exception: Executable nodes with branch configs are NOT absorbers (e.g., HITL with branching)
+func (n *Node) IsAbsorber() bool {
+	hasBranchOrLoop := (n.Branch != nil && n.Branch.Enabled) || (n.Loop != nil && n.Loop.Enabled)
+	return hasBranchOrLoop && !n.IsExecutableType()
+}
+
 // LoopConfig defines loop behavior for a node
 type LoopConfig struct {
 	Enabled       bool       `json:"enabled"`

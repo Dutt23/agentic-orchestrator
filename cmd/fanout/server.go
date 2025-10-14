@@ -125,47 +125,63 @@ func (s *Server) HandleApproval(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Update status and add approval metadata
-	if req.Approved {
-		approvalData["status"] = "approved"
-	} else {
-		approvalData["status"] = "rejected"
-	}
-	approvalData["approved_by"] = username
-	approvalData["approved_at"] = time.Now().Unix()
-	approvalData["comment"] = req.Comment
-
-	// Merge any additional data from request
-	if req.Data != nil {
-		for k, v := range req.Data {
-			approvalData[k] = v
-		}
+	// Check if already processed
+	status, _ := approvalData["status"].(string)
+	if status != "pending" {
+		log.Printf("Approval already processed: run_id=%s, node_id=%s, status=%s",
+			req.RunID, req.NodeID, status)
+		http.Error(w, "Approval already processed", http.StatusConflict)
+		return
 	}
 
-	// Store updated approval data back to Redis
-	updatedJSON, err := json.Marshal(approvalData)
+	// NOTE: We do NOT update the status here. The HITL worker will update it
+	// when it processes the response and sends the completion signal.
+	// This prevents a race condition where the worker thinks it's already processed.
+
+	log.Printf("Approval decision received: run_id=%s, node_id=%s, approved=%v",
+		req.RunID, req.NodeID, req.Approved)
+
+	// Publish approval decision to wf.tasks.hitl.responses stream
+	// This will be picked up by HITL worker's response handler
+	approvalDecision := map[string]interface{}{
+		"run_id":       req.RunID,
+		"node_id":      req.NodeID,
+		"approved":     req.Approved,
+		"comment":      req.Comment,
+		"approved_by":  username,
+		"approved_at":  time.Now().Unix(),
+		"workflow_tag": approvalData["workflow_tag"], // Pass through from approval data
+	}
+
+	approvalDecisionJSON, err := json.Marshal(approvalDecision)
 	if err != nil {
-		log.Printf("Failed to marshal updated approval data: %v", err)
-		http.Error(w, "Failed to update approval", http.StatusInternalServerError)
+		log.Printf("Failed to marshal approval decision: %v", err)
+		http.Error(w, "Failed to process approval", http.StatusInternalServerError)
 		return
 	}
 
-	// Update Redis with same TTL (24 hours)
-	if err := s.redis.Set(ctx, approvalKey, updatedJSON, 24*time.Hour).Err(); err != nil {
-		log.Printf("Failed to update approval in Redis: %v", err)
-		http.Error(w, "Failed to update approval", http.StatusInternalServerError)
+	// Publish to wf.tasks.hitl.responses stream
+	_, err = s.redis.XAdd(ctx, &redis.XAddArgs{
+		Stream: "wf.tasks.hitl.responses",
+		Values: map[string]interface{}{
+			"approval": string(approvalDecisionJSON),
+		},
+	}).Result()
+	if err != nil {
+		log.Printf("Failed to publish approval decision to stream: %v", err)
+		http.Error(w, "Failed to process approval", http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("Approval updated successfully: run_id=%s, node_id=%s, status=%s",
-		req.RunID, req.NodeID, approvalData["status"])
+	log.Printf("Published approval decision to wf.tasks.hitl.responses stream: run_id=%s, node_id=%s, approved=%v",
+		req.RunID, req.NodeID, req.Approved)
 
 	// Send success response
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
-		"message": "Approval recorded successfully",
+		"message": "Approval recorded and queued for processing",
 		"run_id":  req.RunID,
 		"node_id": req.NodeID,
 		"status":  approvalData["status"],

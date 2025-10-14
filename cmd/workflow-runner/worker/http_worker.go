@@ -49,8 +49,7 @@ func (w *HTTPWorker) Start(ctx context.Context) error {
 		"consumer_name", w.consumerName)
 
 	// Create consumer group if it doesn't exist
-	err := w.redis.XGroupCreateMkStream(ctx, w.stream, w.consumerGroup, "0").Err()
-	if err != nil && err.Error() != "BUSYGROUP Consumer Group name already exists" {
+	if err := w.redis.XGroupCreateMkStream(ctx, w.stream, w.consumerGroup, "0").Err(); err != nil && err.Error() != "BUSYGROUP Consumer Group name already exists" {
 		return fmt.Errorf("failed to create consumer group: %w", err)
 	}
 

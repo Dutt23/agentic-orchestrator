@@ -409,10 +409,26 @@ export default function App() {
   }, []);
 
   const handleConnect = useCallback((connection) => {
-    setFlowData(prev => ({
-      ...prev,
-      edges: addEdge(connection, prev.edges),
-    }));
+    setFlowData(prev => {
+      // Find the source node to check its type
+      const sourceNode = prev.nodes.find(n => n.id === connection.source);
+
+      // Auto-add condition for HITL nodes based on the output handle
+      let edgeData = { ...connection };
+      if (sourceNode && sourceNode.data.type === 'hitl') {
+        // If connecting from 'approve' handle, add approval condition
+        if (connection.sourceHandle === 'approve') {
+          edgeData.label = '$.approved == true';
+        }
+        // If connecting from 'reject' handle or default, leave as default (no condition)
+        // The compiler will use this as the default path
+      }
+
+      return {
+        ...prev,
+        edges: addEdge(edgeData, prev.edges),
+      };
+    });
   }, []);
 
   const handleNodeUpdate = useCallback(

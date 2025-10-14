@@ -19,7 +19,7 @@ import {
   useToast,
 } from '@chakra-ui/react';
 import { FiPlus, FiRefreshCw } from 'react-icons/fi';
-import { listWorkflows } from '../services/api';
+import { listWorkflows, createWorkflow } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { AlertMessage, LoadingState } from '../components/common';
 
@@ -73,15 +73,63 @@ export default function WorkflowList() {
     });
   };
 
-  const handleCreateNew = () => {
-    // For now, just show a toast. Later can navigate to create page
-    toast({
-      title: 'Create workflow',
-      description: 'This feature is coming soon',
-      status: 'info',
-      duration: 3000,
-      isClosable: true,
-    });
+  const handleCreateNew = async () => {
+    try {
+      // Generate a unique tag using timestamp and random string
+      const timestamp = Date.now();
+      const randomStr = Math.random().toString(36).substring(2, 8);
+      const tagName = `workflow-${timestamp}-${randomStr}`;
+
+      // Create a dummy workflow with one blank agent node
+      const workflow = {
+        nodes: [
+          {
+            id: 'agent_start',
+            type: 'agent',
+            config: {
+              task: 'Enter your task here'
+            }
+          }
+        ],
+        edges: [],
+        metadata: {
+          name: 'New Workflow',
+          description: 'A new workflow',
+          version: '1.0.0',
+          tags: ['new']
+        }
+      };
+
+      toast({
+        title: 'Creating workflow...',
+        status: 'info',
+        duration: 2000,
+        isClosable: true,
+      });
+
+      // Call the API to create the workflow
+      const result = await createWorkflow(tagName, workflow);
+
+      toast({
+        title: 'Workflow created',
+        description: `Tag: ${result.tag}`,
+        status: 'success',
+        duration: 3000,
+        isClosable: true,
+      });
+
+      // Navigate to the new workflow
+      navigate(`/workflow/${encodeURIComponent(tagName)}`);
+    } catch (error) {
+      console.error('Failed to create workflow:', error);
+      toast({
+        title: 'Failed to create workflow',
+        description: error.message || 'An error occurred',
+        status: 'error',
+        duration: 5000,
+        isClosable: true,
+      });
+    }
   };
 
   // Format date for display

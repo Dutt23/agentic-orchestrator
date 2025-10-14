@@ -18,6 +18,7 @@ const (
 	NodeTypeFunction    = "function"
 	NodeTypeHTTP        = "http"
 	NodeTypeAgent       = "agent"
+	NodeTypeHITL        = "hitl"
 	NodeTypeTransform   = "transform"
 	NodeTypeAggregate   = "aggregate"
 	NodeTypeFilter      = "filter"
@@ -34,6 +35,7 @@ var validExecutableTypes = map[string]bool{
 	NodeTypeFunction:  true,
 	NodeTypeHTTP:      true,
 	NodeTypeAgent:     true,
+	NodeTypeHITL:      true,
 	NodeTypeTransform: true,
 	NodeTypeAggregate: true,
 	NodeTypeFilter:    true,
@@ -112,9 +114,12 @@ func CompileWorkflowSchema(schema *WorkflowSchema, casClient clients.CASClient) 
 		Nodes:   make(map[string]*sdk.Node),
 	}
 
-	// Track conditional edges for branch config creation
+	// Track edges that need branch config (includes both conditional and unconditional edges from same source)
 	conditionalEdges := make(map[string][]WorkflowEdge)
+	edgesFromNode := make(map[string][]WorkflowEdge) // All edges from each node
+
 	for _, edge := range schema.Edges {
+		edgesFromNode[edge.From] = append(edgesFromNode[edge.From], edge)
 		if edge.Condition != "" {
 			conditionalEdges[edge.From] = append(conditionalEdges[edge.From], edge)
 		}
@@ -122,7 +127,7 @@ func CompileWorkflowSchema(schema *WorkflowSchema, casClient clients.CASClient) 
 
 	// 1. Convert nodes with type mapping
 	for _, wfNode := range schema.Nodes {
-		node, err := convertWorkflowNode(&wfNode, conditionalEdges, casClient)
+		node, err := convertWorkflowNode(&wfNode, conditionalEdges, edgesFromNode, casClient)
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert node %s: %w", wfNode.ID, err)
 		}
@@ -174,7 +179,7 @@ func CompileWorkflowSchema(schema *WorkflowSchema, casClient clients.CASClient) 
 }
 
 // convertWorkflowNode converts workflow.schema.json node to IR node with type mapping
-func convertWorkflowNode(wfNode *WorkflowNode, conditionalEdges map[string][]WorkflowEdge, casClient clients.CASClient) (*sdk.Node, error) {
+func convertWorkflowNode(wfNode *WorkflowNode, conditionalEdges map[string][]WorkflowEdge, edgesFromNode map[string][]WorkflowEdge, casClient clients.CASClient) (*sdk.Node, error) {
 	node := &sdk.Node{
 		ID:           wfNode.ID,
 		Dependencies: []string{},
@@ -207,11 +212,27 @@ func convertWorkflowNode(wfNode *WorkflowNode, conditionalEdges map[string][]Wor
 	case NodeTypeConditional:
 		// Map to task with branch config (routing happens through branch rules)
 		node.Type = NodeTypeTask
-		branchConfig, err := createBranchConfig(wfNode, conditionalEdges[wfNode.ID])
+		// Pass ALL edges so default path gets populated with unconditional edges
+		allEdges := edgesFromNode[wfNode.ID]
+		branchConfig, err := createBranchConfig(wfNode, allEdges)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create branch config: %w", err)
 		}
 		node.Branch = branchConfig
+
+	case NodeTypeHITL:
+		// HITL node - preserve type for specialized routing
+		node.Type = NodeTypeHITL
+		// If HITL has conditional edges, create branch config automatically
+		// Pass ALL edges (not just conditional ones) so default path gets populated
+		if _, hasConditionalEdges := conditionalEdges[wfNode.ID]; hasConditionalEdges {
+			allEdges := edgesFromNode[wfNode.ID]
+			branchConfig, err := createBranchConfig(wfNode, allEdges)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create branch config for HITL: %w", err)
+			}
+			node.Branch = branchConfig
+		}
 
 	case NodeTypeLoop:
 		// Map to task with loop config (routing happens through loop logic)

@@ -254,6 +254,14 @@ func (c *Coordinator) handleCompletion(ctx context.Context, signal *CompletionSi
 		"dependents_count", len(node.Dependents))
 
 	// 7. Determine next nodes (handles branches, loops, etc.)
+	c.logger.Info("about to determine next nodes",
+		"run_id", signal.RunID,
+		"node_id", signal.NodeID,
+		"node_type", node.Type,
+		"has_branch", node.Branch != nil && node.Branch.Enabled,
+		"has_loop", node.Loop != nil && node.Loop.Enabled,
+		"dependents", node.Dependents)
+
 	nextNodes, err := c.operators.ControlFlowRouter.DetermineNextNodes(ctx, &operators.CompletionSignal{
 		Version:   signal.Version,
 		JobID:     signal.JobID,
@@ -271,7 +279,7 @@ func (c *Coordinator) handleCompletion(ctx context.Context, signal *CompletionSi
 		return
 	}
 
-	c.logger.Debug("routing to next nodes",
+	c.logger.Info("determined next nodes from branch/loop logic",
 		"run_id", signal.RunID,
 		"from_node", signal.NodeID,
 		"next_nodes", nextNodes,
@@ -570,7 +578,8 @@ func (c *Coordinator) routeToNextNodes(ctx context.Context, signal *CompletionSi
 		}
 
 		// Check if this is an absorber node (branch or loop) - handle inline
-		if (nextNode.Branch != nil && nextNode.Branch.Enabled) || (nextNode.Loop != nil && nextNode.Loop.Enabled) {
+		// Absorber logic is encapsulated in Node.IsAbsorber()
+		if nextNode.IsAbsorber() {
 			c.logger.Info("detected absorber node (branch/loop) - handling inline",
 				"run_id", signal.RunID,
 				"node_id", nextNodeID,
@@ -798,7 +807,7 @@ func (c *Coordinator) handleAbsorberNode(ctx context.Context, runID, fromNode, a
 			}
 
 			// Check if next node is also an absorber - recurse
-			if (nextNode.Branch != nil && nextNode.Branch.Enabled) || (nextNode.Loop != nil && nextNode.Loop.Enabled) {
+			if nextNode.IsAbsorber() {
 				c.logger.Info("next node is also an absorber - recursing",
 					"run_id", runID,
 					"absorber_node", absorberNodeID,

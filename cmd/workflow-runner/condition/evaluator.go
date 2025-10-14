@@ -2,6 +2,7 @@ package condition
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/google/cel-go/cel"
@@ -37,21 +38,25 @@ func (e *Evaluator) Evaluate(condition *sdk.Condition, output interface{}, conte
 
 // evaluateCEL evaluates a CEL expression
 func (e *Evaluator) evaluateCEL(expr string, output, context interface{}) (bool, error) {
+	// Convert JSONPath-style $.field to CEL output.field for compatibility
+	// This allows workflows to use $.approved instead of output.approved
+	normalizedExpr := strings.ReplaceAll(expr, "$.", "output.")
+
 	// Check cache first
 	e.mu.RLock()
-	prg, exists := e.cache[expr]
+	prg, exists := e.cache[normalizedExpr]
 	e.mu.RUnlock()
 
 	if !exists {
 		// Compile and cache
 		var err error
-		prg, err = e.compileCEL(expr)
+		prg, err = e.compileCEL(normalizedExpr)
 		if err != nil {
 			return false, err
 		}
 
 		e.mu.Lock()
-		e.cache[expr] = prg
+		e.cache[normalizedExpr] = prg
 		e.mu.Unlock()
 	}
 

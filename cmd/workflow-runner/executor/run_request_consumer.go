@@ -318,16 +318,10 @@ func (c *RunRequestConsumer) fetchWorkflowFromArtifact(ctx context.Context, arti
 
 // findEntryNodes finds nodes with no dependencies
 func (c *RunRequestConsumer) findEntryNodes(ir *sdk.IR) []string {
-	hasIncoming := make(map[string]bool)
-	for _, node := range ir.Nodes {
-		for _, dep := range node.Dependents {
-			hasIncoming[dep] = true
-		}
-	}
-
 	entryNodes := []string{}
-	for nodeID := range ir.Nodes {
-		if !hasIncoming[nodeID] {
+	for nodeID, node := range ir.Nodes {
+		// Entry nodes have no dependencies
+		if len(node.Dependencies) == 0 {
 			entryNodes = append(entryNodes, nodeID)
 		}
 	}
