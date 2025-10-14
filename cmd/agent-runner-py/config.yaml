@@ -23,7 +23,7 @@ llm:
   timeout_sec: 30
 
 orchestrator:
-  api_url: http://localhost:8081/api/v1
+  api_url: http://localhost:8081
 
 storage:
   max_inline_bytes: 10485760  # 10MB

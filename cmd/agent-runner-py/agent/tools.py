@@ -96,28 +96,38 @@ def get_tool_schemas() -> List[Dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "patch_workflow",
-                "description": "Create persistent workflow modifications. Use this for 'always', 'whenever', or 'schedule' type requests that should permanently change the workflow.",
+                "description": """Create persistent workflow modifications during runtime. Use this when the workflow needs to modify itself.
+
+IMPORTANT: When adding nodes, you MUST also add edges to connect them to the current node.
+- Use context.current_workflow to get the workflow structure
+- Use context.current_node_id to get the ID of the node making this patch
+- Add edges from current_node_id to your new nodes to ensure they execute next
+
+Example: If current_node_id is 'agent_1' and you add 'branch_1', you must add:
+  {"op": "add", "path": "/edges/-", "value": {"from": "agent_1", "to": "branch_1"}}
+""",
                 "parameters": {
                     "type": "object",
-                    "required": ["workflow_tag", "patch_spec"],
+                    "required": ["patch_spec"],
                     "additionalProperties": True,
                     "properties": {
                         "workflow_tag": {
                             "type": "string",
-                            "description": "Tag of workflow to patch (e.g., 'main')"
+                            "description": "Tag of workflow to patch (optional, will use current workflow)"
                         },
                         "workflow_owner": {
                             "type": "string",
-                            "description": "Owner of the workflow"
+                            "description": "Owner of the workflow (optional, will use current user)"
                         },
                         "patch_spec": {
                             "type": "object",
-                            "description": "JSON Patch operations to apply",
+                            "description": "JSON Patch operations to apply. MUST include both nodes AND edges to connect them.",
                             "required": ["operations"],
                             "additionalProperties": True,
                             "properties": {
                                 "operations": {
                                     "type": "array",
+                                    "description": "Array of patch operations. When adding nodes, ALWAYS add corresponding edges to connect them to the current node.",
                                     "items": {
                                         "type": "object",
                                         "required": ["op", "path"],
@@ -130,10 +140,10 @@ def get_tool_schemas() -> List[Dict[str, Any]]:
                                             },
                                             "path": {
                                                 "type": "string",
-                                                "description": "JSON Pointer path (e.g., '/nodes/-')"
+                                                "description": "JSON Pointer path (e.g., '/nodes/-' for nodes, '/edges/-' for edges)"
                                             },
                                             "value": {
-                                                "description": "Value for add/replace operations",
+                                                "description": "Value for add/replace operations. For nodes: {id, type, config}. For edges: {from, to, condition?}",
                                                 "anyOf": [
                                                     {"type": "object", "additionalProperties": True},
                                                     {"type": "array", "items": {}},

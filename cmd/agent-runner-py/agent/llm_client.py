@@ -127,27 +127,51 @@ class LLMClient:
                 workflow = context['current_workflow']
                 message_parts.append("\n\n## Current Workflow Structure")
 
-                # Show nodes
-                nodes = workflow.get('nodes', [])
+                # Show nodes (can be either dict (IR format) or list (workflow format))
+                nodes = workflow.get('nodes', {})
                 if nodes:
-                    message_parts.append(f"\n**Nodes ({len(nodes)}):**")
-                    for node in nodes:
-                        node_id = node.get('id', 'unknown')
-                        node_type = node.get('type', 'unknown')
-                        config_keys = list(node.get('config', {}).keys()) if node.get('config') else []
-                        config_summary = f", config: {config_keys}" if config_keys else ""
-                        message_parts.append(f"- `{node_id}` (type: {node_type}{config_summary})")
+                    # Handle both dict and list formats
+                    if isinstance(nodes, dict):
+                        # IR format: nodes is a map[string]*Node
+                        message_parts.append(f"\n**Nodes ({len(nodes)}):**")
+                        for node_id, node in nodes.items():
+                            node_type = node.get('type', 'unknown') if isinstance(node, dict) else 'unknown'
+                            config_keys = list(node.get('config', {}).keys()) if isinstance(node, dict) and node.get('config') else []
+                            config_summary = f", config: {config_keys}" if config_keys else ""
+                            message_parts.append(f"- `{node_id}` (type: {node_type}{config_summary})")
+                    elif isinstance(nodes, list):
+                        # Workflow format: nodes is a list
+                        message_parts.append(f"\n**Nodes ({len(nodes)}):**")
+                        for node in nodes:
+                            node_id = node.get('id', 'unknown')
+                            node_type = node.get('type', 'unknown')
+                            config_keys = list(node.get('config', {}).keys()) if node.get('config') else []
+                            config_summary = f", config: {config_keys}" if config_keys else ""
+                            message_parts.append(f"- `{node_id}` (type: {node_type}{config_summary})")
 
                 # Show edges
                 edges = workflow.get('edges', [])
                 if edges:
                     message_parts.append(f"\n**Edges ({len(edges)}):**")
                     for edge in edges:
-                        from_node = edge.get('from', '?')
-                        to_node = edge.get('to', '?')
-                        condition = edge.get('condition')
-                        condition_str = f" [if {condition}]" if condition else ""
-                        message_parts.append(f"- {from_node} → {to_node}{condition_str}")
+                        # Handle both dict and potentially other formats
+                        if isinstance(edge, dict):
+                            from_node = edge.get('from', '?')
+                            to_node = edge.get('to', '?')
+                            condition = edge.get('condition')
+                            condition_str = f" [if {condition}]" if condition else ""
+                            message_parts.append(f"- {from_node} → {to_node}{condition_str}")
+                elif isinstance(nodes, dict):
+                    # IR format: reconstruct edges from node dependents
+                    edge_list = []
+                    for node_id, node in nodes.items():
+                        if isinstance(node, dict) and node.get('dependents'):
+                            for dependent in node.get('dependents', []):
+                                edge_list.append((node_id, dependent))
+                    if edge_list:
+                        message_parts.append(f"\n**Edges ({len(edge_list)}):**")
+                        for from_node, to_node in edge_list:
+                            message_parts.append(f"- {from_node} → {to_node}")
 
             # Add previous results if available
             if context.get('previous_results'):

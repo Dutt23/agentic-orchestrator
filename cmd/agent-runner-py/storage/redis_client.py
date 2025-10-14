@@ -89,22 +89,43 @@ class RedisClient:
             logger.info(f"Raw token from coordinator: {json.dumps(token, indent=2)}")
             logger.info(f"Token metadata: {token.get('metadata', 'NO METADATA FIELD')}")
 
+            # Fetch current workflow IR from Redis
+            run_id = token.get('run_id')
+            current_workflow = None
+            if run_id:
+                ir_key = f"ir:{run_id}"
+                try:
+                    ir_data = self.client.get(ir_key)
+                    if ir_data:
+                        current_workflow = json.loads(ir_data)
+                        logger.info(f"Fetched workflow IR from Redis: {ir_key}, nodes={len(current_workflow.get('nodes', {}))}")
+                    else:
+                        logger.warning(f"No IR found in Redis for run_id {run_id} at key {ir_key}")
+                except Exception as e:
+                    logger.error(f"Failed to fetch workflow IR from Redis: {e}")
+            else:
+                logger.warning("Token missing run_id, cannot fetch workflow IR")
+
             # Convert token to job format expected by main.py
             metadata = token.get('metadata', {})
             job = {
                 'job_id': token.get('id'),
-                'run_id': token.get('run_id'),
+                'run_id': run_id,
                 'node_id': token.get('to_node'),
                 'task': metadata.get('task', ''),
                 'context': metadata.get('context', {}),
-                'workflow_owner': 'test-user',  # Required for patch_workflow
-                'workflow_tag': metadata.get('workflow_tag', ''),      # Optional, for context
+                'workflow_owner': token.get('workflow_owner', 'test-user'),  # From coordinator, with fallback
+                'workflow_tag': metadata.get('workflow_tag', ''),  # Optional, for context
+                'current_workflow': current_workflow,  # Fetched from Redis IR
+                'current_node_id': token.get('to_node'),  # The node that will execute (for patch edge creation)
                 'token': token,  # Store full token for later
                 'message_id': message_id  # Store for ACK
             }
 
             logger.info(f"Converted job: job_id={job.get('job_id')}, task='{job.get('task')}', "
-                       f"workflow_owner='{job.get('workflow_owner')}'")
+                       f"workflow_owner='{job.get('workflow_owner')}', "
+                       f"current_node_id='{job.get('current_node_id')}', "
+                       f"has_workflow={current_workflow is not None}")
             logger.info(f"Received job from stream: {job.get('job_id')}")
             return job
 

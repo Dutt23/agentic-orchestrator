@@ -168,6 +168,11 @@ class AgentService:
                 enhanced_context['current_workflow'] = job['current_workflow']
                 logger.info(f"Job includes workflow with {len(job['current_workflow'].get('nodes', []))} nodes")
 
+            # Add current node_id to context (needed for patch_workflow to connect edges)
+            if node_id:
+                enhanced_context['current_node_id'] = node_id
+                logger.info(f"Added current_node_id to context: {node_id}")
+
             # Classify intent before calling LLM
             intent_result = self.intent_classifier.classify(task, enhanced_context)
             logger.info(f"Intent classified: {intent_result['intent']} "
