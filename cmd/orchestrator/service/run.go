@@ -663,20 +663,44 @@ func (s *RunService) GetRunDetails(ctx context.Context, runID uuid.UUID) (*RunDe
 		patches = []PatchInfo{} // Continue with empty patches
 	}
 
-	// 9. Check if any node is waiting for approval and update run status if needed
+	// 9. Enrich run status based on actual node execution state
+	// This provides real-time status without constantly updating the DB
 	hasWaitingNode := false
+	hasFailedNode := false
+	hasCompletedNode := false
+	totalNodes := len(nodeExecutions)
+	completedCount := 0
+
 	for _, execution := range nodeExecutions {
-		if execution.Status == "waiting_for_approval" {
+		switch execution.Status {
+		case "waiting_for_approval":
 			hasWaitingNode = true
-			break
+		case "failed":
+			hasFailedNode = true
+		case "completed":
+			hasCompletedNode = true
+			completedCount++
 		}
 	}
 
-	// Update run status in response if nodes are waiting
-	// Note: This is read-time status enrichment - the DB status may still be RUNNING
+	// Determine display status based on node execution state
 	displayStatus := run.Status
-	if hasWaitingNode && (run.Status == models.StatusRunning || run.Status == models.StatusQueued) {
+
+	// Priority order (most important first):
+	// 1. Any node failed → FAILED
+	// 2. Any node waiting for approval → WAITING_FOR_APPROVAL
+	// 3. Any node executed (completed/failed) → RUNNING
+	// 4. All nodes completed → COMPLETED
+	// 5. Otherwise → Keep DB status (QUEUED, etc.)
+
+	if hasFailedNode {
+		displayStatus = models.StatusFailed
+	} else if hasWaitingNode {
 		displayStatus = models.StatusWaitingForApproval
+	} else if completedCount == totalNodes && totalNodes > 0 {
+		displayStatus = models.StatusCompleted
+	} else if hasCompletedNode {
+		displayStatus = models.StatusRunning
 	}
 
 	// Create a copy of run with updated display status
