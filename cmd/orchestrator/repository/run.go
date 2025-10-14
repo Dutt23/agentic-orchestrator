@@ -127,3 +127,45 @@ func (r *RunRepository) ListByUser(ctx context.Context, username string, limit i
 
 	return runs, nil
 }
+
+// ListByWorkflowTag retrieves runs for a specific workflow tag
+// Ordered by submitted_at DESC
+func (r *RunRepository) ListByWorkflowTag(ctx context.Context, tag string, limit int) ([]*models.Run, error) {
+	query := `
+		SELECT run_id, base_kind, base_ref, tags_snapshot, status, submitted_by, submitted_at
+		FROM run
+		WHERE tags_snapshot ? $1
+		ORDER BY submitted_at DESC
+		LIMIT $2
+	`
+
+	rows, err := r.db.Query(ctx, query, tag, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list runs by workflow tag: %w", err)
+	}
+	defer rows.Close()
+
+	var runs []*models.Run
+	for rows.Next() {
+		run := &models.Run{}
+		err := rows.Scan(
+			&run.RunID,
+			&run.BaseKind,
+			&run.BaseRef,
+			&run.TagsSnapshot,
+			&run.Status,
+			&run.SubmittedBy,
+			&run.SubmittedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan run: %w", err)
+		}
+		runs = append(runs, run)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating runs: %w", err)
+	}
+
+	return runs, nil
+}

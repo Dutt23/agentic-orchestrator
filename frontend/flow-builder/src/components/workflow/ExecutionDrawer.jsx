@@ -19,6 +19,7 @@ import {
 } from '@chakra-ui/react';
 import WorkflowInputsForm from './WorkflowInputsForm';
 import ExecutionEvents from './ExecutionEvents';
+import RunHistoryList from './RunHistoryList';
 
 /**
  * Drawer for workflow execution
@@ -92,15 +93,24 @@ export default function ExecutionDrawer({
 
             {/* Inputs Form - Show only before workflow starts */}
             {!hasStarted && (
-              <Box>
-                <Heading size="sm" mb={4}>
-                  Workflow Inputs
-                </Heading>
-                <WorkflowInputsForm
-                  onSubmit={handleSubmit}
-                  isSubmitting={isRunning}
-                />
-              </Box>
+              <>
+                <Box>
+                  <Heading size="sm" mb={4}>
+                    Workflow Inputs
+                  </Heading>
+                  <WorkflowInputsForm
+                    onSubmit={handleSubmit}
+                    isSubmitting={isRunning}
+                  />
+                </Box>
+
+                <Divider my={4} />
+
+                {/* Run History */}
+                <Box>
+                  <RunHistoryList workflowTag={workflowTag} />
+                </Box>
+              </>
             )}
 
             {/* Execution Events - Show after workflow starts */}

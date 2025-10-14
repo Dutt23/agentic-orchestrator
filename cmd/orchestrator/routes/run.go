@@ -29,12 +29,14 @@ func RegisterRunRoutes(e *echo.Echo, c *container.Container) {
 	workflows.Use(middleware.ExtractUsername()) // Extract X-User-ID into context
 	{
 		workflows.POST("/:tag/execute", runHandler.ExecuteWorkflow) // POST /api/v1/workflows/:tag/execute
+		workflows.GET("/:tag/runs", runHandler.ListWorkflowRuns)    // GET /api/v1/workflows/:tag/runs
 	}
 
 	// Run routes
 	runs := e.Group("/api/v1/runs")
 	{
 		runs.GET("/:id", runHandler.GetRun)                  // GET /api/v1/runs/{run_id}
+		runs.GET("/:id/details", runHandler.GetRunDetails)   // GET /api/v1/runs/{run_id}/details
 		runs.GET("", placeholder.NotImplemented)             // GET /api/v1/runs?status=running (TODO)
 		runs.POST("/:id/cancel", placeholder.NotImplemented) // POST /api/v1/runs/{run_id}/cancel (TODO)
 		runs.POST("/:id/patch", runHandler.PatchRun)         // POST /api/v1/runs/{run_id}/patch

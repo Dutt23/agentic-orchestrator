@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
@@ -346,4 +347,45 @@ func (h *RunHandler) GetRun(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, run)
+}
+
+// ListWorkflowRuns returns runs for a workflow tag
+func (h *RunHandler) ListWorkflowRuns(c echo.Context) error {
+	tag := c.Param("tag")
+	limitStr := c.QueryParam("limit")
+
+	limit := 20 // Default
+	if limitStr != "" {
+		if parsedLimit, err := strconv.Atoi(limitStr); err == nil && parsedLimit > 0 {
+			limit = parsedLimit
+		}
+	}
+
+	runs, err := h.runService.ListRunsForWorkflow(c.Request().Context(), tag, limit)
+	if err != nil {
+		h.components.Logger.Error("failed to list workflow runs", "tag", tag, "error", err)
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to list runs")
+	}
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"runs": runs,
+	})
+}
+
+// GetRunDetails returns comprehensive run details
+func (h *RunHandler) GetRunDetails(c echo.Context) error {
+	runIDStr := c.Param("id")
+
+	runID, err := uuid.Parse(runIDStr)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "invalid run_id format")
+	}
+
+	details, err := h.runService.GetRunDetails(c.Request().Context(), runID)
+	if err != nil {
+		h.components.Logger.Error("failed to get run details", "run_id", runID, "error", err)
+		return echo.NewHTTPError(http.StatusNotFound, "run not found")
+	}
+
+	return c.JSON(http.StatusOK, details)
 }

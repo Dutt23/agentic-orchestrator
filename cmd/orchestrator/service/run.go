@@ -194,3 +194,148 @@ func (s *RunService) UpdateRunStatus(ctx context.Context, runID uuid.UUID, statu
 func (s *RunService) ListUserRuns(ctx context.Context, username string, limit int) ([]*models.Run, error) {
 	return s.runRepo.ListByUser(ctx, username, limit)
 }
+
+// ListRunsForWorkflow lists runs for a specific workflow tag
+func (s *RunService) ListRunsForWorkflow(ctx context.Context, tag string, limit int) ([]*models.Run, error) {
+	return s.runRepo.ListByWorkflowTag(ctx, tag, limit)
+}
+
+// RunDetails represents comprehensive run information
+type RunDetails struct {
+	Run            *models.Run                   `json:"run"`
+	WorkflowIR     map[string]interface{}        `json:"workflow_ir"`
+	NodeExecutions map[string]*NodeExecution     `json:"node_executions"`
+	Patches        []PatchInfo                   `json:"patches,omitempty"`
+}
+
+// NodeExecution represents execution details for a single node
+type NodeExecution struct {
+	NodeID      string                 `json:"node_id"`
+	Status      string                 `json:"status"` // completed, failed, running, pending
+	Input       map[string]interface{} `json:"input,omitempty"`
+	Output      map[string]interface{} `json:"output,omitempty"`
+	StartedAt   *time.Time             `json:"started_at,omitempty"`
+	CompletedAt *time.Time             `json:"completed_at,omitempty"`
+	Error       *string                `json:"error,omitempty"`
+}
+
+// PatchInfo represents a patch applied during execution
+type PatchInfo struct {
+	Seq         int                      `json:"seq"`
+	Operations  []map[string]interface{} `json:"operations"`
+	Description string                   `json:"description"`
+}
+
+// GetRunDetails retrieves comprehensive run details including execution data
+func (s *RunService) GetRunDetails(ctx context.Context, runID uuid.UUID) (*RunDetails, error) {
+	// 1. Get run from database
+	run, err := s.runRepo.GetByID(ctx, runID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get run: %w", err)
+	}
+
+	// 2. Load workflow IR from Redis
+	irKey := fmt.Sprintf("ir:%s", runID.String())
+	irJSON, err := s.redis.Get(ctx, irKey).Result()
+	if err != nil {
+		s.components.Logger.Warn("failed to load IR from Redis (may have expired)", "run_id", runID, "error", err)
+		// Return partial data without execution details
+		return &RunDetails{
+			Run:            run,
+			WorkflowIR:     make(map[string]interface{}),
+			NodeExecutions: make(map[string]*NodeExecution),
+		}, nil
+	}
+
+	var workflowIR map[string]interface{}
+	if err := json.Unmarshal([]byte(irJSON), &workflowIR); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal IR: %w", err)
+	}
+
+	// 3. Load node execution context from Redis
+	contextKey := fmt.Sprintf("context:%s", runID.String())
+	nodeExecutions := make(map[string]*NodeExecution)
+
+	// Get all fields from the context hash
+	contextData, err := s.redis.HGetAll(ctx, contextKey).Result()
+	if err != nil {
+		s.components.Logger.Warn("failed to load context", "run_id", runID, "error", err)
+	}
+
+	// Parse node outputs and build execution map
+	nodes, ok := workflowIR["nodes"].(map[string]interface{})
+	if ok {
+		// Determine default status based on overall run status
+		defaultStatus := "pending"
+		if run.Status == models.StatusCompleted {
+			defaultStatus = "completed" // If run completed, assume nodes completed
+		} else if run.Status == models.StatusFailed {
+			defaultStatus = "failed" // If run failed, nodes may have failed
+		} else if run.Status == models.StatusRunning {
+			defaultStatus = "running"
+		}
+
+		for nodeID := range nodes {
+			execution := &NodeExecution{
+				NodeID: nodeID,
+				Status: defaultStatus, // Use inferred status
+			}
+
+			// Check if node has output in context (more specific status)
+			outputKey := nodeID + ":output"
+			if outputRef, exists := contextData[outputKey]; exists {
+				// Load output from CAS
+				if output, err := s.loadFromCAS(ctx, outputRef); err == nil {
+					execution.Output = output
+					execution.Status = "completed"
+				} else {
+					s.components.Logger.Warn("failed to load output from CAS",
+						"node_id", nodeID,
+						"cas_ref", outputRef,
+						"error", err)
+				}
+			}
+
+			// Check for failure (overrides other status)
+			failureKey := nodeID + ":failure"
+			if failureData, exists := contextData[failureKey]; exists {
+				var failure map[string]interface{}
+				if err := json.Unmarshal([]byte(failureData), &failure); err == nil {
+					execution.Status = "failed"
+					if errMsg, ok := failure["error"].(string); ok {
+						execution.Error = &errMsg
+					}
+				}
+			}
+
+			nodeExecutions[nodeID] = execution
+		}
+	}
+
+	// 4. TODO: Load patches if this run had any
+	// For now, return empty patches array
+	patches := []PatchInfo{}
+
+	return &RunDetails{
+		Run:            run,
+		WorkflowIR:     workflowIR,
+		NodeExecutions: nodeExecutions,
+		Patches:        patches,
+	}, nil
+}
+
+// loadFromCAS helper to load and parse CAS data
+func (s *RunService) loadFromCAS(ctx context.Context, casRef string) (map[string]interface{}, error) {
+	casKey := fmt.Sprintf("cas:%s", casRef)
+	data, err := s.redis.Get(ctx, casKey).Result()
+	if err != nil {
+		return nil, err
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal([]byte(data), &result); err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}

@@ -144,6 +144,27 @@ export async function runWorkflow(tag, inputs = {}) {
   });
 }
 
+/**
+ * List runs for a workflow tag
+ * @param {string} tag - Workflow tag
+ * @param {number} limit - Max runs to return (default: 20)
+ * @returns {Promise<Array>} List of runs
+ */
+export async function listWorkflowRuns(tag, limit = 20) {
+  const encodedTag = encodeURIComponent(tag);
+  const data = await apiRequest(`/workflows/${encodedTag}/runs?limit=${limit}`);
+  return data.runs || [];
+}
+
+/**
+ * Get detailed run information
+ * @param {string} runId - Run ID
+ * @returns {Promise<Object>} Run details with node executions
+ */
+export async function getRunDetails(runId) {
+  return await apiRequest(`/runs/${runId}/details`);
+}
+
 export default {
   listWorkflows,
   getWorkflow,
@@ -152,4 +173,6 @@ export default {
   updateWorkflow,
   deleteWorkflow,
   runWorkflow,
+  listWorkflowRuns,
+  getRunDetails,
 };
