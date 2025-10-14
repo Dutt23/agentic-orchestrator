@@ -12,6 +12,23 @@ bin/
 *.so
 *.dylib
 
+# Go binaries (named after their directory)
+cmd/orchestrator/orchestrator
+cmd/workflow-runner/workflow-runner
+cmd/fanout/fanout
+cmd/parser/parser
+cmd/router/router
+cmd/runner/runner
+cmd/api/api
+cmd/hitl/hitl
+
+# Generic binary pattern (executables without extension in cmd/)
+cmd/*/[^/]*
+!cmd/*/*.go
+!cmd/*/*.md
+!cmd/*/*.sh
+!cmd/*/Makefile
+
 # Test coverage
 coverage.out
 *.test
@@ -30,6 +47,12 @@ target/
 **/target/
 debug/
 release/
+
+# Rust binaries (common names)
+crates/*/target/debug/*
+crates/*/target/release/*
+!crates/*/target/**/*.d
+!crates/*/target/**/*.rlib
 
 # Cargo.lock for libraries (keep for binaries)
 **/Cargo.lock
