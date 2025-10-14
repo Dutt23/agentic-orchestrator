@@ -82,14 +82,20 @@ export default function MetricsSidebar({ nodeExecutions, workflowIR }) {
     return sum + (exec.metrics?.total_duration_ms || 0);
   }, 0);
 
-  const avgMemoryUsage =
-    executedNodes.reduce((sum, [_, exec]) => {
-      return sum + (exec.metrics?.memory_peak_mb || 0);
-    }, 0) / (executedNodes.length || 1);
-
-  const maxMemoryUsage = Math.max(
-    ...executedNodes.map(([_, exec]) => exec.metrics?.memory_peak_mb || 0)
+  // Filter nodes that have metrics with memory data
+  const nodesWithMetrics = executedNodes.filter(
+    ([_, exec]) => exec.metrics && exec.metrics.memory_peak_mb !== undefined
   );
+
+  const avgMemoryUsage = nodesWithMetrics.length > 0
+    ? nodesWithMetrics.reduce((sum, [_, exec]) => {
+        return sum + (exec.metrics?.memory_peak_mb || 0);
+      }, 0) / nodesWithMetrics.length
+    : 0;
+
+  const maxMemoryUsage = nodesWithMetrics.length > 0
+    ? Math.max(...nodesWithMetrics.map(([_, exec]) => exec.metrics?.memory_peak_mb || 0))
+    : 0;
 
   const successRate =
     executedNodes.length > 0

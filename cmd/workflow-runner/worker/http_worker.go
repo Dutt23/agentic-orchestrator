@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lyzr/orchestrator/cmd/workflow-runner/metrics"
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/sdk"
 	"github.com/redis/go-redis/v9"
 )
@@ -118,6 +119,12 @@ func (w *HTTPWorker) handleMessage(ctx context.Context, message redis.XMessage) 
 		return fmt.Errorf("failed to unmarshal token: %w", err)
 	}
 
+	// Also parse as map to get sent_at timestamp
+	var tokenMap map[string]interface{}
+	if err := json.Unmarshal([]byte(tokenJSON), &tokenMap); err != nil {
+		return fmt.Errorf("failed to unmarshal token map: %w", err)
+	}
+
 	w.logger.Info("processing HTTP task",
 		"run_id", token.RunID,
 		"node_id", token.ToNode,
@@ -166,28 +173,51 @@ func (w *HTTPWorker) handleMessage(ctx context.Context, message redis.XMessage) 
 		}
 	}
 
+	// Capture runtime metrics before execution
+	runtimeMetrics := metrics.CaptureStart(ctx)
+
 	// Track timing for metrics
 	startTime := time.Now()
+
+	// Calculate queue time (time from token sent_at to now)
+	var queueTimeMs int64 = 0
+	var sentAtStr string
+	if sentAt, ok := tokenMap["sent_at"].(string); ok && sentAt != "" {
+		sentAtStr = sentAt
+		if sentTime, err := time.Parse(time.RFC3339Nano, sentAt); err == nil {
+			queueTimeMs = startTime.Sub(sentTime).Milliseconds()
+		}
+	}
 
 	// Execute HTTP request
 	result, err := w.executeHTTPRequest(ctx, config)
 	endTime := time.Now()
 
+	// Finalize runtime metrics after execution
+	runtimeMetrics.Finalize(ctx)
+
 	// Calculate metrics (even on failure)
 	executionTimeMs := endTime.Sub(startTime).Milliseconds()
-	metrics := map[string]interface{}{
-		"sent_at":           startTime.Format(time.RFC3339Nano),
+	totalDurationMs := queueTimeMs + executionTimeMs
+
+	// Build metrics map with timing and runtime metrics
+	metricsMap := map[string]interface{}{
+		"sent_at":           sentAtStr,
 		"start_time":        startTime.Format(time.RFC3339Nano),
 		"end_time":          endTime.Format(time.RFC3339Nano),
-		"queue_time_ms":     0,
+		"queue_time_ms":     queueTimeMs,
 		"execution_time_ms": executionTimeMs,
-		"total_duration_ms": executionTimeMs,
-		"memory_start_mb":   0.0,
-		"memory_peak_mb":    0.0,
-		"memory_end_mb":     0.0,
-		"cpu_percent":       0.0,
-		"thread_count":      1,
+		"total_duration_ms": totalDurationMs,
 	}
+
+	// Merge runtime metrics into metrics map
+	for k, v := range runtimeMetrics.ToMap() {
+		metricsMap[k] = v
+	}
+
+	// Add system information (captured once at startup)
+	systemInfo := metrics.GetSystemInfo()
+	metricsMap["system"] = systemInfo.ToMap()
 
 	if err != nil {
 		w.logger.Error("HTTP request failed", "error", err)
@@ -195,7 +225,7 @@ func (w *HTTPWorker) handleMessage(ctx context.Context, message redis.XMessage) 
 		failureResult := map[string]interface{}{
 			"status":  "failed",
 			"error":   err.Error(),
-			"metrics": metrics,
+			"metrics": metricsMap,
 		}
 		return SignalCompletion(ctx, w.redis, w.logger, &CompletionOpts{
 			Token:      &token,
@@ -209,7 +239,7 @@ func (w *HTTPWorker) handleMessage(ctx context.Context, message redis.XMessage) 
 	}
 
 	// Add metrics to successful result
-	result["metrics"] = metrics
+	result["metrics"] = metricsMap
 
 	// Signal completion with result data (Option B: coordinator stores in CAS)
 	return SignalCompletion(ctx, w.redis, w.logger, &CompletionOpts{

@@ -99,7 +99,7 @@ export default function RunDetail() {
   return (
     <Box w="100%" display="flex" justifyContent="center" bg="gray.50" minH="100vh" position="relative">
       {/* Metrics Sidebar */}
-      <MetricsSidebar nodeExecutions={details.node_executions} />
+      <MetricsSidebar nodeExecutions={details.node_executions} workflowIR={details.workflow_ir} />
 
       <Container maxW="container.2xl" py={8} px={8}>
         {/* Header */}
@@ -127,26 +127,6 @@ export default function RunDetail() {
                 { label: 'Submitted By', value: details.run.submitted_by || 'N/A' },
                 { label: 'Submitted At', value: formatDate(details.run.submitted_at) },
                 { label: 'Artifact ID', value: details.run.base_ref, code: true },
-              ]}
-            />
-          </Card>
-        )}
-
-        {/* Optimizations Applied */}
-        {details.workflow_ir && (
-          <Card variant="success">
-            <Heading size="sm" mb={3}>
-              Optimizations Applied
-            </Heading>
-            <Text fontSize="sm" color="gray.600" mb={3}>
-              Branch/conditional/loop nodes are handled inline without worker overhead
-            </Text>
-            <KeyValueList
-              items={[
-                {
-                  label: 'Nodes Absorbed',
-                  value: countAbsorbedNodes(details.workflow_ir),
-                },
               ]}
             />
           </Card>
