@@ -29,8 +29,14 @@ import { ReactFlow, Background, Controls } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import BranchDiffOverlay from '../components/BranchDiffOverlay';
 import PatchTimeline from '../components/PatchTimeline';
+import MetricsSidebar from '../components/MetricsSidebar';
+import StatusBadge from '../components/run/StatusBadge';
+import NodeSelectorBadges from '../components/run/NodeSelectorBadges';
+import NodeMetricsDisplay from '../components/run/NodeMetricsDisplay';
 import { computeWorkflowDiff, applyDiffColorsToNodes, applyDiffColorsToEdges } from '../utils/workflowDiff';
 import { applyPatchesUpToSeq } from '../utils/workflowPatcher';
+import { formatDate } from '../utils/dateUtils';
+import { createExecutionEdge } from '../utils/workflowEdgeUtils';
 
 /**
  * RunDetail page displays comprehensive information about a workflow run
@@ -60,23 +66,6 @@ export default function RunDetail() {
     fetchDetails();
   }, [runId]);
 
-  const getStatusBadge = (status) => {
-    const statusLower = status?.toLowerCase() || '';
-    const colorScheme =
-      statusLower === 'completed'
-        ? 'green'
-        : statusLower === 'failed'
-        ? 'red'
-        : statusLower === 'running'
-        ? 'blue'
-        : 'gray';
-    return <Badge colorScheme={colorScheme}>{status}</Badge>;
-  };
-
-  const formatDate = (dateString) => {
-    if (!dateString) return 'N/A';
-    return new Date(dateString).toLocaleString();
-  };
 
   if (loading) {
     return (
@@ -116,7 +105,10 @@ export default function RunDetail() {
   }
 
   return (
-    <Box w="100%" display="flex" justifyContent="center" bg="gray.50" minH="100vh">
+    <Box w="100%" display="flex" justifyContent="center" bg="gray.50" minH="100vh" position="relative">
+      {/* Metrics Sidebar */}
+      <MetricsSidebar nodeExecutions={details.node_executions} />
+
       <Container maxW="container.2xl" py={8} px={8}>
         {/* Header */}
         <VStack align="stretch" spacing={6}>
@@ -131,7 +123,7 @@ export default function RunDetail() {
             </Button>
             <Heading size="lg">Run Details</Heading>
           </HStack>
-          {details.run && getStatusBadge(details.run.status)}
+          {details.run && <StatusBadge status={details.run.status} />}
         </HStack>
 
         {/* Run Info */}
@@ -444,43 +436,7 @@ function RunExecutionGraph({ workflowIR, nodeExecutions, onNodeClick }) {
         const targetId = edge.to || edge.target;
 
         if (sourceId && targetId) {
-          const sourceExec = nodeExecutions?.[sourceId];
-          const targetExec = nodeExecutions?.[targetId];
-
-          const sourceCompleted = sourceExec?.status === 'completed';
-          const targetExecuted = targetExec?.status === 'completed' || targetExec?.status === 'failed' || targetExec?.status === 'running';
-          const isExecutionPath = sourceCompleted && targetExecuted;
-
-          let edgeStyle = {};
-          if (isExecutionPath) {
-            edgeStyle = {
-              stroke: '#48bb78',
-              strokeWidth: 5,
-              opacity: 1,
-            };
-          } else if (sourceCompleted) {
-            edgeStyle = {
-              stroke: '#a0aec0',
-              strokeWidth: 3,
-              strokeDasharray: '5,5',
-              opacity: 0.7,
-            };
-          } else {
-            edgeStyle = {
-              stroke: '#718096',
-              strokeWidth: 3,
-              opacity: 0.6,
-            };
-          }
-
-          flowEdges.push({
-            id: `${sourceId}-${targetId}`,
-            source: sourceId,
-            target: targetId,
-            animated: isExecutionPath,
-            style: edgeStyle,
-            data: { isExecutionPath },
-          });
+          flowEdges.push(createExecutionEdge(sourceId, targetId, nodeExecutions));
         }
       });
     }
@@ -493,43 +449,7 @@ function RunExecutionGraph({ workflowIR, nodeExecutions, onNodeClick }) {
 
         if (node.dependents && node.dependents.length > 0) {
           node.dependents.forEach((target) => {
-            const sourceExec = nodeExecutions?.[id];
-            const targetExec = nodeExecutions?.[target];
-
-            const sourceCompleted = sourceExec?.status === 'completed';
-            const targetExecuted = targetExec?.status === 'completed' || targetExec?.status === 'failed' || targetExec?.status === 'running';
-            const isExecutionPath = sourceCompleted && targetExecuted;
-
-            let edgeStyle = {};
-            if (isExecutionPath) {
-              edgeStyle = {
-                stroke: '#48bb78',
-                strokeWidth: 5,
-                opacity: 1,
-              };
-            } else if (sourceCompleted) {
-              edgeStyle = {
-                stroke: '#a0aec0',
-                strokeWidth: 3,
-                strokeDasharray: '5,5',
-                opacity: 0.7,
-              };
-            } else {
-              edgeStyle = {
-                stroke: '#718096',
-                strokeWidth: 3,
-                opacity: 0.6,
-              };
-            }
-
-            flowEdges.push({
-              id: `${id}-${target}`,
-              source: id,
-              target: target,
-              animated: isExecutionPath,
-              style: edgeStyle,
-              data: { isExecutionPath },
-            });
+            flowEdges.push(createExecutionEdge(id, target, nodeExecutions));
           });
         }
       });
@@ -542,43 +462,7 @@ function RunExecutionGraph({ workflowIR, nodeExecutions, onNodeClick }) {
           if (node.dependencies && Array.isArray(node.dependencies) && node.dependencies.length > 0) {
             console.log(`Node ${targetId} has dependencies:`, node.dependencies);
             node.dependencies.forEach((sourceId) => {
-              const sourceExec = nodeExecutions?.[sourceId];
-              const targetExec = nodeExecutions?.[targetId];
-
-              const sourceCompleted = sourceExec?.status === 'completed';
-              const targetExecuted = targetExec?.status === 'completed' || targetExec?.status === 'failed' || targetExec?.status === 'running';
-              const isExecutionPath = sourceCompleted && targetExecuted;
-
-              let edgeStyle = {};
-              if (isExecutionPath) {
-                edgeStyle = {
-                  stroke: '#48bb78',
-                  strokeWidth: 5,
-                  opacity: 1,
-                };
-              } else if (sourceCompleted) {
-                edgeStyle = {
-                  stroke: '#a0aec0',
-                  strokeWidth: 3,
-                  strokeDasharray: '5,5',
-                  opacity: 0.7,
-                };
-              } else {
-                edgeStyle = {
-                  stroke: '#718096',
-                  strokeWidth: 3,
-                  opacity: 0.6,
-                };
-              }
-
-              flowEdges.push({
-                id: `${sourceId}-${targetId}`,
-                source: sourceId,
-                target: targetId,
-                animated: isExecutionPath,
-                style: edgeStyle,
-                data: { isExecutionPath },
-              });
+              flowEdges.push(createExecutionEdge(sourceId, targetId, nodeExecutions));
             });
           }
         });
@@ -708,6 +592,8 @@ function RunExecutionGraph({ workflowIR, nodeExecutions, onNodeClick }) {
  * NodeExecutionDetails displays input/output for each node
  */
 function NodeExecutionDetails({ nodeExecutions, selectedNode }) {
+  const [localSelectedNode, setLocalSelectedNode] = useState(null);
+
   if (!nodeExecutions || Object.keys(nodeExecutions).length === 0) {
     return (
       <Alert status="info">
@@ -717,7 +603,8 @@ function NodeExecutionDetails({ nodeExecutions, selectedNode }) {
     );
   }
 
-  const displayNode = selectedNode || Object.keys(nodeExecutions)[0];
+  // Use local selection first, then prop selection, then first node
+  const displayNode = localSelectedNode || selectedNode || Object.keys(nodeExecutions)[0];
   const execution = nodeExecutions[displayNode];
 
   if (!execution) {
@@ -736,28 +623,11 @@ function NodeExecutionDetails({ nodeExecutions, selectedNode }) {
         <Text fontWeight="bold" mb={2}>
           Select Node:
         </Text>
-        <HStack spacing={2} flexWrap="wrap">
-          {Object.keys(nodeExecutions).map((nodeId) => {
-            const exec = nodeExecutions[nodeId];
-            return (
-              <Badge
-                key={nodeId}
-                colorScheme={
-                  exec.status === 'completed'
-                    ? 'green'
-                    : exec.status === 'failed'
-                    ? 'red'
-                    : 'gray'
-                }
-                cursor="pointer"
-                p={2}
-                variant={nodeId === displayNode ? 'solid' : 'outline'}
-              >
-                {nodeId}
-              </Badge>
-            );
-          })}
-        </HStack>
+        <NodeSelectorBadges
+          nodeExecutions={nodeExecutions}
+          selectedNode={displayNode}
+          onNodeSelect={setLocalSelectedNode}
+        />
       </Box>
 
       <Divider />
@@ -771,17 +641,7 @@ function NodeExecutionDetails({ nodeExecutions, selectedNode }) {
         <VStack align="stretch" spacing={4}>
           <Box>
             <Text fontWeight="bold">Status:</Text>
-            <Badge
-              colorScheme={
-                execution.status === 'completed'
-                  ? 'green'
-                  : execution.status === 'failed'
-                  ? 'red'
-                  : 'gray'
-              }
-            >
-              {execution.status}
-            </Badge>
+            <StatusBadge status={execution.status} />
           </Box>
 
           {execution.input && (
@@ -827,6 +687,15 @@ function NodeExecutionDetails({ nodeExecutions, selectedNode }) {
                 <AlertIcon />
                 {execution.error}
               </Alert>
+            </Box>
+          )}
+
+          {execution.metrics && (
+            <Box>
+              <Text fontWeight="bold" mb={2}>
+                Performance Metrics:
+              </Text>
+              <NodeMetricsDisplay metrics={execution.metrics} />
             </Box>
           )}
         </VStack>
