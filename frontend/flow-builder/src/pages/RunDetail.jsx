@@ -9,6 +9,7 @@ import {
   Text,
   Badge,
   Button,
+  ButtonGroup,
   Spinner,
   Alert,
   AlertIcon,
@@ -24,6 +25,8 @@ import { ArrowBackIcon } from '@chakra-ui/icons';
 import { getRunDetails } from '../services/api';
 import { ReactFlow, Background, Controls } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
+import BranchDiffOverlay from '../components/BranchDiffOverlay';
+import { computeWorkflowDiff, applyDiffColorsToNodes, applyDiffColorsToEdges } from '../utils/workflowDiff';
 
 /**
  * RunDetail page displays comprehensive information about a workflow run
@@ -163,9 +166,10 @@ export default function RunDetail() {
           <TabPanels>
             {/* Execution Graph Tab */}
             <TabPanel>
-              <RunExecutionGraph
+              <RunExecutionGraphWithPatchOverlay
                 workflowIR={details.workflow_ir}
                 nodeExecutions={details.node_executions}
+                patches={details.patches}
                 onNodeClick={setSelectedNode}
               />
             </TabPanel>
@@ -192,6 +196,124 @@ export default function RunDetail() {
 }
 
 /**
+ * Wrapper component that handles patch overlay toggle
+ */
+function RunExecutionGraphWithPatchOverlay({ workflowIR, nodeExecutions, patches, onNodeClick }) {
+  const [showPatchOverlay, setShowPatchOverlay] = useState(false);
+
+  // Check if patches exist and are not empty
+  const hasPatches = patches && patches.length > 0;
+
+  return (
+    <VStack align="stretch" spacing={4}>
+      {/* Toggle Controls */}
+      {hasPatches && (
+        <HStack justify="flex-end">
+          <ButtonGroup size="sm" isAttached variant="outline">
+            <Button
+              onClick={() => setShowPatchOverlay(false)}
+              colorScheme={!showPatchOverlay ? 'blue' : 'gray'}
+              variant={!showPatchOverlay ? 'solid' : 'outline'}
+            >
+              Execution View
+            </Button>
+            <Button
+              onClick={() => setShowPatchOverlay(true)}
+              colorScheme={showPatchOverlay ? 'purple' : 'gray'}
+              variant={showPatchOverlay ? 'solid' : 'outline'}
+            >
+              Patch Overlay
+            </Button>
+          </ButtonGroup>
+        </HStack>
+      )}
+
+      {/* Render appropriate view */}
+      {showPatchOverlay && hasPatches ? (
+        <RunPatchOverlay
+          workflowIR={workflowIR}
+          patches={patches}
+        />
+      ) : (
+        <RunExecutionGraph
+          workflowIR={workflowIR}
+          nodeExecutions={nodeExecutions}
+          onNodeClick={onNodeClick}
+        />
+      )}
+    </VStack>
+  );
+}
+
+/**
+ * RunPatchOverlay shows before/after workflow when patches were applied
+ */
+function RunPatchOverlay({ workflowIR, patches }) {
+  // For now, show a message explaining what will be shown once backend provides patch data
+  // In the future, this will:
+  // 1. Fetch base workflow (before patches)
+  // 2. Compare with current workflow (after patches)
+  // 3. Use BranchDiffOverlay to show differences
+
+  if (!patches || patches.length === 0) {
+    return (
+      <Alert status="info">
+        <AlertIcon />
+        No patches were applied during this run
+      </Alert>
+    );
+  }
+
+  return (
+    <Box>
+      <Alert status="info" mb={4}>
+        <AlertIcon />
+        <VStack align="start" spacing={2}>
+          <Text fontWeight="bold">Patch Overlay Coming Soon</Text>
+          <Text fontSize="sm">
+            {patches.length} patch{patches.length > 1 ? 'es' : ''} applied during this run.
+            Visual diff overlay will be available when backend provides base workflow data.
+          </Text>
+        </VStack>
+      </Alert>
+
+      {/* Show patch list as fallback */}
+      <VStack align="stretch" spacing={4}>
+        {patches.map((patch, index) => (
+          <Box
+            key={index}
+            p={4}
+            border="1px solid"
+            borderColor="purple.200"
+            borderRadius="md"
+            bg="purple.50"
+          >
+            <HStack justify="space-between" mb={2}>
+              <Heading size="sm">Patch #{patch.seq}</Heading>
+              <Badge colorScheme="purple">Applied</Badge>
+            </HStack>
+            <Text fontSize="sm" color="gray.700" mb={3}>
+              {patch.description}
+            </Text>
+            <Text fontSize="xs" fontWeight="bold" mb={2}>Operations:</Text>
+            <Code
+              display="block"
+              whiteSpace="pre"
+              p={3}
+              borderRadius="md"
+              overflowX="auto"
+              fontSize="xs"
+            >
+              {JSON.stringify(patch.operations, null, 2)}
+            </Code>
+          </Box>
+        ))}
+      </VStack>
+    </Box>
+  );
+}
+
+/**
  * RunExecutionGraph visualizes the workflow execution path
  */
 function RunExecutionGraph({ workflowIR, nodeExecutions, onNodeClick }) {
@@ -208,9 +330,19 @@ function RunExecutionGraph({ workflowIR, nodeExecutions, onNodeClick }) {
 
       // Color based on status
       let bgColor = '#f0f0f0'; // pending
-      if (status === 'completed') bgColor = '#90EE90'; // light green
-      if (status === 'failed') bgColor = '#FFB6C1'; // light red
-      if (status === 'running') bgColor = '#ADD8E6'; // light blue
+      let borderColor = '#333';
+      if (status === 'completed') {
+        bgColor = '#90EE90'; // light green
+        borderColor = '#38a169'; // darker green
+      }
+      if (status === 'failed') {
+        bgColor = '#FFB6C1'; // light red
+        borderColor = '#e53e3e'; // darker red
+      }
+      if (status === 'running') {
+        bgColor = '#ADD8E6'; // light blue
+        borderColor = '#3182ce'; // darker blue
+      }
 
       return {
         id,
@@ -227,22 +359,58 @@ function RunExecutionGraph({ workflowIR, nodeExecutions, onNodeClick }) {
           background: bgColor,
           padding: 10,
           borderRadius: 5,
-          border: '2px solid #333',
+          border: `2px solid ${borderColor}`,
           cursor: 'pointer',
         },
       };
     });
 
-    // Convert IR edges to ReactFlow edges
+    // Convert IR edges to ReactFlow edges with execution path highlighting
     const flowEdges = [];
     Object.entries(workflowIR.nodes).forEach(([id, node]) => {
       if (node.dependents) {
         node.dependents.forEach((target) => {
+          const sourceExec = nodeExecutions?.[id];
+          const targetExec = nodeExecutions?.[target];
+
+          // Determine if this edge was part of the execution path
+          const sourceCompleted = sourceExec?.status === 'completed';
+          const targetExecuted = targetExec?.status === 'completed' || targetExec?.status === 'failed' || targetExec?.status === 'running';
+          const isExecutionPath = sourceCompleted && targetExecuted;
+
+          // Style based on execution path
+          let edgeStyle = {};
+          if (isExecutionPath) {
+            // Execution path: thick, bright, solid
+            edgeStyle = {
+              stroke: '#48bb78', // green
+              strokeWidth: 4,
+              opacity: 1,
+            };
+          } else if (sourceCompleted) {
+            // Source completed but target not executed: dim, dashed (path not taken)
+            edgeStyle = {
+              stroke: '#cbd5e0', // gray
+              strokeWidth: 2,
+              strokeDasharray: '5,5',
+              opacity: 0.4,
+            };
+          } else {
+            // Neither executed: very dim
+            edgeStyle = {
+              stroke: '#e2e8f0', // light gray
+              strokeWidth: 2,
+              opacity: 0.3,
+            };
+          }
+
           flowEdges.push({
             id: `${id}-${target}`,
             source: id,
             target: target,
-            animated: nodeExecutions?.[id]?.status === 'completed',
+            animated: isExecutionPath,
+            style: edgeStyle,
+            data: { isExecutionPath },
           });
         });
       }
@@ -266,16 +434,56 @@ function RunExecutionGraph({ workflowIR, nodeExecutions, onNodeClick }) {
   }
 
   return (
-    <Box height="600px" border="1px solid" borderColor="gray.200" borderRadius="md">
-      <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        onNodeClick={handleNodeClick}
-        fitView
+    <Box position="relative">
+      {/* Legend */}
+      <Box
+        position="absolute"
+        top={2}
+        left={2}
+        zIndex={10}
+        bg="white"
+        p={3}
+        borderRadius="md"
+        boxShadow="md"
+        border="1px solid"
+        borderColor="gray.200"
       >
-        <Background />
-        <Controls />
-      </ReactFlow>
+        <VStack align="stretch" spacing={2}>
+          <Text fontSize="sm" fontWeight="bold">Legend</Text>
+          <HStack spacing={2}>
+            <Box w="30px" h="3px" bg="#48bb78" />
+            <Text fontSize="xs">Execution Path</Text>
+          </HStack>
+          <HStack spacing={2}>
+            <Box w="30px" h="3px" bg="#cbd5e0" style={{ borderTop: '2px dashed #cbd5e0' }} />
+            <Text fontSize="xs">Path Not Taken</Text>
+          </HStack>
+          <HStack spacing={2}>
+            <Box w="20px" h="20px" bg="#90EE90" border="2px solid #38a169" borderRadius="md" />
+            <Text fontSize="xs">Completed</Text>
+          </HStack>
+          <HStack spacing={2}>
+            <Box w="20px" h="20px" bg="#FFB6C1" border="2px solid #e53e3e" borderRadius="md" />
+            <Text fontSize="xs">Failed</Text>
+          </HStack>
+          <HStack spacing={2}>
+            <Box w="20px" h="20px" bg="#ADD8E6" border="2px solid #3182ce" borderRadius="md" />
+            <Text fontSize="xs">Running</Text>
+          </HStack>
+        </VStack>
+      </Box>
+
+      <Box height="600px" border="1px solid" borderColor="gray.200" borderRadius="md">
+        <ReactFlow
+          nodes={nodes}
+          edges={edges}
+          onNodeClick={handleNodeClick}
+          fitView
+        >
+          <Background />
+          <Controls />
+        </ReactFlow>
+      </Box>
     </Box>
   );
 }
