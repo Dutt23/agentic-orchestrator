@@ -20,13 +20,17 @@ import {
   TabPanel,
   Divider,
   Code,
+  Collapse,
+  IconButton,
 } from '@chakra-ui/react';
-import { ArrowBackIcon } from '@chakra-ui/icons';
+import { ArrowBackIcon, ChevronDownIcon, ChevronUpIcon } from '@chakra-ui/icons';
 import { getRunDetails } from '../services/api';
 import { ReactFlow, Background, Controls } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import BranchDiffOverlay from '../components/BranchDiffOverlay';
+import PatchTimeline from '../components/PatchTimeline';
 import { computeWorkflowDiff, applyDiffColorsToNodes, applyDiffColorsToEdges } from '../utils/workflowDiff';
+import { applyPatchesUpToSeq } from '../utils/workflowPatcher';
 
 /**
  * RunDetail page displays comprehensive information about a workflow run
@@ -76,7 +80,7 @@ export default function RunDetail() {
 
   if (loading) {
     return (
-      <Container maxW="container.xl" py={8}>
+      <Container maxW="container.2xl" py={8} px={8}>
         <Spinner size="lg" />
         <Text mt={4}>Loading run details...</Text>
       </Container>
@@ -85,7 +89,7 @@ export default function RunDetail() {
 
   if (error) {
     return (
-      <Container maxW="container.xl" py={8}>
+      <Container maxW="container.2xl" py={8} px={8}>
         <Alert status="error">
           <AlertIcon />
           Failed to load run details: {error}
@@ -99,7 +103,7 @@ export default function RunDetail() {
 
   if (!details) {
     return (
-      <Container maxW="container.xl" py={8}>
+      <Container maxW="container.2xl" py={8} px={8}>
         <Alert status="warning">
           <AlertIcon />
           Run not found
@@ -112,9 +116,10 @@ export default function RunDetail() {
   }
 
   return (
-    <Container maxW="container.xl" py={8}>
-      {/* Header */}
-      <VStack align="stretch" spacing={6}>
+    <Box w="100%" display="flex" justifyContent="center" bg="gray.50" minH="100vh">
+      <Container maxW="container.2xl" py={8} px={8}>
+        {/* Header */}
+        <VStack align="stretch" spacing={6}>
         <HStack justify="space-between">
           <HStack spacing={4}>
             <Button
@@ -167,6 +172,7 @@ export default function RunDetail() {
             {/* Execution Graph Tab */}
             <TabPanel>
               <RunExecutionGraphWithPatchOverlay
+                baseWorkflowIR={details.base_workflow_ir}
                 workflowIR={details.workflow_ir}
                 nodeExecutions={details.node_executions}
                 patches={details.patches}
@@ -192,13 +198,14 @@ export default function RunDetail() {
         </Tabs>
       </VStack>
     </Container>
+    </Box>
   );
 }
 
 /**
  * Wrapper component that handles patch overlay toggle
  */
-function RunExecutionGraphWithPatchOverlay({ workflowIR, nodeExecutions, patches, onNodeClick }) {
+function RunExecutionGraphWithPatchOverlay({ baseWorkflowIR, workflowIR, nodeExecutions, patches, onNodeClick }) {
   const [showPatchOverlay, setShowPatchOverlay] = useState(false);
 
   // Check if patches exist and are not empty
@@ -231,8 +238,10 @@ function RunExecutionGraphWithPatchOverlay({ workflowIR, nodeExecutions, patches
       {/* Render appropriate view */}
       {showPatchOverlay && hasPatches ? (
         <RunPatchOverlay
+          baseWorkflowIR={baseWorkflowIR}
           workflowIR={workflowIR}
           patches={patches}
+          nodeExecutions={nodeExecutions}
         />
       ) : (
         <RunExecutionGraph
@@ -246,14 +255,12 @@ function RunExecutionGraphWithPatchOverlay({ workflowIR, nodeExecutions, patches
 }
 
 /**
- * RunPatchOverlay shows before/after workflow when patches were applied
+ * RunPatchOverlay shows workflow evolution through patch timeline
+ * Allows users to scrub through different patch states
  */
-function RunPatchOverlay({ workflowIR, patches }) {
-  // For now, show a message explaining what will be shown once backend provides patch data
-  // In the future, this will:
-  // 1. Fetch base workflow (before patches)
-  // 2. Compare with current workflow (after patches)
-  // 3. Use BranchDiffOverlay to show differences
+function RunPatchOverlay({ baseWorkflowIR, workflowIR, patches, nodeExecutions }) {
+  const [selectedSeq, setSelectedSeq] = useState(patches && patches.length > 0 ? patches[patches.length - 1].seq : 0);
+  const [showComparison, setShowComparison] = useState(false);
 
   if (!patches || patches.length === 0) {
     return (
@@ -264,52 +271,90 @@ function RunPatchOverlay({ workflowIR, patches }) {
     );
   }
 
-  return (
-    <Box>
-      <Alert status="info" mb={4}>
+  // Check if baseWorkflowIR is available
+  if (!baseWorkflowIR) {
+    return (
+      <Alert status="warning">
         <AlertIcon />
-        <VStack align="start" spacing={2}>
-          <Text fontWeight="bold">Patch Overlay Coming Soon</Text>
-          <Text fontSize="sm">
-            {patches.length} patch{patches.length > 1 ? 'es' : ''} applied during this run.
-            Visual diff overlay will be available when backend provides base workflow data.
-          </Text>
-        </VStack>
+        Base workflow data is not available. Cannot show patch overlay.
       </Alert>
+    );
+  }
 
-      {/* Show patch list as fallback */}
-      <VStack align="stretch" spacing={4}>
-        {patches.map((patch, index) => (
-          <Box
-            key={index}
-            p={4}
-            border="1px solid"
-            borderColor="purple.200"
-            borderRadius="md"
-            bg="purple.50"
-          >
-            <HStack justify="space-between" mb={2}>
-              <Heading size="sm">Patch #{patch.seq}</Heading>
-              <Badge colorScheme="purple">Applied</Badge>
-            </HStack>
-            <Text fontSize="sm" color="gray.700" mb={3}>
-              {patch.description}
-            </Text>
-            <Text fontSize="xs" fontWeight="bold" mb={2}>Operations:</Text>
-            <Code
-              display="block"
-              whiteSpace="pre"
-              p={3}
-              borderRadius="md"
-              overflowX="auto"
-              fontSize="xs"
+  // Compute workflow at selected seq using client-side patching
+  let workflowAtSeq;
+  let workflowAtPrevSeq;
+
+  try {
+    workflowAtSeq = applyPatchesUpToSeq(baseWorkflowIR, patches, selectedSeq);
+
+    // Compute previous seq for comparison
+    const prevSeq = selectedSeq > 0 ? selectedSeq - 1 : 0;
+    workflowAtPrevSeq = applyPatchesUpToSeq(baseWorkflowIR, patches, prevSeq);
+  } catch (error) {
+    console.error('Error applying patches:', error);
+    return (
+      <Alert status="error">
+        <AlertIcon />
+        Failed to apply patches: {error.message}
+      </Alert>
+    );
+  }
+
+  if (!workflowAtSeq) {
+    return (
+      <Alert status="error">
+        <AlertIcon />
+        Failed to compute workflow state at selected patch
+      </Alert>
+    );
+  }
+
+  return (
+    <VStack align="stretch" spacing={6}>
+      {/* Patch Timeline Selector */}
+      <PatchTimeline
+        patches={patches}
+        selectedSeq={selectedSeq}
+        onSeqChange={setSelectedSeq}
+      />
+
+      {/* Toggle: Single View vs Comparison */}
+      {selectedSeq > 0 && (
+        <HStack justify="flex-end">
+          <ButtonGroup size="sm" isAttached variant="outline">
+            <Button
+              onClick={() => setShowComparison(false)}
+              colorScheme={!showComparison ? 'blue' : 'gray'}
+              variant={!showComparison ? 'solid' : 'outline'}
             >
-              {JSON.stringify(patch.operations, null, 2)}
-            </Code>
-          </Box>
-        ))}
-      </VStack>
-    </Box>
+              Single View
+            </Button>
+            <Button
+              onClick={() => setShowComparison(true)}
+              colorScheme={showComparison ? 'orange' : 'gray'}
+              variant={showComparison ? 'solid' : 'outline'}
+            >
+              Compare Before/After
+            </Button>
+          </ButtonGroup>
+        </HStack>
+      )}
+
+      {/* Workflow Visualization */}
+      {showComparison && selectedSeq > 0 ? (
+        <BranchDiffOverlay
+          baseWorkflow={workflowAtPrevSeq}
+          branchWorkflow={workflowAtSeq}
+        />
+      ) : (
+        <RunExecutionGraph
+          workflowIR={workflowAtSeq}
+          nodeExecutions={nodeExecutions}
+          onNodeClick={() => {}}
+        />
+      )}
+    </VStack>
   );
 }
 
@@ -319,14 +364,37 @@ function RunPatchOverlay({ workflowIR, patches }) {
 function RunExecutionGraph({ workflowIR, nodeExecutions, onNodeClick }) {
   const [nodes, setNodes] = useState([]);
   const [edges, setEdges] = useState([]);
+  const [showLegend, setShowLegend] = useState(true);
 
   useEffect(() => {
-    if (!workflowIR || !workflowIR.nodes) return;
+    if (!workflowIR || !workflowIR.nodes) {
+      console.log('No workflow IR or nodes available');
+      return;
+    }
+
+    console.log('WorkflowIR:', workflowIR);
+    console.log('NodeExecutions:', nodeExecutions);
+    console.log('workflowIR.nodes type:', Array.isArray(workflowIR.nodes) ? 'Array' : 'Object');
 
     // Convert IR nodes to ReactFlow nodes
-    const flowNodes = Object.entries(workflowIR.nodes).map(([id, node], index) => {
-      const execution = nodeExecutions?.[id];
+    // Handle both array and object formats
+    let nodesArray;
+    if (Array.isArray(workflowIR.nodes)) {
+      // If nodes is an array, use it directly
+      nodesArray = workflowIR.nodes;
+      console.log('Nodes is an array, using directly');
+    } else {
+      // If nodes is an object, convert to array of [id, node] pairs
+      nodesArray = Object.entries(workflowIR.nodes).map(([id, node]) => ({ ...node, id }));
+      console.log('Nodes is an object, converted to array');
+    }
+
+    const flowNodes = nodesArray.map((node, index) => {
+      const nodeId = node.id;  // Get ID from node object
+      const execution = nodeExecutions?.[nodeId];
       const status = execution?.status || 'pending';
+
+      console.log(`Node ${nodeId}: status=${status}, execution=`, execution);
 
       // Color based on status
       let bgColor = '#f0f0f0'; // pending
@@ -345,11 +413,11 @@ function RunExecutionGraph({ workflowIR, nodeExecutions, onNodeClick }) {
       }
 
       return {
-        id,
+        id: nodeId, // Use the actual node ID, not the index
         data: {
           label: (
             <div>
-              <div style={{ fontWeight: 'bold' }}>{id}</div>
+              <div style={{ fontWeight: 'bold' }}>{nodeId}</div>
               <div style={{ fontSize: '10px' }}>{node.type || 'unknown'}</div>
             </div>
           ),
@@ -367,53 +435,167 @@ function RunExecutionGraph({ workflowIR, nodeExecutions, onNodeClick }) {
 
     // Convert IR edges to ReactFlow edges with execution path highlighting
     const flowEdges = [];
-    Object.entries(workflowIR.nodes).forEach(([id, node]) => {
-      if (node.dependents) {
-        node.dependents.forEach((target) => {
-          const sourceExec = nodeExecutions?.[id];
-          const targetExec = nodeExecutions?.[target];
 
-          // Determine if this edge was part of the execution path
+    // Method 1: Check for edges array at the top level
+    if (workflowIR.edges && Array.isArray(workflowIR.edges)) {
+      console.log('Found edges array in workflowIR:', workflowIR.edges);
+      workflowIR.edges.forEach((edge) => {
+        const sourceId = edge.from || edge.source;
+        const targetId = edge.to || edge.target;
+
+        if (sourceId && targetId) {
+          const sourceExec = nodeExecutions?.[sourceId];
+          const targetExec = nodeExecutions?.[targetId];
+
           const sourceCompleted = sourceExec?.status === 'completed';
           const targetExecuted = targetExec?.status === 'completed' || targetExec?.status === 'failed' || targetExec?.status === 'running';
           const isExecutionPath = sourceCompleted && targetExecuted;
 
-          // Style based on execution path
           let edgeStyle = {};
           if (isExecutionPath) {
-            // Execution path: thick, bright, solid
             edgeStyle = {
-              stroke: '#48bb78', // green
-              strokeWidth: 4,
+              stroke: '#48bb78',
+              strokeWidth: 5,
               opacity: 1,
             };
           } else if (sourceCompleted) {
-            // Source completed but target not executed: dim, dashed (path not taken)
             edgeStyle = {
-              stroke: '#cbd5e0', // gray
-              strokeWidth: 2,
+              stroke: '#a0aec0',
+              strokeWidth: 3,
               strokeDasharray: '5,5',
-              opacity: 0.4,
+              opacity: 0.7,
             };
           } else {
-            // Neither executed: very dim
             edgeStyle = {
-              stroke: '#e2e8f0', // light gray
-              strokeWidth: 2,
-              opacity: 0.3,
+              stroke: '#718096',
+              strokeWidth: 3,
+              opacity: 0.6,
             };
           }
 
           flowEdges.push({
-            id: `${id}-${target}`,
-            source: id,
-            target: target,
+            id: `${sourceId}-${targetId}`,
+            source: sourceId,
+            target: targetId,
             animated: isExecutionPath,
             style: edgeStyle,
             data: { isExecutionPath },
           });
+        }
+      });
+    }
+    // Method 2: Check node.dependents
+    else {
+      console.log('No edges array found, checking node.dependents');
+      nodesArray.forEach((node) => {
+        const id = node.id;
+        console.log(`Node ${id}:`, { dependents: node.dependents, dependencies: node.dependencies });
+
+        if (node.dependents && node.dependents.length > 0) {
+          node.dependents.forEach((target) => {
+            const sourceExec = nodeExecutions?.[id];
+            const targetExec = nodeExecutions?.[target];
+
+            const sourceCompleted = sourceExec?.status === 'completed';
+            const targetExecuted = targetExec?.status === 'completed' || targetExec?.status === 'failed' || targetExec?.status === 'running';
+            const isExecutionPath = sourceCompleted && targetExecuted;
+
+            let edgeStyle = {};
+            if (isExecutionPath) {
+              edgeStyle = {
+                stroke: '#48bb78',
+                strokeWidth: 5,
+                opacity: 1,
+              };
+            } else if (sourceCompleted) {
+              edgeStyle = {
+                stroke: '#a0aec0',
+                strokeWidth: 3,
+                strokeDasharray: '5,5',
+                opacity: 0.7,
+              };
+            } else {
+              edgeStyle = {
+                stroke: '#718096',
+                strokeWidth: 3,
+                opacity: 0.6,
+              };
+            }
+
+            flowEdges.push({
+              id: `${id}-${target}`,
+              source: id,
+              target: target,
+              animated: isExecutionPath,
+              style: edgeStyle,
+              data: { isExecutionPath },
+            });
+          });
+        }
+      });
+
+      // Method 3: If still no edges, create them from dependencies (reverse direction)
+      if (flowEdges.length === 0) {
+        console.log('Still no edges, trying to create from dependencies');
+        nodesArray.forEach((node) => {
+          const targetId = node.id;
+          if (node.dependencies && Array.isArray(node.dependencies) && node.dependencies.length > 0) {
+            console.log(`Node ${targetId} has dependencies:`, node.dependencies);
+            node.dependencies.forEach((sourceId) => {
+              const sourceExec = nodeExecutions?.[sourceId];
+              const targetExec = nodeExecutions?.[targetId];
+
+              const sourceCompleted = sourceExec?.status === 'completed';
+              const targetExecuted = targetExec?.status === 'completed' || targetExec?.status === 'failed' || targetExec?.status === 'running';
+              const isExecutionPath = sourceCompleted && targetExecuted;
+
+              let edgeStyle = {};
+              if (isExecutionPath) {
+                edgeStyle = {
+                  stroke: '#48bb78',
+                  strokeWidth: 5,
+                  opacity: 1,
+                };
+              } else if (sourceCompleted) {
+                edgeStyle = {
+                  stroke: '#a0aec0',
+                  strokeWidth: 3,
+                  strokeDasharray: '5,5',
+                  opacity: 0.7,
+                };
+              } else {
+                edgeStyle = {
+                  stroke: '#718096',
+                  strokeWidth: 3,
+                  opacity: 0.6,
+                };
+              }
+
+              flowEdges.push({
+                id: `${sourceId}-${targetId}`,
+                source: sourceId,
+                target: targetId,
+                animated: isExecutionPath,
+                style: edgeStyle,
+                data: { isExecutionPath },
+              });
+            });
+          }
         });
       }
+    }
+
+    console.log('Generated flowNodes:', flowNodes.length, flowNodes);
+    console.log('Generated flowEdges:', flowEdges.length, flowEdges);
+
+    // Debug: Check if node IDs match edge source/targets
+    const nodeIds = new Set(flowNodes.map(n => n.id));
+    console.log('Node IDs:', Array.from(nodeIds));
+
+    flowEdges.forEach(edge => {
+      const sourceExists = nodeIds.has(edge.source);
+      const targetExists = nodeIds.has(edge.target);
+      console.log(`Edge ${edge.id}: source="${edge.source}" (exists: ${sourceExists}), target="${edge.target}" (exists: ${targetExists})`);
     });
 
     setNodes(flowNodes);
@@ -434,7 +616,16 @@ function RunExecutionGraph({ workflowIR, nodeExecutions, onNodeClick }) {
   }
 
   return (
-    <Box position="relative">
+    <>
+      {/* Debug info */}
+      {edges.length === 0 && nodes.length > 0 && (
+        <Alert status="warning" mb={4}>
+          <AlertIcon />
+          Warning: {nodes.length} nodes found but 0 edges. Check console for details.
+        </Alert>
+      )}
+
+      <Box position="relative">
       {/* Legend */}
       <Box
         position="absolute"
@@ -442,49 +633,74 @@ function RunExecutionGraph({ workflowIR, nodeExecutions, onNodeClick }) {
         left={2}
         zIndex={10}
         bg="white"
-        p={3}
         borderRadius="md"
         boxShadow="md"
         border="1px solid"
         borderColor="gray.200"
       >
-        <VStack align="stretch" spacing={2}>
+        <HStack
+          justify="space-between"
+          p={2}
+          cursor="pointer"
+          onClick={() => setShowLegend(!showLegend)}
+          _hover={{ bg: 'gray.50' }}
+        >
           <Text fontSize="sm" fontWeight="bold">Legend</Text>
-          <HStack spacing={2}>
-            <Box w="30px" h="3px" bg="#48bb78" />
-            <Text fontSize="xs">Execution Path</Text>
-          </HStack>
-          <HStack spacing={2}>
-            <Box w="30px" h="3px" bg="#cbd5e0" style={{ borderTop: '2px dashed #cbd5e0' }} />
-            <Text fontSize="xs">Path Not Taken</Text>
-          </HStack>
-          <HStack spacing={2}>
-            <Box w="20px" h="20px" bg="#90EE90" border="2px solid #38a169" borderRadius="md" />
-            <Text fontSize="xs">Completed</Text>
-          </HStack>
-          <HStack spacing={2}>
-            <Box w="20px" h="20px" bg="#FFB6C1" border="2px solid #e53e3e" borderRadius="md" />
-            <Text fontSize="xs">Failed</Text>
-          </HStack>
-          <HStack spacing={2}>
-            <Box w="20px" h="20px" bg="#ADD8E6" border="2px solid #3182ce" borderRadius="md" />
-            <Text fontSize="xs">Running</Text>
-          </HStack>
-        </VStack>
+          <IconButton
+            icon={showLegend ? <ChevronUpIcon /> : <ChevronDownIcon />}
+            size="xs"
+            variant="ghost"
+            aria-label={showLegend ? 'Collapse legend' : 'Expand legend'}
+          />
+        </HStack>
+        <Collapse in={showLegend} animateOpacity>
+          <VStack align="stretch" spacing={2} p={3} pt={0}>
+            <HStack spacing={2}>
+              <Box w="30px" h="4px" bg="#48bb78" />
+              <Text fontSize="xs">Execution Path</Text>
+            </HStack>
+            <HStack spacing={2}>
+              <Box w="30px" h="3px" bg="#a0aec0" style={{ borderTop: '3px dashed #a0aec0' }} />
+              <Text fontSize="xs">Path Not Taken</Text>
+            </HStack>
+            <HStack spacing={2}>
+              <Box w="30px" h="3px" bg="#718096" />
+              <Text fontSize="xs">Default Edge</Text>
+            </HStack>
+            <HStack spacing={2}>
+              <Box w="20px" h="20px" bg="#90EE90" border="2px solid #38a169" borderRadius="md" />
+              <Text fontSize="xs">Completed</Text>
+            </HStack>
+            <HStack spacing={2}>
+              <Box w="20px" h="20px" bg="#FFB6C1" border="2px solid #e53e3e" borderRadius="md" />
+              <Text fontSize="xs">Failed</Text>
+            </HStack>
+            <HStack spacing={2}>
+              <Box w="20px" h="20px" bg="#ADD8E6" border="2px solid #3182ce" borderRadius="md" />
+              <Text fontSize="xs">Running</Text>
+            </HStack>
+            <HStack spacing={2}>
+              <Box w="20px" h="20px" bg="#f0f0f0" border="2px solid #333" borderRadius="md" />
+              <Text fontSize="xs">Pending</Text>
+            </HStack>
+          </VStack>
+        </Collapse>
       </Box>
 
-      <Box height="600px" border="1px solid" borderColor="gray.200" borderRadius="md">
+      <Box height="600px" border="1px solid" borderColor="gray.200" borderRadius="md" bg="white">
         <ReactFlow
           nodes={nodes}
           edges={edges}
           onNodeClick={handleNodeClick}
           fitView
+          attributionPosition="bottom-left"
         >
           <Background />
           <Controls />
         </ReactFlow>
       </Box>
-    </Box>
+      </Box>
+    </>
   );
 }
 
@@ -623,6 +839,8 @@ function NodeExecutionDetails({ nodeExecutions, selectedNode }) {
  * RunPatchesList displays patches applied during execution
  */
 function RunPatchesList({ patches }) {
+  const [expandedPatches, setExpandedPatches] = useState({});
+
   if (!patches || patches.length === 0) {
     return (
       <Alert status="info">
@@ -632,33 +850,77 @@ function RunPatchesList({ patches }) {
     );
   }
 
+  const togglePatch = (index) => {
+    setExpandedPatches(prev => ({
+      ...prev,
+      [index]: !prev[index]
+    }));
+  };
+
   return (
     <VStack align="stretch" spacing={4}>
-      {patches.map((patch, index) => (
-        <Box
-          key={index}
-          p={4}
-          border="1px solid"
-          borderColor="gray.200"
-          borderRadius="md"
-        >
-          <HStack justify="space-between" mb={2}>
-            <Heading size="sm">Patch #{patch.seq}</Heading>
-          </HStack>
-          <Text fontSize="sm" color="gray.600" mb={4}>
-            {patch.description}
-          </Text>
-          <Code
-            display="block"
-            whiteSpace="pre"
+      {patches.map((patch, index) => {
+        const isExpanded = expandedPatches[index] || false;
+        const operationsCount = patch.operations?.length || 0;
+
+        return (
+          <Box
+            key={index}
             p={4}
+            border="1px solid"
+            borderColor="gray.200"
             borderRadius="md"
-            overflowX="auto"
+            bg={isExpanded ? 'purple.50' : 'white'}
+            transition="background 0.2s"
           >
-            {JSON.stringify(patch.operations, null, 2)}
-          </Code>
-        </Box>
-      ))}
+            <HStack justify="space-between" mb={2}>
+              <HStack spacing={3}>
+                <Heading size="sm">Patch #{patch.seq}</Heading>
+                {patch.node_id && (
+                  <Badge colorScheme="purple" fontSize="xs">
+                    {patch.node_id}
+                  </Badge>
+                )}
+                <Badge colorScheme="gray" fontSize="xs">
+                  {operationsCount} operation{operationsCount !== 1 ? 's' : ''}
+                </Badge>
+              </HStack>
+              <IconButton
+                icon={isExpanded ? <ChevronUpIcon /> : <ChevronDownIcon />}
+                onClick={() => togglePatch(index)}
+                size="sm"
+                variant="ghost"
+                colorScheme="purple"
+                aria-label={isExpanded ? 'Collapse operations' : 'Expand operations'}
+              />
+            </HStack>
+
+            <Text fontSize="sm" color="gray.600" mb={2}>
+              {patch.description || 'No description provided'}
+            </Text>
+
+            <Collapse in={isExpanded} animateOpacity>
+              <Box mt={4}>
+                <Text fontSize="xs" fontWeight="bold" color="gray.700" mb={2}>
+                  Operations:
+                </Text>
+                <Code
+                  display="block"
+                  whiteSpace="pre"
+                  p={4}
+                  borderRadius="md"
+                  overflowX="auto"
+                  maxH="400px"
+                  overflowY="auto"
+                  fontSize="sm"
+                >
+                  {JSON.stringify(patch.operations, null, 2)}
+                </Code>
+              </Box>
+            </Collapse>
+          </Box>
+        );
+      })}
     </VStack>
   );
 }

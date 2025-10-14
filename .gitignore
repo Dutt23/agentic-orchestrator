@@ -28,6 +28,11 @@ cmd/*/[^/]*
 !cmd/*/*.md
 !cmd/*/*.sh
 !cmd/*/Makefile
+!cmd/*/Cargo.toml
+!cmd/*/src/
+!cmd/*/src/**
+!cmd/*/.cargo/
+!cmd/*/.cargo/**
 
 # Test coverage
 coverage.out
