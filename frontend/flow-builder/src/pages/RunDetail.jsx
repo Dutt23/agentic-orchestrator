@@ -391,7 +391,7 @@ function RunExecutionGraph({ workflowIR, nodeExecutions, onNodeClick }) {
     const flowEdges = [];
 
     // Method 1: Check for edges array at the top level
-    if (workflowIR.edges && Array.isArray(workflowIR.edges)) {
+    if (workflowIR.edges && Array.isArray(workflowIR.edges) && workflowIR.edges.length > 0) {
       console.log('Found edges array in workflowIR:', workflowIR.edges);
       workflowIR.edges.forEach((edge) => {
         const sourceId = edge.from || edge.source;
@@ -402,16 +402,29 @@ function RunExecutionGraph({ workflowIR, nodeExecutions, onNodeClick }) {
         }
       });
     }
-    // Method 2: Check node.dependents
-    else {
-      console.log('No edges array found, checking node.dependents');
+
+    // Method 2: Check node.dependents (if edges array was empty or missing)
+    if (flowEdges.length === 0) {
+      console.log('No edges array found, checking node.dependents and branch rules');
       nodesArray.forEach((node) => {
         const id = node.id;
-        console.log(`Node ${id}:`, { dependents: node.dependents, dependencies: node.dependencies });
+        console.log(`Node ${id}:`, { dependents: node.dependents, dependencies: node.dependencies, branch: node.branch });
 
+        // Check regular dependents
         if (node.dependents && node.dependents.length > 0) {
           node.dependents.forEach((target) => {
             flowEdges.push(createExecutionEdge(id, target, nodeExecutions));
+          });
+        }
+
+        // Check branch rules for conditional nodes
+        if (node.branch && node.branch.enabled && node.branch.rules) {
+          node.branch.rules.forEach((rule) => {
+            if (rule.next_nodes && Array.isArray(rule.next_nodes)) {
+              rule.next_nodes.forEach((target) => {
+                flowEdges.push(createExecutionEdge(id, target, nodeExecutions));
+              });
+            }
           });
         }
       });
