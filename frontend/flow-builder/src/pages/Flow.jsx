@@ -778,6 +778,11 @@ export default function App() {
         isClosable: true,
         position: 'top-right',
       });
+
+      // Navigate to run detail page
+      if (result.run_id) {
+        navigate(`/runs/${result.run_id}`);
+      }
     } catch (error) {
       console.error('[Flow] Failed to start workflow:', error);
       setIsRunning(false);
@@ -792,7 +797,7 @@ export default function App() {
         position: 'top-right',
       });
     }
-  }, [tag, toast]);
+  }, [tag, toast, navigate]);
 
   // Get all workflows for selector (mock data only)
   const allWorkflows = useMockData ? getAllWorkflows() : [];
