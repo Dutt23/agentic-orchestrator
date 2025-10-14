@@ -23,12 +23,18 @@ cmd/api/api
 cmd/hitl/hitl
 
 # Generic binary pattern (executables without extension in cmd/)
+# Ignore binaries at cmd/*/binary_name level
 cmd/*/[^/]*
+# But allow source files and directories
 !cmd/*/*.go
+!cmd/*/*.rs
 !cmd/*/*.md
 !cmd/*/*.sh
 !cmd/*/Makefile
 !cmd/*/Cargo.toml
+# Allow all subdirectories under cmd/*/ (like cmd/*/worker/, cmd/*/models/, etc.)
+!cmd/*/*/
+!cmd/*/*/**
 !cmd/*/src/
 !cmd/*/src/**
 !cmd/*/.cargo/
@@ -177,3 +183,4 @@ _site/
 .npm/
 .eslintcache
 .parcel-cache/
+/ui_pcitures
