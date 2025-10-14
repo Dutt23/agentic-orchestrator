@@ -101,7 +101,12 @@ return {new_value, 1, hit_zero}
 	workflowSDK := sdk.NewSDK(redisClient, casClient, logger, luaScript)
 
 	// Create coordinator
-	coord := coordinator.NewCoordinator(redisClient, workflowSDK, logger, "http://localhost")
+	coord := coordinator.NewCoordinator(&coordinator.CoordinatorOpts{
+		Redis:               redisClient,
+		SDK:                 workflowSDK,
+		Logger:              logger,
+		OrchestratorBaseURL: "http://localhost:8081",
+	})
 
 	// Start coordinator in background
 	go func() {
@@ -133,14 +138,14 @@ type mockCASClient struct {
 	t       *testing.T
 }
 
-func (m *mockCASClient) Put(data []byte, contentType string) (string, error) {
+func (m *mockCASClient) Put(ctx context.Context, data []byte, contentType string) (string, error) {
 	casID := fmt.Sprintf("cas://test/%s", uuid.New().String()[:8])
 	m.storage[casID] = data
 	m.t.Logf("CAS Put: %s (%d bytes)", casID, len(data))
 	return casID, nil
 }
 
-func (m *mockCASClient) Get(casID string) (interface{}, error) {
+func (m *mockCASClient) Get(ctx context.Context, casID string) (interface{}, error) {
 	if data, exists := m.storage[casID]; exists {
 		return data, nil
 	}
@@ -148,7 +153,7 @@ func (m *mockCASClient) Get(casID string) (interface{}, error) {
 	return []byte("{}"), nil
 }
 
-func (m *mockCASClient) Store(data interface{}) (string, error) {
+func (m *mockCASClient) Store(ctx context.Context, data interface{}) (string, error) {
 	dataJSON, err := json.Marshal(data)
 	if err != nil {
 		return "", err
@@ -328,7 +333,7 @@ func TestBranchWithCEL(t *testing.T) {
 	// Create result with high score
 	result := map[string]interface{}{"score": 85}
 	resultJSON, _ := json.Marshal(result)
-	resultRef, _ := env.sdk.CASClient.Put(resultJSON, "application/json")
+	resultRef, _ := env.sdk.CASClient.Put(env.ctx, resultJSON, "application/json")
 
 	// Signal completion with high score
 	env.signalCompletion(t, runID, "score", resultRef)
@@ -383,7 +388,7 @@ func TestLoopWithCEL(t *testing.T) {
 	// First attempt - fails, should loop
 	result1 := map[string]interface{}{"status": "error", "attempt": 1}
 	resultJSON1, _ := json.Marshal(result1)
-	resultRef1, _ := env.sdk.CASClient.Put(resultJSON1, "application/json")
+	resultRef1, _ := env.sdk.CASClient.Put(env.ctx, resultJSON1, "application/json")
 	env.signalCompletion(t, runID, "retry_fetch", resultRef1)
 	time.Sleep(200 * time.Millisecond)
 
@@ -394,7 +399,7 @@ func TestLoopWithCEL(t *testing.T) {
 	// Second attempt - succeeds, should break
 	result2 := map[string]interface{}{"status": "success", "attempt": 2}
 	resultJSON2, _ := json.Marshal(result2)
-	resultRef2, _ := env.sdk.CASClient.Put(resultJSON2, "application/json")
+	resultRef2, _ := env.sdk.CASClient.Put(env.ctx, resultJSON2, "application/json")
 	env.signalCompletion(t, runID, "retry_fetch", resultRef2)
 	time.Sleep(200 * time.Millisecond)
 
@@ -528,7 +533,7 @@ func TestAgentMockFlow(t *testing.T) {
 		"output": "Agent completed task",
 	}
 	resultJSON, _ := json.Marshal(agentResult)
-	resultRef, _ := env.sdk.CASClient.Put(resultJSON, "application/json")
+	resultRef, _ := env.sdk.CASClient.Put(env.ctx, resultJSON, "application/json")
 
 	// Simulate agent signaling completion (like agent-runner-py does)
 	env.signalCompletion(t, runID, "agent_node", resultRef)
@@ -697,7 +702,7 @@ func TestEndToEndAgentWorkflow(t *testing.T) {
 
 	// Store agent result in CAS
 	agentResultJSON, _ := json.Marshal(agentResult)
-	agentResultRef, _ := env.sdk.CASClient.Put(agentResultJSON, "application/json")
+	agentResultRef, _ := env.sdk.CASClient.Put(env.ctx, agentResultJSON, "application/json")
 
 	// Agent signals completion
 	t.Log("Agent executing pipeline and signaling completion...")
@@ -733,7 +738,7 @@ func TestEndToEndAgentWorkflow(t *testing.T) {
 		"average_price":     324,
 	}
 	processedJSON, _ := json.Marshal(processedResult)
-	processedRef, _ := env.sdk.CASClient.Put(processedJSON, "application/json")
+	processedRef, _ := env.sdk.CASClient.Put(env.ctx, processedJSON, "application/json")
 
 	t.Log("Processing agent result...")
 	env.signalCompletion(t, runID, "process_result", processedRef)
@@ -746,7 +751,7 @@ func TestEndToEndAgentWorkflow(t *testing.T) {
 		"flights_count": 3,
 	}
 	storeJSON, _ := json.Marshal(storeResult)
-	storeRef, _ := env.sdk.CASClient.Put(storeJSON, "application/json")
+	storeRef, _ := env.sdk.CASClient.Put(env.ctx, storeJSON, "application/json")
 
 	t.Log("Storing final result...")
 	env.signalCompletion(t, runID, "store_result", storeRef)
@@ -864,7 +869,7 @@ func TestEndToEndAgentWithPatch(t *testing.T) {
 		},
 	}
 	analysisJSON, _ := json.Marshal(analysisResult)
-	analysisRef, _ := env.sdk.CASClient.Put(analysisJSON, "application/json")
+	analysisRef, _ := env.sdk.CASClient.Put(env.ctx, analysisJSON, "application/json")
 
 	t.Log("Agent completing analysis (after patching workflow)...")
 	env.signalCompletion(t, runID, "agent_analyze", analysisRef)
@@ -876,7 +881,7 @@ func TestEndToEndAgentWithPatch(t *testing.T) {
 		"key_insights": []string{"Q4 growth", "New markets"},
 	}
 	summaryJSON, _ := json.Marshal(summaryResult)
-	summaryRef, _ := env.sdk.CASClient.Put(summaryJSON, "application/json")
+	summaryRef, _ := env.sdk.CASClient.Put(env.ctx, summaryJSON, "application/json")
 
 	t.Log("Creating summary...")
 	env.signalCompletion(t, runID, "summarize", summaryRef)
@@ -911,7 +916,7 @@ func TestEndToEndAgentWithPatch(t *testing.T) {
 		"subject":    "Sales Analysis Complete",
 	}
 	emailJSON, _ := json.Marshal(emailResult)
-	emailRef, _ := env.sdk.CASClient.Put(emailJSON, "application/json")
+	emailRef, _ := env.sdk.CASClient.Put(env.ctx, emailJSON, "application/json")
 
 	t.Log("Sending email notification...")
 	env.signalCompletion(t, runID, "send_email", emailRef)
@@ -974,7 +979,7 @@ func TestPatchWithConditional(t *testing.T) {
 	// B completes with high value
 	result := map[string]interface{}{"value": 150}
 	resultJSON, _ := json.Marshal(result)
-	resultRef, _ := env.sdk.CASClient.Put(resultJSON, "application/json")
+	resultRef, _ := env.sdk.CASClient.Put(env.ctx, resultJSON, "application/json")
 
 	env.signalCompletion(t, runID, "B", resultRef)
 	time.Sleep(300 * time.Millisecond)
