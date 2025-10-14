@@ -27,9 +27,28 @@ import {
 } from '@chakra-ui/icons';
 
 /**
+ * Helper function to count absorbed nodes (branch/conditional/loop nodes)
+ */
+const countAbsorbedNodes = (nodeExecutions) => {
+  if (!nodeExecutions) {
+    return 0;
+  }
+
+  let count = 0;
+  Object.values(nodeExecutions).forEach((exec) => {
+    // Check metrics to identify absorbed nodes (they have ~1ms execution time and 0 resources)
+    if (exec.metrics && exec.metrics.execution_time_ms === 1 && exec.metrics.memory_peak_mb === 0) {
+      count++;
+    }
+  });
+
+  return count;
+};
+
+/**
  * MetricsSidebar displays performance metrics for all executed nodes
  */
-export default function MetricsSidebar({ nodeExecutions }) {
+export default function MetricsSidebar({ nodeExecutions, workflowIR }) {
   const [isOpen, setIsOpen] = useState(true);
   const [selectedNode, setSelectedNode] = useState(null);
   const [expandedSummary, setExpandedSummary] = useState(true);
@@ -225,6 +244,30 @@ export default function MetricsSidebar({ nodeExecutions }) {
                 </Text>
                 <Text fontSize="sm" fontWeight="medium">
                   {avgMemoryUsage.toFixed(1)} MB
+                </Text>
+              </HStack>
+            </VStack>
+
+            {/* Optimizations Applied */}
+            <VStack align="stretch" spacing={2} bg="green.50" p={3} borderRadius="md" boxShadow="sm" border="1px solid" borderColor="green.200">
+              <HStack justify="space-between">
+                <Text fontSize="xs" fontWeight="bold" color="green.700">
+                  Optimizations Applied
+                </Text>
+                <Tooltip
+                  label="Branch/conditional/loop nodes handled inline without worker overhead"
+                  placement="left"
+                  hasArrow
+                >
+                  <InfoIcon boxSize={3} color="green.500" />
+                </Tooltip>
+              </HStack>
+              <HStack justify="space-between">
+                <Text fontSize="xs" color="green.600">
+                  Nodes Absorbed
+                </Text>
+                <Text fontSize="sm" fontWeight="bold" color="green.700">
+                  {countAbsorbedNodes(nodeExecutions)}
                 </Text>
               </HStack>
             </VStack>

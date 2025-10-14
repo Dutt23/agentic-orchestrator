@@ -132,6 +132,26 @@ export default function RunDetail() {
           </Card>
         )}
 
+        {/* Optimizations Applied */}
+        {details.workflow_ir && (
+          <Card variant="success">
+            <Heading size="sm" mb={3}>
+              Optimizations Applied
+            </Heading>
+            <Text fontSize="sm" color="gray.600" mb={3}>
+              Branch/conditional/loop nodes are handled inline without worker overhead
+            </Text>
+            <KeyValueList
+              items={[
+                {
+                  label: 'Nodes Absorbed',
+                  value: countAbsorbedNodes(details.workflow_ir),
+                },
+              ]}
+            />
+          </Card>
+        )}
+
         <Divider />
 
         {/* Tabs */}
