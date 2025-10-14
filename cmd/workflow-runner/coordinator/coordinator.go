@@ -179,86 +179,7 @@ func (c *Coordinator) handleCompletion(ctx context.Context, signal *CompletionSi
 
 	// 2. Handle failed execution
 	if signal.Status == "failed" {
-		c.logger.Error("node execution failed",
-			"run_id", signal.RunID,
-			"node_id", signal.NodeID,
-			"result_ref", signal.ResultRef,
-			"error", signal.Metadata)
-
-		// Store result_data in CAS even on failure (for metrics)
-		var failureResultRef string
-		if signal.ResultData != nil {
-			resultID := fmt.Sprintf("artifact://%s-%s-%d", signal.RunID, signal.NodeID, time.Now().UnixNano())
-			casKey := fmt.Sprintf("cas:%s", resultID)
-
-			resultJSON, err := json.Marshal(signal.ResultData)
-			if err == nil {
-				if err := c.redisWrapper.Set(ctx, casKey, string(resultJSON), 0); err == nil {
-					failureResultRef = resultID
-					// Store at :output so RunService can find it
-					c.sdk.StoreContext(ctx, signal.RunID, signal.NodeID, failureResultRef)
-					c.logger.Info("stored failure result in CAS",
-						"run_id", signal.RunID,
-						"node_id", signal.NodeID,
-						"result_ref", failureResultRef)
-				}
-			}
-		}
-
-		// Store failure information in context for debugging and retry logic
-		failureData := map[string]interface{}{
-			"status":     "failed",
-			"node_id":    signal.NodeID,
-			"error":      signal.Metadata,
-			"timestamp":  time.Now().Unix(),
-			"retryable":  signal.Metadata["retryable"],
-			"error_type": signal.Metadata["error_type"],
-		}
-
-		// Marshal to JSON for storage
-		failureJSON, err := json.Marshal(failureData)
-		if err != nil {
-			c.logger.Error("failed to marshal failure data",
-				"run_id", signal.RunID,
-				"node_id", signal.NodeID,
-				"error", err)
-		} else {
-			// Store in Redis context so it can be retrieved later
-			failureKey := fmt.Sprintf("%s:failure", signal.NodeID)
-			if err := c.sdk.StoreContext(ctx, signal.RunID, failureKey, string(failureJSON)); err != nil {
-				c.logger.Error("failed to store failure context",
-					"run_id", signal.RunID,
-					"node_id", signal.NodeID,
-					"error", err)
-			}
-		}
-
-		// Publish node_failed event
-		if ir.Metadata != nil {
-			if username, ok := ir.Metadata["username"].(string); ok {
-				c.lifecycle.EventPublisher.PublishWorkflowEvent(ctx, username, map[string]interface{}{
-					"type":      "node_failed",
-					"run_id":    signal.RunID,
-					"node_id":   signal.NodeID,
-					"error":     signal.Metadata,
-					"timestamp": time.Now().Unix(),
-				})
-
-				// Also publish workflow_failed event to indicate the entire workflow failed
-				c.lifecycle.EventPublisher.PublishWorkflowEvent(ctx, username, map[string]interface{}{
-					"type":      "workflow_failed",
-					"run_id":    signal.RunID,
-					"node_id":   signal.NodeID,
-					"error":     signal.Metadata,
-					"timestamp": time.Now().Unix(),
-				})
-			}
-		}
-
-		// Update run status (both Redis hot path and DB cold path)
-		c.lifecycle.StatusManager.UpdateRunStatus(ctx, signal.RunID, "FAILED")
-
-		// TODO: Handle failure (DLQ, retry, etc.)
+		c.handleFailedNode(ctx, signal, ir)
 		return
 	}
 
@@ -291,53 +212,7 @@ func (c *Coordinator) handleCompletion(ctx context.Context, signal *CompletionSi
 	counter, _ := c.sdk.GetCounter(ctx, signal.RunID)
 
 	// 5. Store result data in CAS and create reference
-	var resultRef string
-	if signal.ResultData != nil {
-		// Generate CAS key
-		resultID := fmt.Sprintf("artifact://%s-%s-%d", signal.RunID, signal.NodeID, time.Now().UnixNano())
-		casKey := fmt.Sprintf("cas:%s", resultID)
-
-		// Store result data in CAS
-		resultJSON, err := json.Marshal(signal.ResultData)
-		if err != nil {
-			c.logger.Error("failed to marshal result data",
-				"run_id", signal.RunID,
-				"node_id", signal.NodeID,
-				"error", err)
-		} else {
-			if err := c.redisWrapper.Set(ctx, casKey, string(resultJSON), 0); err != nil {
-				c.logger.Error("failed to store result in CAS",
-					"run_id", signal.RunID,
-					"node_id", signal.NodeID,
-					"cas_key", casKey,
-					"error", err)
-			} else {
-				resultRef = resultID
-				c.logger.Info("stored result in CAS",
-					"run_id", signal.RunID,
-					"node_id", signal.NodeID,
-					"result_ref", resultRef,
-					"cas_key", casKey)
-			}
-		}
-	} else if signal.ResultRef != "" {
-		// Backward compatibility: use provided ResultRef
-		resultRef = signal.ResultRef
-		c.logger.Debug("using provided result_ref (backward compat)",
-			"run_id", signal.RunID,
-			"node_id", signal.NodeID,
-			"result_ref", resultRef)
-	}
-
-	// Store reference in context for downstream nodes
-	if resultRef != "" {
-		if err := c.sdk.StoreContext(ctx, signal.RunID, signal.NodeID, resultRef); err != nil {
-			c.logger.Error("failed to store context",
-				"run_id", signal.RunID,
-				"node_id", signal.NodeID,
-				"error", err)
-		}
-	}
+	resultRef := c.storeResultInCAS(ctx, signal)
 
 	// Publish node_completed event
 	if ir.Metadata != nil {
@@ -403,148 +278,7 @@ func (c *Coordinator) handleCompletion(ctx context.Context, signal *CompletionSi
 		"count", len(nextNodes))
 
 	// 8. Emit to appropriate streams and update counter
-	if len(nextNodes) > 0 {
-		// Track which nodes are absorbers (handled inline) vs. workers (published to streams)
-		absorberNodes := []string{}
-		workerNodes := []string{}
-
-		for _, nextNodeID := range nextNodes {
-			nextNode, exists := ir.Nodes[nextNodeID]
-			if !exists {
-				c.logger.Error("next node not found in IR",
-					"run_id", signal.RunID,
-					"next_node_id", nextNodeID)
-				continue
-			}
-
-			// Check if this is an absorber node (branch or loop) - handle inline
-			if (nextNode.Branch != nil && nextNode.Branch.Enabled) || (nextNode.Loop != nil && nextNode.Loop.Enabled) {
-				c.logger.Info("detected absorber node (branch/loop) - handling inline",
-					"run_id", signal.RunID,
-					"node_id", nextNodeID,
-					"has_branch", nextNode.Branch != nil && nextNode.Branch.Enabled,
-					"has_loop", nextNode.Loop != nil && nextNode.Loop.Enabled)
-
-				absorberNodes = append(absorberNodes, nextNodeID)
-
-				// Handle absorber node inline - immediately trigger downstream nodes
-				go c.handleAbsorberNode(ctx, signal.RunID, signal.NodeID, nextNodeID, resultRef, nextNode, ir)
-				continue
-			}
-
-			// Regular worker node - publish to stream
-			workerNodes = append(workerNodes, nextNodeID)
-
-			// Load node config (inline or CAS)
-			c.logger.Info("loading node config",
-				"run_id", signal.RunID,
-				"node_id", nextNodeID,
-				"node_type", nextNode.Type,
-				"has_inline_config", len(nextNode.Config) > 0,
-				"has_config_ref", nextNode.ConfigRef != "",
-				"inline_config", nextNode.Config,
-				"config_ref", nextNode.ConfigRef)
-
-			var config map[string]interface{}
-			c.logger.Info("config is ehre",
-				"config", nextNode.Config)
-			if len(nextNode.Config) > 0 {
-				config = nextNode.Config
-				c.logger.Info("using inline config", "config", config)
-			} else if nextNode.ConfigRef != "" {
-				c.logger.Info("loading config from CAS", "config_ref", nextNode.ConfigRef)
-				configData, err := c.sdk.LoadConfig(ctx, nextNode.ConfigRef)
-				if err != nil {
-					c.logger.Error("failed to load config from CAS",
-						"run_id", signal.RunID,
-						"node_id", nextNodeID,
-						"config_ref", nextNode.ConfigRef,
-						"error", err)
-					continue
-				}
-				// Convert to map
-				if configMap, ok := configData.(map[string]interface{}); ok {
-					config = configMap
-					c.logger.Info("loaded config from CAS", "config", config)
-				} else {
-					c.logger.Error("config is not a map",
-						"run_id", signal.RunID,
-						"node_id", nextNodeID)
-					continue
-				}
-			} else {
-				c.logger.Warn("node has no config (neither inline nor CAS ref)",
-					"run_id", signal.RunID,
-					"node_id", nextNodeID)
-			}
-
-			// Resolve variables in config (e.g., $nodes.node_id)
-			c.logger.Info("about to resolve config",
-				"run_id", signal.RunID,
-				"node_id", nextNodeID,
-				"config_is_nil", config == nil,
-				"config", config)
-
-			var resolvedConfig map[string]interface{}
-			if config != nil {
-				var err error
-				resolvedConfig, err = c.resolver.ResolveConfig(ctx, signal.RunID, config)
-				if err != nil {
-					c.logger.Error("failed to resolve config variables",
-						"run_id", signal.RunID,
-						"node_id", nextNodeID,
-						"error", err)
-					// Continue with unresolved config as fallback
-					resolvedConfig = config
-				} else {
-					c.logger.Info("resolved config variables successfully",
-						"run_id", signal.RunID,
-						"node_id", nextNodeID,
-						"resolvedConfig", resolvedConfig)
-				}
-			} else {
-				c.logger.Warn("config is nil, cannot resolve - resolvedConfig will be nil",
-					"run_id", signal.RunID,
-					"node_id", nextNodeID)
-			}
-
-			// Get appropriate stream for node type
-			stream := c.router.GetStreamForNodeType(nextNode.Type)
-
-			// Publish token to stream with resolved config and IR
-			if err := c.publishToken(ctx, stream, signal.RunID, signal.NodeID, nextNodeID, resultRef, resolvedConfig, ir); err != nil {
-				c.logger.Error("failed to publish token",
-					"run_id", signal.RunID,
-					"to_node", nextNodeID,
-					"stream", stream,
-					"error", err)
-				continue
-			}
-
-			c.logger.Debug("published token",
-				"run_id", signal.RunID,
-				"from_node", signal.NodeID,
-				"to_node", nextNodeID,
-				"stream", stream)
-		}
-
-		c.logger.Info("next nodes categorized",
-			"run_id", signal.RunID,
-			"absorber_nodes", absorberNodes,
-			"worker_nodes", workerNodes)
-
-		// Apply counter update (+N) only for worker nodes
-		// Absorber nodes will handle their own counter updates when they complete
-		if len(workerNodes) > 0 {
-			if err := c.sdk.Emit(ctx, signal.RunID, signal.NodeID, workerNodes, resultRef); err != nil {
-				c.logger.Error("failed to emit counter update",
-					"run_id", signal.RunID,
-					"node_id", signal.NodeID,
-					"next_nodes_count", len(workerNodes),
-					"error", err)
-			}
-		}
-	}
+	c.routeToNextNodes(ctx, signal, nextNodes, resultRef, ir)
 
 	// 9. Terminal node check
 	if node.IsTerminal {
@@ -675,6 +409,313 @@ func (c *Coordinator) loadIR(ctx context.Context, runID string) (*sdk.IR, error)
 	return &ir, nil
 }
 
+// handleFailedNode processes a failed node execution
+// Stores failure data in CAS, publishes events, and updates run status
+func (c *Coordinator) handleFailedNode(ctx context.Context, signal *CompletionSignal, ir *sdk.IR) {
+	c.logger.Error("node execution failed",
+		"run_id", signal.RunID,
+		"node_id", signal.NodeID,
+		"result_ref", signal.ResultRef,
+		"error", signal.Metadata)
+
+	// Store result_data in CAS even on failure (for metrics)
+	var failureResultRef string
+	if signal.ResultData != nil {
+		resultID := fmt.Sprintf("artifact://%s-%s-%d", signal.RunID, signal.NodeID, time.Now().UnixNano())
+		casKey := fmt.Sprintf("cas:%s", resultID)
+
+		resultJSON, err := json.Marshal(signal.ResultData)
+		if err == nil {
+			if err := c.redisWrapper.Set(ctx, casKey, string(resultJSON), 0); err == nil {
+				failureResultRef = resultID
+				// Store at :output so RunService can find it
+				c.sdk.StoreContext(ctx, signal.RunID, signal.NodeID, failureResultRef)
+				c.logger.Info("stored failure result in CAS",
+					"run_id", signal.RunID,
+					"node_id", signal.NodeID,
+					"result_ref", failureResultRef)
+			}
+		}
+	}
+
+	// Store failure information in context for debugging and retry logic
+	failureData := map[string]interface{}{
+		"status":     "failed",
+		"node_id":    signal.NodeID,
+		"error":      signal.Metadata,
+		"timestamp":  time.Now().Unix(),
+		"retryable":  signal.Metadata["retryable"],
+		"error_type": signal.Metadata["error_type"],
+	}
+
+	// Marshal to JSON for storage
+	failureJSON, err := json.Marshal(failureData)
+	if err != nil {
+		c.logger.Error("failed to marshal failure data",
+			"run_id", signal.RunID,
+			"node_id", signal.NodeID,
+			"error", err)
+	} else {
+		// Store in Redis context so it can be retrieved later
+		failureKey := fmt.Sprintf("%s:failure", signal.NodeID)
+		if err := c.sdk.StoreContext(ctx, signal.RunID, failureKey, string(failureJSON)); err != nil {
+			c.logger.Error("failed to store failure context",
+				"run_id", signal.RunID,
+				"node_id", signal.NodeID,
+				"error", err)
+		}
+	}
+
+	// Publish node_failed event
+	if ir.Metadata != nil {
+		if username, ok := ir.Metadata["username"].(string); ok {
+			c.lifecycle.EventPublisher.PublishWorkflowEvent(ctx, username, map[string]interface{}{
+				"type":      "node_failed",
+				"run_id":    signal.RunID,
+				"node_id":   signal.NodeID,
+				"error":     signal.Metadata,
+				"timestamp": time.Now().Unix(),
+			})
+
+			// Also publish workflow_failed event to indicate the entire workflow failed
+			c.lifecycle.EventPublisher.PublishWorkflowEvent(ctx, username, map[string]interface{}{
+				"type":      "workflow_failed",
+				"run_id":    signal.RunID,
+				"node_id":   signal.NodeID,
+				"error":     signal.Metadata,
+				"timestamp": time.Now().Unix(),
+			})
+		}
+	}
+
+	// Update run status (both Redis hot path and DB cold path)
+	c.lifecycle.StatusManager.UpdateRunStatus(ctx, signal.RunID, "FAILED")
+
+	// TODO: Handle failure (DLQ, retry, etc.)
+}
+
+// storeResultInCAS stores the result data in CAS and returns the result reference
+// Handles both new ResultData field and legacy ResultRef field for backward compatibility
+func (c *Coordinator) storeResultInCAS(ctx context.Context, signal *CompletionSignal) string {
+	var resultRef string
+
+	if signal.ResultData != nil {
+		// Generate CAS key
+		resultID := fmt.Sprintf("artifact://%s-%s-%d", signal.RunID, signal.NodeID, time.Now().UnixNano())
+		casKey := fmt.Sprintf("cas:%s", resultID)
+
+		// Store result data in CAS
+		resultJSON, err := json.Marshal(signal.ResultData)
+		if err != nil {
+			c.logger.Error("failed to marshal result data",
+				"run_id", signal.RunID,
+				"node_id", signal.NodeID,
+				"error", err)
+		} else {
+			if err := c.redisWrapper.Set(ctx, casKey, string(resultJSON), 0); err != nil {
+				c.logger.Error("failed to store result in CAS",
+					"run_id", signal.RunID,
+					"node_id", signal.NodeID,
+					"cas_key", casKey,
+					"error", err)
+			} else {
+				resultRef = resultID
+				c.logger.Info("stored result in CAS",
+					"run_id", signal.RunID,
+					"node_id", signal.NodeID,
+					"result_ref", resultRef,
+					"cas_key", casKey)
+			}
+		}
+	} else if signal.ResultRef != "" {
+		// Backward compatibility: use provided ResultRef
+		resultRef = signal.ResultRef
+		c.logger.Debug("using provided result_ref (backward compat)",
+			"run_id", signal.RunID,
+			"node_id", signal.NodeID,
+			"result_ref", resultRef)
+	}
+
+	// Store reference in context for downstream nodes
+	if resultRef != "" {
+		if err := c.sdk.StoreContext(ctx, signal.RunID, signal.NodeID, resultRef); err != nil {
+			c.logger.Error("failed to store context",
+				"run_id", signal.RunID,
+				"node_id", signal.NodeID,
+				"error", err)
+		}
+	}
+
+	return resultRef
+}
+
+// routeToNextNodes processes and routes execution to next nodes
+// Handles both absorber nodes (branch/loop) and worker nodes (http, agent, etc.)
+func (c *Coordinator) routeToNextNodes(ctx context.Context, signal *CompletionSignal, nextNodes []string, resultRef string, ir *sdk.IR) {
+	if len(nextNodes) == 0 {
+		return
+	}
+
+	// Track which nodes are absorbers (handled inline) vs. workers (published to streams)
+	absorberNodes := []string{}
+	workerNodes := []string{}
+
+	for _, nextNodeID := range nextNodes {
+		nextNode, exists := ir.Nodes[nextNodeID]
+		if !exists {
+			c.logger.Error("next node not found in IR",
+				"run_id", signal.RunID,
+				"next_node_id", nextNodeID)
+			continue
+		}
+
+		// Check if this is an absorber node (branch or loop) - handle inline
+		if (nextNode.Branch != nil && nextNode.Branch.Enabled) || (nextNode.Loop != nil && nextNode.Loop.Enabled) {
+			c.logger.Info("detected absorber node (branch/loop) - handling inline",
+				"run_id", signal.RunID,
+				"node_id", nextNodeID,
+				"has_branch", nextNode.Branch != nil && nextNode.Branch.Enabled,
+				"has_loop", nextNode.Loop != nil && nextNode.Loop.Enabled)
+
+			absorberNodes = append(absorberNodes, nextNodeID)
+
+			// Handle absorber node inline - immediately trigger downstream nodes
+			go c.handleAbsorberNode(ctx, signal.RunID, signal.NodeID, nextNodeID, resultRef, nextNode, ir)
+			continue
+		}
+
+		// Regular worker node - publish to stream
+		workerNodes = append(workerNodes, nextNodeID)
+		c.processWorkerNode(ctx, signal, nextNodeID, nextNode, resultRef, ir)
+	}
+
+	c.logger.Info("next nodes categorized",
+		"run_id", signal.RunID,
+		"absorber_nodes", absorberNodes,
+		"worker_nodes", workerNodes)
+
+	// Apply counter update (+N) only for worker nodes
+	// Absorber nodes will handle their own counter updates when they complete
+	if len(workerNodes) > 0 {
+		if err := c.sdk.Emit(ctx, signal.RunID, signal.NodeID, workerNodes, resultRef); err != nil {
+			c.logger.Error("failed to emit counter update",
+				"run_id", signal.RunID,
+				"node_id", signal.NodeID,
+				"next_nodes_count", len(workerNodes),
+				"error", err)
+		}
+	}
+}
+
+// loadAndResolveConfig loads node config (inline or from CAS) and resolves variables
+// Returns the resolved config map, or nil if config loading/resolution fails
+func (c *Coordinator) loadAndResolveConfig(ctx context.Context, runID, nodeID string, node *sdk.Node) map[string]interface{} {
+	// Load node config (inline or CAS)
+	c.logger.Info("loading node config",
+		"run_id", runID,
+		"node_id", nodeID,
+		"node_type", node.Type,
+		"has_inline_config", len(node.Config) > 0,
+		"has_config_ref", node.ConfigRef != "",
+		"inline_config", node.Config,
+		"config_ref", node.ConfigRef)
+
+	var config map[string]interface{}
+	c.logger.Info("config is ehre",
+		"config", node.Config)
+	if len(node.Config) > 0 {
+		config = node.Config
+		c.logger.Info("using inline config", "config", config)
+	} else if node.ConfigRef != "" {
+		c.logger.Info("loading config from CAS", "config_ref", node.ConfigRef)
+		configData, err := c.sdk.LoadConfig(ctx, node.ConfigRef)
+		if err != nil {
+			c.logger.Error("failed to load config from CAS",
+				"run_id", runID,
+				"node_id", nodeID,
+				"config_ref", node.ConfigRef,
+				"error", err)
+			return nil
+		}
+		// Convert to map
+		if configMap, ok := configData.(map[string]interface{}); ok {
+			config = configMap
+			c.logger.Info("loaded config from CAS", "config", config)
+		} else {
+			c.logger.Error("config is not a map",
+				"run_id", runID,
+				"node_id", nodeID)
+			return nil
+		}
+	} else {
+		c.logger.Warn("node has no config (neither inline nor CAS ref)",
+			"run_id", runID,
+			"node_id", nodeID)
+	}
+
+	// Resolve variables in config (e.g., $nodes.node_id)
+	c.logger.Info("about to resolve config",
+		"run_id", runID,
+		"node_id", nodeID,
+		"config_is_nil", config == nil,
+		"config", config)
+
+	var resolvedConfig map[string]interface{}
+	if config != nil {
+		var err error
+		resolvedConfig, err = c.resolver.ResolveConfig(ctx, runID, config)
+		if err != nil {
+			c.logger.Error("failed to resolve config variables",
+				"run_id", runID,
+				"node_id", nodeID,
+				"error", err)
+			// Continue with unresolved config as fallback
+			resolvedConfig = config
+		} else {
+			c.logger.Info("resolved config variables successfully",
+				"run_id", runID,
+				"node_id", nodeID,
+				"resolvedConfig", resolvedConfig)
+		}
+	} else {
+		c.logger.Warn("config is nil, cannot resolve - resolvedConfig will be nil",
+			"run_id", runID,
+			"node_id", nodeID)
+	}
+
+	return resolvedConfig
+}
+
+// processWorkerNode handles a regular worker node (http, agent, etc.)
+// Loads config, resolves variables, and publishes token to worker stream
+func (c *Coordinator) processWorkerNode(ctx context.Context, signal *CompletionSignal, nextNodeID string, nextNode *sdk.Node, resultRef string, ir *sdk.IR) {
+	// Load and resolve config
+	resolvedConfig := c.loadAndResolveConfig(ctx, signal.RunID, nextNodeID, nextNode)
+	if resolvedConfig == nil && nextNode.ConfigRef != "" {
+		// Config loading failed for a node that requires config
+		return
+	}
+
+	// Get appropriate stream for node type
+	stream := c.router.GetStreamForNodeType(nextNode.Type)
+
+	// Publish token to stream with resolved config and IR
+	if err := c.publishToken(ctx, stream, signal.RunID, signal.NodeID, nextNodeID, resultRef, resolvedConfig, ir); err != nil {
+		c.logger.Error("failed to publish token",
+			"run_id", signal.RunID,
+			"to_node", nextNodeID,
+			"stream", stream,
+			"error", err)
+		return
+	}
+
+	c.logger.Debug("published token",
+		"run_id", signal.RunID,
+		"from_node", signal.NodeID,
+		"to_node", nextNodeID,
+		"stream", stream)
+}
+
 // handleAbsorberNode handles branch/loop nodes inline (no worker needed)
 func (c *Coordinator) handleAbsorberNode(ctx context.Context, runID, fromNode, absorberNodeID, payloadRef string, absorberNode *sdk.Node, ir *sdk.IR) {
 	startTime := time.Now()
@@ -767,40 +808,10 @@ func (c *Coordinator) handleAbsorberNode(ctx context.Context, runID, fromNode, a
 			}
 
 			// Load and resolve config for worker node
-			var config map[string]interface{}
-			if len(nextNode.Config) > 0 {
-				config = nextNode.Config
-			} else if nextNode.ConfigRef != "" {
-				configData, err := c.sdk.LoadConfig(ctx, nextNode.ConfigRef)
-				if err != nil {
-					c.logger.Error("failed to load config from CAS",
-						"run_id", runID,
-						"node_id", nextNodeID,
-						"config_ref", nextNode.ConfigRef,
-						"error", err)
-					continue
-				}
-				if configMap, ok := configData.(map[string]interface{}); ok {
-					config = configMap
-				} else {
-					c.logger.Error("config is not a map",
-						"run_id", runID,
-						"node_id", nextNodeID)
-					continue
-				}
-			}
-
-			var resolvedConfig map[string]interface{}
-			if config != nil {
-				var err error
-				resolvedConfig, err = c.resolver.ResolveConfig(ctx, runID, config)
-				if err != nil {
-					c.logger.Error("failed to resolve config variables",
-						"run_id", runID,
-						"node_id", nextNodeID,
-						"error", err)
-					resolvedConfig = config
-				}
+			resolvedConfig := c.loadAndResolveConfig(ctx, runID, nextNodeID, nextNode)
+			if resolvedConfig == nil && nextNode.ConfigRef != "" {
+				// Config loading failed for a node that requires config
+				continue
 			}
 
 			// Publish to worker stream
