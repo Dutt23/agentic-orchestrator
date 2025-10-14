@@ -9,17 +9,12 @@ import {
   Text,
   Badge,
   Button,
-  ButtonGroup,
-  Spinner,
-  Alert,
-  AlertIcon,
   Tabs,
   TabList,
   TabPanels,
   Tab,
   TabPanel,
   Divider,
-  Code,
   Collapse,
   IconButton,
 } from '@chakra-ui/react';
@@ -33,6 +28,14 @@ import MetricsSidebar from '../components/MetricsSidebar';
 import StatusBadge from '../components/run/StatusBadge';
 import NodeSelectorBadges from '../components/run/NodeSelectorBadges';
 import NodeMetricsDisplay from '../components/run/NodeMetricsDisplay';
+import {
+  AlertMessage,
+  Card,
+  JsonDisplay,
+  LoadingState,
+  KeyValueList,
+  ToggleButtons,
+} from '../components/common';
 import { computeWorkflowDiff, applyDiffColorsToNodes, applyDiffColorsToEdges } from '../utils/workflowDiff';
 import { applyPatchesUpToSeq } from '../utils/workflowPatcher';
 import { formatDate } from '../utils/dateUtils';
@@ -68,22 +71,14 @@ export default function RunDetail() {
 
 
   if (loading) {
-    return (
-      <Container maxW="container.2xl" py={8} px={8}>
-        <Spinner size="lg" />
-        <Text mt={4}>Loading run details...</Text>
-      </Container>
-    );
+    return <LoadingState text="Loading run details..." />;
   }
 
   if (error) {
     return (
       <Container maxW="container.2xl" py={8} px={8}>
-        <Alert status="error">
-          <AlertIcon />
-          Failed to load run details: {error}
-        </Alert>
-        <Button mt={4} leftIcon={<ArrowBackIcon />} onClick={() => navigate(-1)}>
+        <AlertMessage status="error" message={`Failed to load run details: ${error}`} mb={4} />
+        <Button leftIcon={<ArrowBackIcon />} onClick={() => navigate(-1)}>
           Go Back
         </Button>
       </Container>
@@ -93,11 +88,8 @@ export default function RunDetail() {
   if (!details) {
     return (
       <Container maxW="container.2xl" py={8} px={8}>
-        <Alert status="warning">
-          <AlertIcon />
-          Run not found
-        </Alert>
-        <Button mt={4} leftIcon={<ArrowBackIcon />} onClick={() => navigate(-1)}>
+        <AlertMessage status="warning" message="Run not found" mb={4} />
+        <Button leftIcon={<ArrowBackIcon />} onClick={() => navigate(-1)}>
           Go Back
         </Button>
       </Container>
@@ -128,26 +120,16 @@ export default function RunDetail() {
 
         {/* Run Info */}
         {details.run && (
-          <Box p={4} border="1px solid" borderColor="gray.200" borderRadius="md">
-            <VStack align="stretch" spacing={2}>
-              <HStack>
-                <Text fontWeight="bold">Run ID:</Text>
-                <Code fontSize="sm">{details.run.run_id}</Code>
-              </HStack>
-              <HStack>
-                <Text fontWeight="bold">Submitted By:</Text>
-                <Text>{details.run.submitted_by || 'N/A'}</Text>
-              </HStack>
-              <HStack>
-                <Text fontWeight="bold">Submitted At:</Text>
-                <Text>{formatDate(details.run.submitted_at)}</Text>
-              </HStack>
-              <HStack>
-                <Text fontWeight="bold">Artifact ID:</Text>
-                <Code fontSize="sm">{details.run.base_ref}</Code>
-              </HStack>
-            </VStack>
-          </Box>
+          <Card>
+            <KeyValueList
+              items={[
+                { label: 'Run ID', value: details.run.run_id, code: true },
+                { label: 'Submitted By', value: details.run.submitted_by || 'N/A' },
+                { label: 'Submitted At', value: formatDate(details.run.submitted_at) },
+                { label: 'Artifact ID', value: details.run.base_ref, code: true },
+              ]}
+            />
+          </Card>
         )}
 
         <Divider />
@@ -208,22 +190,15 @@ function RunExecutionGraphWithPatchOverlay({ baseWorkflowIR, workflowIR, nodeExe
       {/* Toggle Controls */}
       {hasPatches && (
         <HStack justify="flex-end">
-          <ButtonGroup size="sm" isAttached variant="outline">
-            <Button
-              onClick={() => setShowPatchOverlay(false)}
-              colorScheme={!showPatchOverlay ? 'blue' : 'gray'}
-              variant={!showPatchOverlay ? 'solid' : 'outline'}
-            >
-              Execution View
-            </Button>
-            <Button
-              onClick={() => setShowPatchOverlay(true)}
-              colorScheme={showPatchOverlay ? 'purple' : 'gray'}
-              variant={showPatchOverlay ? 'solid' : 'outline'}
-            >
-              Patch Overlay
-            </Button>
-          </ButtonGroup>
+          <ToggleButtons
+            options={[
+              { value: false, label: 'Execution View' },
+              { value: true, label: 'Patch Overlay' },
+            ]}
+            value={showPatchOverlay}
+            onChange={setShowPatchOverlay}
+            colorScheme={showPatchOverlay ? 'purple' : 'blue'}
+          />
         </HStack>
       )}
 
@@ -255,21 +230,16 @@ function RunPatchOverlay({ baseWorkflowIR, workflowIR, patches, nodeExecutions }
   const [showComparison, setShowComparison] = useState(false);
 
   if (!patches || patches.length === 0) {
-    return (
-      <Alert status="info">
-        <AlertIcon />
-        No patches were applied during this run
-      </Alert>
-    );
+    return <AlertMessage status="info" message="No patches were applied during this run" />;
   }
 
   // Check if baseWorkflowIR is available
   if (!baseWorkflowIR) {
     return (
-      <Alert status="warning">
-        <AlertIcon />
-        Base workflow data is not available. Cannot show patch overlay.
-      </Alert>
+      <AlertMessage
+        status="warning"
+        message="Base workflow data is not available. Cannot show patch overlay."
+      />
     );
   }
 
@@ -285,20 +255,15 @@ function RunPatchOverlay({ baseWorkflowIR, workflowIR, patches, nodeExecutions }
     workflowAtPrevSeq = applyPatchesUpToSeq(baseWorkflowIR, patches, prevSeq);
   } catch (error) {
     console.error('Error applying patches:', error);
-    return (
-      <Alert status="error">
-        <AlertIcon />
-        Failed to apply patches: {error.message}
-      </Alert>
-    );
+    return <AlertMessage status="error" message={`Failed to apply patches: ${error.message}`} />;
   }
 
   if (!workflowAtSeq) {
     return (
-      <Alert status="error">
-        <AlertIcon />
-        Failed to compute workflow state at selected patch
-      </Alert>
+      <AlertMessage
+        status="error"
+        message="Failed to compute workflow state at selected patch"
+      />
     );
   }
 
@@ -314,22 +279,15 @@ function RunPatchOverlay({ baseWorkflowIR, workflowIR, patches, nodeExecutions }
       {/* Toggle: Single View vs Comparison */}
       {selectedSeq > 0 && (
         <HStack justify="flex-end">
-          <ButtonGroup size="sm" isAttached variant="outline">
-            <Button
-              onClick={() => setShowComparison(false)}
-              colorScheme={!showComparison ? 'blue' : 'gray'}
-              variant={!showComparison ? 'solid' : 'outline'}
-            >
-              Single View
-            </Button>
-            <Button
-              onClick={() => setShowComparison(true)}
-              colorScheme={showComparison ? 'orange' : 'gray'}
-              variant={showComparison ? 'solid' : 'outline'}
-            >
-              Compare Before/After
-            </Button>
-          </ButtonGroup>
+          <ToggleButtons
+            options={[
+              { value: false, label: 'Single View' },
+              { value: true, label: 'Compare Before/After' },
+            ]}
+            value={showComparison}
+            onChange={setShowComparison}
+            colorScheme={showComparison ? 'orange' : 'blue'}
+          />
         </HStack>
       )}
 
@@ -496,10 +454,10 @@ function RunExecutionGraph({ workflowIR, nodeExecutions, onNodeClick }) {
 
   if (nodes.length === 0) {
     return (
-      <Alert status="info">
-        <AlertIcon />
-        No workflow graph available (IR may have expired after 24 hours)
-      </Alert>
+      <AlertMessage
+        status="info"
+        message="No workflow graph available (IR may have expired after 24 hours)"
+      />
     );
   }
 
@@ -507,10 +465,11 @@ function RunExecutionGraph({ workflowIR, nodeExecutions, onNodeClick }) {
     <>
       {/* Debug info */}
       {edges.length === 0 && nodes.length > 0 && (
-        <Alert status="warning" mb={4}>
-          <AlertIcon />
-          Warning: {nodes.length} nodes found but 0 edges. Check console for details.
-        </Alert>
+        <AlertMessage
+          status="warning"
+          message={`Warning: ${nodes.length} nodes found but 0 edges. Check console for details.`}
+          mb={4}
+        />
       )}
 
       <Box position="relative">
@@ -599,12 +558,7 @@ function NodeExecutionDetails({ nodeExecutions, selectedNode }) {
   const [localSelectedNode, setLocalSelectedNode] = useState(null);
 
   if (!nodeExecutions || Object.keys(nodeExecutions).length === 0) {
-    return (
-      <Alert status="info">
-        <AlertIcon />
-        No node execution data available
-      </Alert>
-    );
+    return <AlertMessage status="info" message="No node execution data available" />;
   }
 
   // Use local selection first, then prop selection, then first node
@@ -613,10 +567,10 @@ function NodeExecutionDetails({ nodeExecutions, selectedNode }) {
 
   if (!execution) {
     return (
-      <Alert status="warning">
-        <AlertIcon />
-        No execution data for node: {displayNode}
-      </Alert>
+      <AlertMessage
+        status="warning"
+        message={`No execution data for node: ${displayNode}`}
+      />
     );
   }
 
@@ -648,49 +602,16 @@ function NodeExecutionDetails({ nodeExecutions, selectedNode }) {
             <StatusBadge status={execution.status} />
           </Box>
 
-          {execution.input && (
-            <Box>
-              <Text fontWeight="bold" mb={2}>
-                Input:
-              </Text>
-              <Code
-                display="block"
-                whiteSpace="pre"
-                p={4}
-                borderRadius="md"
-                overflowX="auto"
-              >
-                {JSON.stringify(execution.input, null, 2)}
-              </Code>
-            </Box>
-          )}
+          {execution.input && <JsonDisplay label="Input" data={execution.input} />}
 
-          {execution.output && (
-            <Box>
-              <Text fontWeight="bold" mb={2}>
-                Output:
-              </Text>
-              <Code
-                display="block"
-                whiteSpace="pre"
-                p={4}
-                borderRadius="md"
-                overflowX="auto"
-              >
-                {JSON.stringify(execution.output, null, 2)}
-              </Code>
-            </Box>
-          )}
+          {execution.output && <JsonDisplay label="Output" data={execution.output} />}
 
           {execution.error && (
             <Box>
               <Text fontWeight="bold" mb={2}>
                 Error:
               </Text>
-              <Alert status="error">
-                <AlertIcon />
-                {execution.error}
-              </Alert>
+              <AlertMessage status="error" message={execution.error} />
             </Box>
           )}
 
@@ -715,12 +636,7 @@ function RunPatchesList({ patches }) {
   const [expandedPatches, setExpandedPatches] = useState({});
 
   if (!patches || patches.length === 0) {
-    return (
-      <Alert status="info">
-        <AlertIcon />
-        No patches were applied during this run
-      </Alert>
-    );
+    return <AlertMessage status="info" message="No patches were applied during this run" />;
   }
 
   const togglePatch = (index) => {
@@ -737,13 +653,9 @@ function RunPatchesList({ patches }) {
         const operationsCount = patch.operations?.length || 0;
 
         return (
-          <Box
+          <Card
             key={index}
-            p={4}
-            border="1px solid"
-            borderColor="gray.200"
-            borderRadius="md"
-            bg={isExpanded ? 'purple.50' : 'white'}
+            variant={isExpanded ? 'purple' : 'default'}
             transition="background 0.2s"
           >
             <HStack justify="space-between" mb={2}>
@@ -774,24 +686,15 @@ function RunPatchesList({ patches }) {
 
             <Collapse in={isExpanded} animateOpacity>
               <Box mt={4}>
-                <Text fontSize="xs" fontWeight="bold" color="gray.700" mb={2}>
-                  Operations:
-                </Text>
-                <Code
-                  display="block"
-                  whiteSpace="pre"
-                  p={4}
-                  borderRadius="md"
-                  overflowX="auto"
-                  maxH="400px"
-                  overflowY="auto"
+                <JsonDisplay
+                  label="Operations"
+                  data={patch.operations}
+                  maxHeight="400px"
                   fontSize="sm"
-                >
-                  {JSON.stringify(patch.operations, null, 2)}
-                </Code>
+                />
               </Box>
             </Collapse>
-          </Box>
+          </Card>
         );
       })}
     </VStack>
