@@ -12,12 +12,7 @@ import {
   Th,
   Td,
   Button,
-  Spinner,
   Center,
-  Alert,
-  AlertIcon,
-  AlertTitle,
-  AlertDescription,
   HStack,
   Badge,
   IconButton,
@@ -26,6 +21,7 @@ import {
 import { FiPlus, FiRefreshCw } from 'react-icons/fi';
 import { listWorkflows } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
+import { AlertMessage, LoadingState } from '../components/common';
 
 export default function WorkflowList() {
   const [workflows, setWorkflows] = useState([]);
@@ -96,11 +92,7 @@ export default function WorkflowList() {
   };
 
   if (isLoading) {
-    return (
-      <Center height="100vh">
-        <Spinner size="xl" color="blue.500" thickness="4px" />
-      </Center>
-    );
+    return <LoadingState centered size="xl" />;
   }
 
   return (
@@ -139,13 +131,12 @@ export default function WorkflowList() {
       {/* Content */}
       <Container maxW="container.xl" py={8}>
         {error && (
-          <Alert status="error" mb={6} borderRadius="md">
-            <AlertIcon />
-            <Box>
-              <AlertTitle>Error loading workflows</AlertTitle>
-              <AlertDescription>{error}</AlertDescription>
-            </Box>
-          </Alert>
+          <AlertMessage
+            status="error"
+            title="Error loading workflows"
+            message={error}
+            mb={6}
+          />
         )}
 
         {!error && workflows.length === 0 ? (

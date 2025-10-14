@@ -3,7 +3,6 @@ import { useParams, useNavigate } from 'react-router-dom';
 import {
   Flex,
   Box,
-  Spinner,
   useToast,
   IconButton,
   useMediaQuery,
@@ -26,6 +25,7 @@ import BranchComparison from '../components/BranchComparison';
 import BranchDiffCanvas from '../components/BranchDiffCanvas';
 import BranchDiffOverlay from '../components/BranchDiffOverlay';
 import ExecutionDrawer from '../components/workflow/ExecutionDrawer';
+import { LoadingState } from '../components/common';
 import { mockWorkflows, getAllWorkflows, getBranches, getLatestVersion } from '../data/mockWorkflows';
 import { applyDiffColorsToNodes, applyDiffColorsToEdges, computeWorkflowDiff } from '../utils/workflowDiff';
 import { getWorkflow, getWorkflowVersion, updateWorkflow, runWorkflow } from '../services/api';
@@ -786,11 +786,7 @@ export default function App() {
 
   // Early return after all hooks have been called
   if (isLoading) {
-    return (
-      <Flex justify="center" align="center" height="100vh">
-        <Spinner size="xl" />
-      </Flex>
-    );
+    return <LoadingState fullScreen size="xl" />;
   }
 
   return (
