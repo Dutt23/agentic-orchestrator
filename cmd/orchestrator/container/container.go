@@ -23,11 +23,12 @@ type Container struct {
 	TagRepo      *repository.TagRepository
 
 	// Services
-	CASService      *service.CASService
-	ArtifactService *service.ArtifactService
-	TagService      *service.TagService
-	WorkflowService *service.WorkflowServiceV2
-	RunService      *service.RunService
+	CASService          *service.CASService
+	ArtifactService     *service.ArtifactService
+	TagService          *service.TagService
+	MaterializerService *service.MaterializerService
+	WorkflowService     *service.WorkflowServiceV2
+	RunService          *service.RunService
 }
 
 // NewContainer initializes all services and repositories once
@@ -48,6 +49,7 @@ func NewContainer(components *bootstrap.Components) (*Container, error) {
 	casService := service.NewCASService(casBlobRepo, components.Logger)
 	artifactService := service.NewArtifactService(artifactRepo, components.Logger)
 	tagService := service.NewTagService(tagRepo, components.Logger)
+	materializerService := service.NewMaterializerService(components.Logger)
 	workflowService := service.NewWorkflowServiceV2(
 		casService,
 		artifactService,
@@ -59,22 +61,24 @@ func NewContainer(components *bootstrap.Components) (*Container, error) {
 		artifactRepo,
 		casService,
 		workflowService,
+		materializerService,
 		components,
 		redisClient,
 	)
 
 	return &Container{
-		Components:      components,
-		Redis:           redisClient,
-		RunRepo:         runRepo,
-		ArtifactRepo:    artifactRepo,
-		CASBlobRepo:     casBlobRepo,
-		TagRepo:         tagRepo,
-		CASService:      casService,
-		ArtifactService: artifactService,
-		TagService:      tagService,
-		WorkflowService: workflowService,
-		RunService:      runService,
+		Components:          components,
+		Redis:               redisClient,
+		RunRepo:             runRepo,
+		ArtifactRepo:        artifactRepo,
+		CASBlobRepo:         casBlobRepo,
+		TagRepo:             tagRepo,
+		CASService:          casService,
+		ArtifactService:     artifactService,
+		TagService:          tagService,
+		MaterializerService: materializerService,
+		WorkflowService:     workflowService,
+		RunService:          runService,
 	}, nil
 }
 

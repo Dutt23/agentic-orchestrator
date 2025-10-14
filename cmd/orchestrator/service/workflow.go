@@ -255,13 +255,31 @@ func (s *WorkflowServiceV2) GetWorkflowByTag(ctx context.Context, username, tagN
 		return nil, err
 	}
 
+	// Log content type for debugging
+	s.log.Debug("retrieved workflow content from CAS",
+		"cas_id", artifact.CasID,
+		"content_length", len(content),
+		"content_preview", string(content[:min(200, len(content))]))
+
 	// 4. Unmarshal workflow
 	var workflow map[string]interface{}
 	if err := json.Unmarshal(content, &workflow); err != nil {
+		s.log.Error("failed to unmarshal workflow",
+			"error", err,
+			"cas_id", artifact.CasID,
+			"content_preview", string(content[:min(500, len(content))]))
 		return nil, fmt.Errorf("failed to unmarshal workflow: %w", err)
 	}
 
 	return workflow, nil
+}
+
+// min returns the minimum of two ints
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // countWorkflowElements counts nodes and edges in a workflow

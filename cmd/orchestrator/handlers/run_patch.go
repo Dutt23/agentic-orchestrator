@@ -23,7 +23,13 @@ func NewRunPatchHandler(c *container.Container) *RunPatchHandler {
 	runPatchRepo := repository.NewRunPatchRepository(c.Components.DB)
 
 	// Initialize run patch service (uses other services from container)
-	runPatchService := service.NewRunPatchService(runPatchRepo, c.CASService, c.ArtifactRepo, c.Components)
+	runPatchService := service.NewRunPatchService(
+		runPatchRepo,
+		c.RunRepo, // Use RunRepo from container to get run details
+		c.CASService,
+		c.ArtifactRepo,
+		c.Components,
+	)
 
 	return &RunPatchHandler{
 		components:      c.Components,

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/compiler"
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/sdk"
 	"github.com/lyzr/orchestrator/common/bootstrap"
+	"github.com/lyzr/orchestrator/common/clients"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -18,7 +20,7 @@ import (
 type RunHandler struct {
 	components *bootstrap.Components
 	redis      *redis.Client
-	casClient  sdk.CASClient
+	casClient  clients.CASClient
 	runService *service.RunService
 }
 
@@ -36,7 +38,7 @@ type PatchOperation struct {
 }
 
 // NewRunHandler creates a new run handler
-func NewRunHandler(components *bootstrap.Components, redis *redis.Client, casClient sdk.CASClient, runService *service.RunService) *RunHandler {
+func NewRunHandler(components *bootstrap.Components, redis *redis.Client, casClient clients.CASClient, runService *service.RunService) *RunHandler {
 	return &RunHandler{
 		components: components,
 		redis:      redis,
@@ -144,7 +146,7 @@ func (h *RunHandler) irToWorkflowSchema(ir *sdk.IR) *compiler.WorkflowSchema {
 
 		// Load config from CAS if available
 		if node.ConfigRef != "" {
-			configData, err := h.casClient.Get(node.ConfigRef)
+			configData, err := h.casClient.Get(context.Background(), node.ConfigRef)
 			if err == nil {
 				if bytes, ok := configData.([]byte); ok {
 					json.Unmarshal(bytes, &wfNode.Config)

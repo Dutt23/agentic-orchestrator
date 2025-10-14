@@ -15,12 +15,13 @@ import (
 
 // RunService handles business logic for workflow runs
 type RunService struct {
-	runRepo      *repository.RunRepository
-	artifactRepo *repository.ArtifactRepository
-	casService   *CASService
-	workflowSvc  *WorkflowServiceV2
-	components   *bootstrap.Components
-	redis        *redis.Client
+	runRepo         *repository.RunRepository
+	artifactRepo    *repository.ArtifactRepository
+	casService      *CASService
+	workflowSvc     *WorkflowServiceV2
+	materializerSvc *MaterializerService
+	components      *bootstrap.Components
+	redis           *redis.Client
 }
 
 // NewRunService creates a new run service
@@ -29,16 +30,18 @@ func NewRunService(
 	artifactRepo *repository.ArtifactRepository,
 	casService *CASService,
 	workflowSvc *WorkflowServiceV2,
+	materializerSvc *MaterializerService,
 	components *bootstrap.Components,
 	redis *redis.Client,
 ) *RunService {
 	return &RunService{
-		runRepo:      runRepo,
-		artifactRepo: artifactRepo,
-		casService:   casService,
-		workflowSvc:  workflowSvc,
-		components:   components,
-		redis:        redis,
+		runRepo:         runRepo,
+		artifactRepo:    artifactRepo,
+		casService:      casService,
+		workflowSvc:     workflowSvc,
+		materializerSvc: materializerSvc,
+		components:      components,
+		redis:           redis,
 	}
 }
 
@@ -63,30 +66,44 @@ func (s *RunService) CreateRun(ctx context.Context, req *CreateRunRequest) (*Cre
 		"tag", req.Tag,
 		"username", req.Username)
 
-	// 1. Materialize workflow from tag
-	materializedWorkflow, err := s.workflowSvc.GetWorkflowByTag(ctx, req.Username, req.Tag)
+	// 1. Get workflow components (handles both dag_version and patch_set)
+	components, err := s.workflowSvc.GetWorkflowComponents(ctx, req.Username, req.Tag)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get workflow components: %w", err)
+	}
+
+	s.components.Logger.Info("retrieved workflow components",
+		"kind", components.Kind,
+		"depth", components.Depth,
+		"patch_count", components.PatchCount)
+
+	// 2. Materialize workflow (apply patches if needed)
+	materializedWorkflow, err := s.materializerSvc.Materialize(ctx, components)
 	if err != nil {
 		return nil, fmt.Errorf("failed to materialize workflow: %w", err)
 	}
 
-	// 2. Store materialized workflow as artifact
+	// 3. Store materialized workflow as artifact
 	workflowJSON, err := json.Marshal(materializedWorkflow)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal workflow: %w", err)
 	}
 
-	// Store workflow in CAS
+	// 4. Store workflow in CAS
 	casID, err := s.casService.StoreContent(ctx, workflowJSON, "application/json;type=workflow")
 	if err != nil {
 		return nil, fmt.Errorf("failed to store workflow in CAS: %w", err)
 	}
 
-	// Create artifact pointing to CAS blob
+	// 5. Create artifact pointing to CAS blob (frozen workflow for this run)
+	versionHash := casID // For dag_version, version_hash = cas_id (content-addressed)
 	artifact := &models.Artifact{
-		ArtifactID: uuid.New(),
-		Kind:       "dag_version",
-		CasID:      casID,
-		CreatedBy:  req.Username,
+		ArtifactID:  uuid.New(),
+		Kind:        "dag_version",
+		CasID:       casID,
+		VersionHash: &versionHash, // Required for dag_version
+		CreatedBy:   req.Username,
+		Meta:        make(map[string]interface{}), // Required field
 	}
 
 	if err := s.artifactRepo.Create(ctx, artifact); err != nil {
@@ -97,14 +114,14 @@ func (s *RunService) CreateRun(ctx context.Context, req *CreateRunRequest) (*Cre
 		"artifact_id", artifact.ArtifactID,
 		"cas_id", casID)
 
-	// 3. Get current tag positions for snapshot
+	// 6. Get current tag positions for snapshot
 	// TODO: Implement GetAllTagPositions in WorkflowService
 	// For now, just record the requested tag
 	tagsSnapshot := map[string]string{
 		req.Tag: artifact.ArtifactID.String(),
 	}
 
-	// 4. Create run entry
+	// 7. Create run entry
 	runID := uuid.New()
 	run := &models.Run{
 		RunID:        runID,
@@ -125,7 +142,7 @@ func (s *RunService) CreateRun(ctx context.Context, req *CreateRunRequest) (*Cre
 		"artifact_id", artifact.ArtifactID,
 		"tag", req.Tag)
 
-	// 5. Publish to wf.run.requests stream
+	// 8. Publish to wf.run.requests stream
 	runRequest := map[string]interface{}{
 		"run_id":      runID.String(),
 		"artifact_id": artifact.ArtifactID.String(),

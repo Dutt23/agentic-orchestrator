@@ -27,12 +27,10 @@ type WorkflowHandler struct {
 // NewWorkflowHandler creates a new workflow handler
 func NewWorkflowHandler(c *container.Container) *WorkflowHandler {
 	// Use services from container (singleton pattern)
-	materializerService := service.NewMaterializerService(c.Components.Logger)
-
 	return &WorkflowHandler{
 		components:          c.Components,
 		tagService:          c.TagService,
-		materializerService: materializerService,
+		materializerService: c.MaterializerService,
 		workflowService:     c.WorkflowService,
 	}
 }

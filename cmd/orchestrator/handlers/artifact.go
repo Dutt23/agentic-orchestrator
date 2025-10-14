@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"net/http"
 
 	"github.com/google/uuid"
@@ -57,6 +58,15 @@ func (h *ArtifactHandler) GetArtifact(c echo.Context) error {
 		"kind", artifact.Kind,
 		"size", len(content))
 
+	// Parse content as JSON so it's returned as an object, not base64 string
+	var contentJSON interface{}
+	if err := json.Unmarshal(content, &contentJSON); err != nil {
+		h.components.Logger.Error("failed to unmarshal artifact content",
+			"artifact_id", artifactID,
+			"error", err)
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to parse artifact content")
+	}
+
 	// Return artifact metadata and content
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"artifact_id": artifact.ArtifactID,
@@ -64,6 +74,6 @@ func (h *ArtifactHandler) GetArtifact(c echo.Context) error {
 		"cas_id":      artifact.CasID,
 		"created_by":  artifact.CreatedBy,
 		"created_at":  artifact.CreatedAt,
-		"content":     content,
+		"content":     contentJSON, // Now returns as JSON object, not base64
 	})
 }

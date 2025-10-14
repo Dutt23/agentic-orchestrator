@@ -14,6 +14,7 @@ import (
 // RunPatchService handles business logic for run-specific patches
 type RunPatchService struct {
 	runPatchRepo *repository.RunPatchRepository
+	runRepo      *repository.RunRepository
 	casService   *CASService
 	artifactRepo *repository.ArtifactRepository
 	components   *bootstrap.Components
@@ -22,12 +23,14 @@ type RunPatchService struct {
 // NewRunPatchService creates a new run patch service
 func NewRunPatchService(
 	runPatchRepo *repository.RunPatchRepository,
+	runRepo *repository.RunRepository,
 	casService *CASService,
 	artifactRepo *repository.ArtifactRepository,
 	components *bootstrap.Components,
 ) *RunPatchService {
 	return &RunPatchService{
 		runPatchRepo: runPatchRepo,
+		runRepo:      runRepo,
 		casService:   casService,
 		artifactRepo: artifactRepo,
 		components:   components,
@@ -66,6 +69,23 @@ func (s *RunPatchService) CreateRunPatch(ctx context.Context, req *CreateRunPatc
 		return nil, fmt.Errorf("operations cannot be empty")
 	}
 
+	// Get the run to find the base workflow artifact
+	runID, err := uuid.Parse(req.RunID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid run_id format: %w", err)
+	}
+
+	run, err := s.runRepo.GetByID(ctx, runID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get run: %w", err)
+	}
+
+	// Parse base_ref to get the base workflow artifact ID
+	baseArtifactID, err := uuid.Parse(run.BaseRef)
+	if err != nil {
+		return nil, fmt.Errorf("invalid base_ref in run: %w", err)
+	}
+
 	// Get next sequence number for this run
 	nextSeq, err := s.runPatchRepo.GetNextSeq(ctx, req.RunID)
 	if err != nil {
@@ -94,17 +114,27 @@ func (s *RunPatchService) CreateRunPatch(ctx context.Context, req *CreateRunPatc
 
 	// Create artifact for this patch
 	depth := nextSeq
+	opCount := len(req.Operations)
 	artifact := &models.Artifact{
-		ArtifactID: uuid.New(),
-		Kind:       "patch_set",
-		CasID:      casID,
-		Depth:      &depth, // Use seq as depth for run patches
-		CreatedBy:  req.CreatedBy,
+		ArtifactID:  uuid.New(),
+		Kind:        "patch_set",
+		CasID:       casID,
+		BaseVersion: &baseArtifactID, // Required: points to frozen workflow artifact
+		Depth:       &depth,           // Use seq as depth for run patches
+		OpCount:     &opCount,         // Store operation count
+		CreatedBy:   req.CreatedBy,
+		Meta:        make(map[string]interface{}), // Required field
 	}
 
 	if req.CreatedBy == "" {
 		artifact.CreatedBy = "system"
 	}
+
+	// Add description to meta if provided
+	if req.Description != "" {
+		artifact.Meta["description"] = req.Description
+	}
+	artifact.Meta["run_id"] = req.RunID
 
 	if err := s.artifactRepo.Create(ctx, artifact); err != nil {
 		return nil, fmt.Errorf("failed to create artifact: %w", err)

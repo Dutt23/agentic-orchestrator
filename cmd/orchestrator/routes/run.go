@@ -1,6 +1,7 @@
 package routes
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/labstack/echo/v4"
@@ -58,18 +59,18 @@ type mockCASClient struct {
 	logger *logger.Logger
 }
 
-func (m *mockCASClient) Put(data []byte, contentType string) (string, error) {
+func (m *mockCASClient) Put(ctx context.Context, data []byte, contentType string) (string, error) {
 	casID := fmt.Sprintf("cas://mock/%d", len(data))
 	m.logger.Debug("mock CAS Put", "cas_id", casID, "size", len(data))
 	return casID, nil
 }
 
-func (m *mockCASClient) Get(casID string) (interface{}, error) {
+func (m *mockCASClient) Get(ctx context.Context, casID string) (interface{}, error) {
 	m.logger.Debug("mock CAS Get", "cas_id", casID)
 	return []byte("{}"), nil
 }
 
-func (m *mockCASClient) Store(data interface{}) (string, error) {
+func (m *mockCASClient) Store(ctx context.Context, data interface{}) (string, error) {
 	casID := fmt.Sprintf("cas://mock/store")
 	m.logger.Debug("mock CAS Store", "cas_id", casID)
 	return casID, nil
