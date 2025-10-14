@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   Box,
@@ -20,6 +20,7 @@ import {
 } from '@chakra-ui/react';
 import { ArrowBackIcon, ChevronDownIcon, ChevronUpIcon } from '@chakra-ui/icons';
 import { getRunDetails } from '../services/api';
+import { useWebSocketEvents } from '../contexts/WebSocketContext';
 import { ReactFlow, Background, Controls } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import BranchDiffOverlay from '../components/BranchDiffOverlay';
@@ -41,6 +42,16 @@ import { applyPatchesUpToSeq } from '../utils/workflowPatcher';
 import { formatDate } from '../utils/dateUtils';
 import { createExecutionEdge } from '../utils/workflowEdgeUtils';
 
+// Event types that should trigger a refetch (defined outside to avoid recreating on every render)
+const RELEVANT_EVENT_TYPES = new Set([
+  'node_completed',
+  'node_failed',
+  'node_started',
+  'approval_required',
+  'workflow_completed',
+  'workflow_failed'
+]);
+
 /**
  * RunDetail page displays comprehensive information about a workflow run
  */
@@ -51,23 +62,49 @@ export default function RunDetail() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [selectedNode, setSelectedNode] = useState(null);
+  const isInitialLoad = useRef(true);
 
-  useEffect(() => {
-    const fetchDetails = async () => {
-      try {
+  // Fetch run details
+  const fetchDetails = useCallback(async (showLoading = false) => {
+    try {
+      // Only show loading spinner on initial load, not on refetch
+      if (showLoading) {
         setLoading(true);
-        const data = await getRunDetails(runId);
-        setDetails(data);
-      } catch (err) {
-        console.error('Failed to fetch run details:', err);
-        setError(err.message);
-      } finally {
+      }
+      const data = await getRunDetails(runId);
+      setDetails(data);
+      setError(null);
+    } catch (err) {
+      console.error('Failed to fetch run details:', err);
+      setError(err.message);
+    } finally {
+      if (showLoading) {
         setLoading(false);
       }
-    };
-
-    fetchDetails();
+    }
   }, [runId]);
+
+  // Initial fetch on mount
+  useEffect(() => {
+    if (isInitialLoad.current) {
+      fetchDetails(true); // Show loading on initial load
+      isInitialLoad.current = false;
+    }
+  }, [fetchDetails]);
+
+  // WebSocket event handler - refetch details when events for this run arrive
+  const handleWebSocketEvent = useCallback((event) => {
+    console.log('[RunDetail] WebSocket event received:', event);
+    // Refetch details to show latest status
+    fetchDetails();
+  }, [fetchDetails]);
+
+  // Subscribe to WebSocket events for this specific run
+  // Filter uses constant Set defined outside to avoid array recreation on every render
+  useWebSocketEvents(
+    handleWebSocketEvent,
+    (event) => event.run_id === runId && RELEVANT_EVENT_TYPES.has(event.type)
+  );
 
 
   if (loading) {
@@ -577,6 +614,8 @@ function RunExecutionGraph({ workflowIR, nodeExecutions, onNodeClick }) {
  */
 function NodeExecutionDetails({ nodeExecutions, selectedNode }) {
   const [localSelectedNode, setLocalSelectedNode] = useState(null);
+  const [isApproving, setIsApproving] = useState(false);
+  const { runId } = useParams();
 
   if (!nodeExecutions || Object.keys(nodeExecutions).length === 0) {
     return <AlertMessage status="info" message="No node execution data available" />;
@@ -594,6 +633,40 @@ function NodeExecutionDetails({ nodeExecutions, selectedNode }) {
       />
     );
   }
+
+  // Handle approval decision
+  const handleApproval = async (approved) => {
+    setIsApproving(true);
+    try {
+      const FANOUT_URL = import.meta.env.VITE_FANOUT_URL || 'http://localhost:8084';
+      const username = import.meta.env.VITE_DEV_USERNAME || 'test-user';
+
+      const response = await fetch(`${FANOUT_URL}/api/approval`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-User-ID': username,
+        },
+        body: JSON.stringify({
+          run_id: runId,
+          node_id: displayNode,
+          approved: approved,
+          comment: approved ? 'Approved from UI' : 'Rejected from UI',
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Approval failed: ${response.statusText}`);
+      }
+
+      console.log('[Approval] Decision sent:', { approved, node_id: displayNode });
+    } catch (error) {
+      console.error('[Approval] Failed:', error);
+      alert(`Failed to send approval: ${error.message}`);
+    } finally {
+      setIsApproving(false);
+    }
+  };
 
   return (
     <VStack align="stretch" spacing={4}>
@@ -622,6 +695,35 @@ function NodeExecutionDetails({ nodeExecutions, selectedNode }) {
             <Text fontWeight="bold">Status:</Text>
             <StatusBadge status={execution.status} />
           </Box>
+
+          {/* Approval Buttons - Show when waiting for approval */}
+          {execution.status === 'waiting_for_approval' && (
+            <Box>
+              <Text fontWeight="bold" mb={2}>
+                Approval Required:
+              </Text>
+              <HStack spacing={3}>
+                <Button
+                  colorScheme="green"
+                  size="md"
+                  onClick={() => handleApproval(true)}
+                  isLoading={isApproving}
+                  loadingText="Approving..."
+                >
+                  Approve
+                </Button>
+                <Button
+                  colorScheme="red"
+                  size="md"
+                  onClick={() => handleApproval(false)}
+                  isLoading={isApproving}
+                  loadingText="Rejecting..."
+                >
+                  Reject
+                </Button>
+              </HStack>
+            </Box>
+          )}
 
           {execution.input && <JsonDisplay label="Input" data={execution.input} />}
 

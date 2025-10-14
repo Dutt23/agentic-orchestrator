@@ -110,8 +110,9 @@ type DSLEdge struct {
 // CompileWorkflowSchema converts workflow.schema.json format to executable IR
 func CompileWorkflowSchema(schema *WorkflowSchema, casClient clients.CASClient) (*sdk.IR, error) {
 	ir := &sdk.IR{
-		Version: "1.0",
-		Nodes:   make(map[string]*sdk.Node),
+		Version:  "1.0",
+		Nodes:    make(map[string]*sdk.Node),
+		Metadata: schema.Metadata, // Preserve metadata from schema
 	}
 
 	// Track edges that need branch config (includes both conditional and unconditional edges from same source)

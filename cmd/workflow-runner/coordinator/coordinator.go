@@ -377,10 +377,25 @@ func (c *Coordinator) reloadIRIfPatched(ctx context.Context, runID string, curre
 		return fmt.Errorf("failed to compile patched workflow: %w", err)
 	}
 
+	// Preserve runtime metadata (username, tag) from current IR
+	// The compiler preserves workflow metadata, but we need to ensure runtime metadata is kept
+	if patchedIR.Metadata == nil {
+		patchedIR.Metadata = make(map[string]interface{})
+	}
+	if currentIR.Metadata != nil {
+		if username, ok := currentIR.Metadata["username"].(string); ok {
+			patchedIR.Metadata["username"] = username
+		}
+		if tag, ok := currentIR.Metadata["tag"].(string); ok {
+			patchedIR.Metadata["tag"] = tag
+		}
+	}
+
 	c.logger.Info("patched workflow recompiled to IR",
 		"run_id", runID,
 		"node_count", len(patchedIR.Nodes),
-		"patches_applied", len(patches))
+		"patches_applied", len(patches),
+		"metadata_preserved", patchedIR.Metadata)
 
 	// Store the recompiled IR in Redis (replacing the old IR)
 	patchedIRJSON, err := json.Marshal(patchedIR)
@@ -415,6 +430,15 @@ func (c *Coordinator) loadIR(ctx context.Context, runID string) (*sdk.IR, error)
 	}
 
 	return &ir, nil
+}
+
+// getMapKeys returns the keys of a map as a slice (for logging)
+func getMapKeys(m map[string]interface{}) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
 }
 
 // handleFailedNode processes a failed node execution
@@ -475,8 +499,34 @@ func (c *Coordinator) handleFailedNode(ctx context.Context, signal *CompletionSi
 	}
 
 	// Publish node_failed event
-	if ir.Metadata != nil {
-		if username, ok := ir.Metadata["username"].(string); ok {
+	c.logger.Info("attempting to publish node_failed event",
+		"run_id", signal.RunID,
+		"node_id", signal.NodeID,
+		"ir_metadata_nil", ir.Metadata == nil,
+		"ir_metadata", ir.Metadata)
+
+	if ir.Metadata == nil {
+		c.logger.Error("IR metadata is nil, cannot publish failure events",
+			"run_id", signal.RunID,
+			"node_id", signal.NodeID)
+	} else {
+		username, ok := ir.Metadata["username"].(string)
+		c.logger.Info("checking username in IR metadata",
+			"run_id", signal.RunID,
+			"username_exists", ok,
+			"username", username)
+
+		if !ok {
+			c.logger.Error("username not found in IR metadata, cannot publish failure events",
+				"run_id", signal.RunID,
+				"node_id", signal.NodeID,
+				"metadata_keys", getMapKeys(ir.Metadata))
+		} else {
+			c.logger.Info("publishing node_failed event",
+				"run_id", signal.RunID,
+				"node_id", signal.NodeID,
+				"username", username)
+
 			c.lifecycle.EventPublisher.PublishWorkflowEvent(ctx, username, map[string]interface{}{
 				"type":      "node_failed",
 				"run_id":    signal.RunID,
@@ -486,6 +536,11 @@ func (c *Coordinator) handleFailedNode(ctx context.Context, signal *CompletionSi
 			})
 
 			// Also publish workflow_failed event to indicate the entire workflow failed
+			c.logger.Info("publishing workflow_failed event",
+				"run_id", signal.RunID,
+				"node_id", signal.NodeID,
+				"username", username)
+
 			c.lifecycle.EventPublisher.PublishWorkflowEvent(ctx, username, map[string]interface{}{
 				"type":      "workflow_failed",
 				"run_id":    signal.RunID,
@@ -698,6 +753,25 @@ func (c *Coordinator) loadAndResolveConfig(ctx context.Context, runID, nodeID st
 // processWorkerNode handles a regular worker node (http, agent, etc.)
 // Loads config, resolves variables, and publishes token to worker stream
 func (c *Coordinator) processWorkerNode(ctx context.Context, signal *CompletionSignal, nextNodeID string, nextNode *sdk.Node, resultRef string, ir *sdk.IR) {
+	// Check if we have a worker for this node type
+	supportedTypes := map[string]bool{
+		"http":  true,
+		"agent": true,
+		"hitl":  true,
+		// Add other types as workers are implemented
+	}
+
+	if !supportedTypes[nextNode.Type] {
+		c.logger.Warn("no worker available for node type, skipping to next nodes",
+			"run_id", signal.RunID,
+			"node_id", nextNodeID,
+			"node_type", nextNode.Type)
+
+		// Create a passthrough completion - node is skipped with a warning
+		go c.handleSkippedNode(ctx, signal.RunID, signal.NodeID, nextNodeID, nextNode, resultRef, ir)
+		return
+	}
+
 	// Load and resolve config
 	resolvedConfig := c.loadAndResolveConfig(ctx, signal.RunID, nextNodeID, nextNode)
 	if resolvedConfig == nil && nextNode.ConfigRef != "" {
@@ -723,6 +797,55 @@ func (c *Coordinator) processWorkerNode(ctx context.Context, signal *CompletionS
 		"from_node", signal.NodeID,
 		"to_node", nextNodeID,
 		"stream", stream)
+}
+
+// handleSkippedNode immediately completes a node that has no worker available
+// This prevents the workflow from hanging when agents add unsupported node types
+func (c *Coordinator) handleSkippedNode(ctx context.Context, runID, fromNode, skippedNodeID string, skippedNode *sdk.Node, payloadRef string, ir *sdk.IR) {
+	c.logger.Warn("handling skipped node (no worker available)",
+		"run_id", runID,
+		"from_node", fromNode,
+		"skipped_node", skippedNodeID,
+		"node_type", skippedNode.Type)
+
+	// Create a warning result
+	skippedOutput := map[string]interface{}{
+		"status":  "skipped",
+		"warning": fmt.Sprintf("No worker available for node type: %s", skippedNode.Type),
+		"node_id": skippedNodeID,
+		"metrics": map[string]interface{}{
+			"start_time":        time.Now().Format(time.RFC3339Nano),
+			"end_time":          time.Now().Format(time.RFC3339Nano),
+			"execution_time_ms": 0,
+		},
+	}
+
+	// Store in CAS so it appears in node executions
+	resultID := fmt.Sprintf("artifact://%s-%s-%d", runID, skippedNodeID, time.Now().UnixNano())
+	casKey := fmt.Sprintf("cas:%s", resultID)
+	skippedJSON, err := json.Marshal(skippedOutput)
+	if err == nil {
+		if err := c.redisWrapper.Set(ctx, casKey, string(skippedJSON), 0); err == nil {
+			c.sdk.StoreContext(ctx, runID, skippedNodeID, resultID)
+		}
+	}
+
+	// Create synthetic completion signal
+	syntheticSignal := &CompletionSignal{
+		Version:    "1.0",
+		JobID:      fmt.Sprintf("%s-%s-skipped", runID, skippedNodeID),
+		RunID:      runID,
+		NodeID:     skippedNodeID,
+		Status:     "completed",
+		ResultData: skippedOutput,
+		Metadata: map[string]interface{}{
+			"skipped": true,
+			"reason":  "no_worker_available",
+		},
+	}
+
+	// Process completion immediately (this will route to next nodes)
+	c.handleCompletion(ctx, syntheticSignal)
 }
 
 // handleAbsorberNode handles branch/loop nodes inline (no worker needed)
@@ -813,6 +936,25 @@ func (c *Coordinator) handleAbsorberNode(ctx context.Context, runID, fromNode, a
 					"absorber_node", absorberNodeID,
 					"next_absorber", nextNodeID)
 				go c.handleAbsorberNode(ctx, runID, absorberNodeID, nextNodeID, payloadRef, nextNode, ir)
+				continue
+			}
+
+			// Check if we have a worker for this node type
+			supportedTypes := map[string]bool{
+				"http":  true,
+				"agent": true,
+				"hitl":  true,
+			}
+
+			if !supportedTypes[nextNode.Type] {
+				c.logger.Warn("no worker for node type from absorber, skipping",
+					"run_id", runID,
+					"absorber_node", absorberNodeID,
+					"skipped_node", nextNodeID,
+					"node_type", nextNode.Type)
+
+				// Skip this node and move to its dependents
+				go c.handleSkippedNode(ctx, runID, absorberNodeID, nextNodeID, nextNode, payloadRef, ir)
 				continue
 			}
 

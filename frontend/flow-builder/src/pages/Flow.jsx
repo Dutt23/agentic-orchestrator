@@ -29,7 +29,7 @@ import { LoadingState } from '../components/common';
 import { mockWorkflows, getAllWorkflows, getBranches, getLatestVersion } from '../data/mockWorkflows';
 import { applyDiffColorsToNodes, applyDiffColorsToEdges, computeWorkflowDiff } from '../utils/workflowDiff';
 import { getWorkflow, getWorkflowVersion, updateWorkflow, runWorkflow } from '../services/api';
-import { useWorkflowWebSocket } from '../hooks/useWorkflowWebSocket';
+import { useWebSocketEvents } from '../contexts/WebSocketContext';
 
 // Function to validate the flow
 const validateFlow = (nodes, edges) => {
@@ -258,9 +258,10 @@ export default function App() {
   }, []); // No dependencies - prevents callback from changing
 
   // WebSocket hook for real-time execution events
-  const { isConnected, connectionError, reconnect, disconnect } = useWorkflowWebSocket(
-    username,
-    handleWebSocketEvent
+  // Filter: only workflow_completed events (other events are for RunDetail page)
+  const { isConnected, connectionError } = useWebSocketEvents(
+    handleWebSocketEvent,
+    (event) => event.type === 'workflow_completed'
   );
 
   // Sidebar fixed width for desktop
