@@ -389,7 +389,7 @@ function RunExecutionGraph({ workflowIR, nodeExecutions, onNodeClick }) {
       console.log(`Node ${nodeId}: status=${status}, execution=`, execution);
 
       // Color based on status
-      let bgColor = '#f0f0f0'; // pending
+      let bgColor = '#f0f0f0'; // default
       let borderColor = '#333';
       if (status === 'completed') {
         bgColor = '#90EE90'; // light green
@@ -402,6 +402,10 @@ function RunExecutionGraph({ workflowIR, nodeExecutions, onNodeClick }) {
       if (status === 'running') {
         bgColor = '#ADD8E6'; // light blue
         borderColor = '#3182ce'; // darker blue
+      }
+      if (status === 'not_executed') {
+        bgColor = '#e2e8f0'; // lighter grey
+        borderColor = '#a0aec0'; // grey
       }
 
       return {

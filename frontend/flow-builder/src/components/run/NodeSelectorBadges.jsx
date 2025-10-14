@@ -9,6 +9,7 @@ export default function NodeSelectorBadges({ nodeExecutions, selectedNode, onNod
     <HStack spacing={2} flexWrap="wrap">
       {Object.keys(nodeExecutions).map((nodeId) => {
         const exec = nodeExecutions[nodeId];
+        console.log('NodeSelectorBadges:', nodeId, 'status:', exec.status);
 
         return (
           <Badge

@@ -441,13 +441,13 @@ func (s *RunService) bulkFetchAllCASFromContext(ctx context.Context, contextData
 	return casDataMap, nil
 }
 
-// buildNodeExecutions builds the node execution map from workflow IR, context data, and CAS data
+// buildNodeExecutions builds the node execution map from workflow IR and node_outputs_raw
+// Uses node_outputs_raw as the source of truth for status - if a node isn't there, it wasn't executed
 func (s *RunService) buildNodeExecutions(
 	ctx context.Context,
 	run *models.Run,
 	workflowIR map[string]interface{},
-	contextData map[string]string,
-	casDataMap map[string]map[string]interface{},
+	nodeOutputsRaw map[string]interface{},
 ) map[string]*NodeExecution {
 	nodeExecutions := make(map[string]*NodeExecution)
 
@@ -459,16 +459,35 @@ func (s *RunService) buildNodeExecutions(
 	for nodeID := range nodes {
 		execution := &NodeExecution{
 			NodeID: nodeID,
-			Status: "pending", // Default to pending (not yet executed)
+			Status: "not_executed", // Default to not_executed
 		}
 
-		// Check if node has output in context
-		outputKey := nodeID + ":output"
-		if outputRef, exists := contextData[outputKey]; exists {
-			// Get output from bulk-fetched CAS data
-			if output, found := casDataMap[outputRef]; found {
+		// Check if node has output in node_outputs_raw
+		if outputData, exists := nodeOutputsRaw[nodeID]; exists {
+			if output, ok := outputData.(map[string]interface{}); ok {
 				execution.Output = output
-				execution.Status = "completed" // Only mark completed if has output
+
+				// Use status directly from output data (source of truth)
+				if status, ok := output["status"].(string); ok {
+					// Normalize "success" to "completed" for consistency
+					if status == "success" {
+						execution.Status = "completed"
+					} else {
+						execution.Status = status
+					}
+				} else {
+					// No explicit status means completed successfully
+					execution.Status = "completed"
+				}
+
+				// Extract error message if present
+				if errMsg, ok := output["error"].(string); ok {
+					execution.Error = &errMsg
+				} else if errMap, ok := output["error"].(map[string]interface{}); ok {
+					if msg, ok := errMap["error_message"].(string); ok {
+						execution.Error = &msg
+					}
+				}
 
 				// Extract metrics if present in output
 				if metricsData, ok := output["metrics"].(map[string]interface{}); ok {
@@ -477,18 +496,16 @@ func (s *RunService) buildNodeExecutions(
 			}
 		}
 
-		// Check for failure (overrides other status)
-		failureKey := nodeID + ":failure"
-		if failureData, exists := contextData[failureKey]; exists {
-			var failure map[string]interface{}
-			if err := json.Unmarshal([]byte(failureData), &failure); err == nil {
+		// Also check for failure entry (nodeID_failure key)
+		failureKey := nodeID + "_failure"
+		if failureData, exists := nodeOutputsRaw[failureKey]; exists {
+			if failure, ok := failureData.(map[string]interface{}); ok {
 				execution.Status = "failed"
 
 				// Extract error message
 				if errMsg, ok := failure["error"].(string); ok {
 					execution.Error = &errMsg
 				} else if errMap, ok := failure["error"].(map[string]interface{}); ok {
-					// Error might be a nested object
 					if msg, ok := errMap["error_message"].(string); ok {
 						execution.Error = &msg
 					}
@@ -613,25 +630,25 @@ func (s *RunService) GetRunDetails(ctx context.Context, runID uuid.UUID) (*RunDe
 		}
 	}
 
-	// 6. Build node executions (only for nodes in workflow IR)
+	// 6. Build raw node outputs map FIRST (all nodes from Redis context, including dynamically added ones)
+	var nodeOutputsRaw map[string]interface{}
+	if len(contextData) > 0 {
+		nodeOutputsRaw = s.buildNodeOutputsRaw(ctx, contextData, casDataMap)
+	}
+
+	// 7. Build node executions using nodeOutputsRaw as source of truth for status
 	var nodeExecutions map[string]*NodeExecution
 	if _, ok := workflowIR["nodes"].(map[string]interface{}); ok {
-		nodeExecutions = s.buildNodeExecutions(ctx, run, workflowIR, contextData, casDataMap)
+		nodeExecutions = s.buildNodeExecutions(ctx, run, workflowIR, nodeOutputsRaw)
 	} else {
 		nodeExecutions = make(map[string]*NodeExecution)
 	}
 
-	// 7. Load patches for this run
+	// 8. Load patches for this run
 	patches, err := s.loadRunPatches(ctx, runID)
 	if err != nil {
 		s.components.Logger.Warn("failed to load patches with operations", "run_id", runID, "error", err)
 		patches = []PatchInfo{} // Continue with empty patches
-	}
-
-	// 8. Build raw node outputs map (all nodes from Redis context, including dynamically added ones)
-	var nodeOutputsRaw map[string]interface{}
-	if len(contextData) > 0 {
-		nodeOutputsRaw = s.buildNodeOutputsRaw(ctx, contextData, casDataMap)
 	}
 
 	return &RunDetails{

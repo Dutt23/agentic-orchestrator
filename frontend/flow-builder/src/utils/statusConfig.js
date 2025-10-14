@@ -20,6 +20,10 @@ export const STATUS_CONFIG = {
     colorScheme: 'gray',
     label: 'Pending',
   },
+  not_executed: {
+    colorScheme: 'gray',
+    label: 'Not Executed',
+  },
   queued: {
     colorScheme: 'yellow',
     label: 'Queued',
