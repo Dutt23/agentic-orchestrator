@@ -468,6 +468,12 @@ func (s *RunService) buildNodeExecutions(
 			Status: "not_executed", // Default to not_executed
 		}
 
+		// Check for node-specific status in Redis (e.g., waiting_for_approval)
+		nodeStatusKey := fmt.Sprintf("run:%s:node:%s:status", run.RunID.String(), nodeID)
+		if nodeStatus, err := s.redis.Get(ctx, nodeStatusKey); err == nil {
+			execution.Status = nodeStatus
+		}
+
 		// Check if node has output in node_outputs_raw
 		if outputData, exists := nodeOutputsRaw[nodeID]; exists {
 			if output, ok := outputData.(map[string]interface{}); ok {
@@ -657,8 +663,28 @@ func (s *RunService) GetRunDetails(ctx context.Context, runID uuid.UUID) (*RunDe
 		patches = []PatchInfo{} // Continue with empty patches
 	}
 
+	// 9. Check if any node is waiting for approval and update run status if needed
+	hasWaitingNode := false
+	for _, execution := range nodeExecutions {
+		if execution.Status == "waiting_for_approval" {
+			hasWaitingNode = true
+			break
+		}
+	}
+
+	// Update run status in response if nodes are waiting
+	// Note: This is read-time status enrichment - the DB status may still be RUNNING
+	displayStatus := run.Status
+	if hasWaitingNode && (run.Status == models.StatusRunning || run.Status == models.StatusQueued) {
+		displayStatus = models.StatusWaitingForApproval
+	}
+
+	// Create a copy of run with updated display status
+	runCopy := *run
+	runCopy.Status = displayStatus
+
 	return &RunDetails{
-		Run:             run,
+		Run:             &runCopy,
 		BaseWorkflowIR:  baseWorkflowIR,
 		WorkflowIR:      workflowIR,
 		NodeExecutions:  nodeExecutions,

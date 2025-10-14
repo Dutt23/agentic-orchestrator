@@ -16,6 +16,10 @@ export const STATUS_CONFIG = {
     colorScheme: 'blue',
     label: 'Running',
   },
+  waiting_for_approval: {
+    colorScheme: 'orange',
+    label: 'Waiting for Approval',
+  },
   pending: {
     colorScheme: 'gray',
     label: 'Pending',

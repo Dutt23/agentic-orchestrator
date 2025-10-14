@@ -10,11 +10,12 @@ import (
 type RunStatus string
 
 const (
-	StatusQueued    RunStatus = "QUEUED"
-	StatusRunning   RunStatus = "RUNNING"
-	StatusCompleted RunStatus = "COMPLETED"
-	StatusFailed    RunStatus = "FAILED"
-	StatusCancelled RunStatus = "CANCELLED"
+	StatusQueued              RunStatus = "QUEUED"
+	StatusRunning             RunStatus = "RUNNING"
+	StatusWaitingForApproval  RunStatus = "WAITING_FOR_APPROVAL"
+	StatusCompleted           RunStatus = "COMPLETED"
+	StatusFailed              RunStatus = "FAILED"
+	StatusCancelled           RunStatus = "CANCELLED"
 )
 
 // BaseKind represents the type of base reference

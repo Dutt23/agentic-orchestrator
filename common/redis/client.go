@@ -280,3 +280,151 @@ func (p *Pipeline) Exec(ctx context.Context) error {
 	p.client.logger.Debug("redis pipeline executed successfully")
 	return nil
 }
+
+// Increment increments a counter and returns the new value
+func (c *Client) Increment(ctx context.Context, key string) (int64, error) {
+	val, err := c.redis.Incr(ctx, key).Result()
+	if err != nil {
+		c.logger.Error("redis INCR failed", "key", key, "error", err)
+		return 0, fmt.Errorf("failed to increment key %s: %w", key, err)
+	}
+	c.logger.Debug("redis INCR", "key", key, "value", val)
+	return val, nil
+}
+
+// Decrement decrements a counter and returns the new value
+func (c *Client) Decrement(ctx context.Context, key string) (int64, error) {
+	val, err := c.redis.Decr(ctx, key).Result()
+	if err != nil {
+		c.logger.Error("redis DECR failed", "key", key, "error", err)
+		return 0, fmt.Errorf("failed to decrement key %s: %w", key, err)
+	}
+	c.logger.Debug("redis DECR", "key", key, "value", val)
+	return val, nil
+}
+
+// ReadFromStreamGroup reads messages from a stream using consumer groups
+func (c *Client) ReadFromStreamGroup(ctx context.Context, group, consumer, stream string, count int64, block time.Duration) ([]redis.XStream, error) {
+	streams, err := c.redis.XReadGroup(ctx, &redis.XReadGroupArgs{
+		Group:    group,
+		Consumer: consumer,
+		Streams:  []string{stream, ">"},
+		Count:    count,
+		Block:    block,
+	}).Result()
+
+	if err == redis.Nil {
+		// Timeout/no messages - not an error
+		return nil, nil
+	}
+	if err != nil {
+		c.logger.Error("redis XREADGROUP failed", "stream", stream, "group", group, "error", err)
+		return nil, fmt.Errorf("failed to read from stream %s: %w", stream, err)
+	}
+
+	c.logger.Debug("redis XREADGROUP", "stream", stream, "group", group, "message_count", len(streams))
+	return streams, nil
+}
+
+// AckStreamMessage acknowledges a message in a stream
+func (c *Client) AckStreamMessage(ctx context.Context, stream, group, messageID string) error {
+	err := c.redis.XAck(ctx, stream, group, messageID).Err()
+	if err != nil {
+		c.logger.Error("redis XACK failed", "stream", stream, "group", group, "message_id", messageID, "error", err)
+		return fmt.Errorf("failed to ack message %s: %w", messageID, err)
+	}
+	c.logger.Debug("redis XACK", "stream", stream, "group", group, "message_id", messageID)
+	return nil
+}
+
+// CreateStreamGroup creates a consumer group for a stream
+func (c *Client) CreateStreamGroup(ctx context.Context, stream, group string) error {
+	err := c.redis.XGroupCreateMkStream(ctx, stream, group, "0").Err()
+	if err != nil && err.Error() != "BUSYGROUP Consumer Group name already exists" {
+		c.logger.Error("redis XGROUP CREATE failed", "stream", stream, "group", group, "error", err)
+		return fmt.Errorf("failed to create consumer group %s: %w", group, err)
+	}
+	c.logger.Debug("redis XGROUP CREATE", "stream", stream, "group", group)
+	return nil
+}
+
+// Transaction represents a Redis transaction for atomic operations
+type Transaction struct {
+	pipe   redis.Pipeliner
+	client *Client
+	cmds   map[string]redis.Cmder // Store commands by label for result retrieval
+}
+
+// NewTransaction creates a new transaction (TxPipeline)
+func (c *Client) NewTransaction() *Transaction {
+	return &Transaction{
+		pipe:   c.redis.TxPipeline(),
+		client: c,
+		cmds:   make(map[string]redis.Cmder),
+	}
+}
+
+// SetNX queues a SETNX operation and returns a label for retrieving the result
+func (t *Transaction) SetNX(ctx context.Context, key, value string, expiry time.Duration) string {
+	label := fmt.Sprintf("setnx_%s", key)
+	cmd := t.pipe.SetNX(ctx, key, value, expiry)
+	t.cmds[label] = cmd
+	return label
+}
+
+// Incr queues an INCR operation and returns a label for retrieving the result
+func (t *Transaction) Incr(ctx context.Context, key string) string {
+	label := fmt.Sprintf("incr_%s", key)
+	cmd := t.pipe.Incr(ctx, key)
+	t.cmds[label] = cmd
+	return label
+}
+
+// Decr queues a DECR operation and returns a label for retrieving the result
+func (t *Transaction) Decr(ctx context.Context, key string) string {
+	label := fmt.Sprintf("decr_%s", key)
+	cmd := t.pipe.Decr(ctx, key)
+	t.cmds[label] = cmd
+	return label
+}
+
+// Exec executes all queued operations atomically
+func (t *Transaction) Exec(ctx context.Context) error {
+	_, err := t.pipe.Exec(ctx)
+	if err != nil {
+		t.client.logger.Error("redis transaction exec failed", "error", err)
+		return fmt.Errorf("failed to execute transaction: %w", err)
+	}
+	t.client.logger.Debug("redis transaction executed successfully")
+	return nil
+}
+
+// GetBoolResult retrieves a boolean result from a labeled command (for SETNX)
+func (t *Transaction) GetBoolResult(label string) (bool, error) {
+	cmd, exists := t.cmds[label]
+	if !exists {
+		return false, fmt.Errorf("command with label %s not found", label)
+	}
+
+	boolCmd, ok := cmd.(*redis.BoolCmd)
+	if !ok {
+		return false, fmt.Errorf("command %s is not a BoolCmd", label)
+	}
+
+	return boolCmd.Result()
+}
+
+// GetIntResult retrieves an integer result from a labeled command (for INCR/DECR)
+func (t *Transaction) GetIntResult(label string) (int64, error) {
+	cmd, exists := t.cmds[label]
+	if !exists {
+		return 0, fmt.Errorf("command with label %s not found", label)
+	}
+
+	intCmd, ok := cmd.(*redis.IntCmd)
+	if !ok {
+		return 0, fmt.Errorf("command %s is not an IntCmd", label)
+	}
+
+	return intCmd.Result()
+}

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	redisWrapper "github.com/lyzr/orchestrator/common/redis"
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/metrics"
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/sdk"
 	"github.com/redis/go-redis/v9"
@@ -17,20 +18,20 @@ import (
 // 1. wf.tasks.hitl - New approval requests (creates approval, INCR counter, exits)
 // 2. wf.tasks.hitl.responses - Approval decisions (DECR counter, sends completion, exits)
 type HITLWorker struct {
-	redis                *redis.Client
-	sdk                  *sdk.SDK
-	logger               sdk.Logger
-	requestStream        string
-	responseStream       string
-	requestConsumerGroup string
+	redis                 *redisWrapper.Client
+	sdk                   *sdk.SDK
+	logger                sdk.Logger
+	requestStream         string
+	responseStream        string
+	requestConsumerGroup  string
 	responseConsumerGroup string
-	consumerName         string
+	consumerName          string
 }
 
 // NewHITLWorker creates a new HITL worker
 func NewHITLWorker(redisClient *redis.Client, workflowSDK *sdk.SDK, logger sdk.Logger) *HITLWorker {
 	return &HITLWorker{
-		redis:                 redisClient,
+		redis:                 redisWrapper.NewClient(redisClient, logger),
 		sdk:                   workflowSDK,
 		logger:                logger,
 		requestStream:         "wf.tasks.hitl",
@@ -49,13 +50,11 @@ func (w *HITLWorker) Start(ctx context.Context) error {
 		"consumer_name", w.consumerName)
 
 	// Create consumer groups if they don't exist
-	err := w.redis.XGroupCreateMkStream(ctx, w.requestStream, w.requestConsumerGroup, "0").Err()
-	if err != nil && err.Error() != "BUSYGROUP Consumer Group name already exists" {
+	if err := w.redis.CreateStreamGroup(ctx, w.requestStream, w.requestConsumerGroup); err != nil {
 		return fmt.Errorf("failed to create request consumer group: %w", err)
 	}
 
-	err = w.redis.XGroupCreateMkStream(ctx, w.responseStream, w.responseConsumerGroup, "0").Err()
-	if err != nil && err.Error() != "BUSYGROUP Consumer Group name already exists" {
+	if err := w.redis.CreateStreamGroup(ctx, w.responseStream, w.responseConsumerGroup); err != nil {
 		return fmt.Errorf("failed to create response consumer group: %w", err)
 	}
 
@@ -123,19 +122,14 @@ func (w *HITLWorker) processResponseStream(ctx context.Context) error {
 
 // processNextRequest reads and processes one approval request
 func (w *HITLWorker) processNextRequest(ctx context.Context) error {
-	streams, err := w.redis.XReadGroup(ctx, &redis.XReadGroupArgs{
-		Group:    w.requestConsumerGroup,
-		Consumer: w.consumerName,
-		Streams:  []string{w.requestStream, ">"},
-		Count:    1,
-		Block:    5 * time.Second,
-	}).Result()
-
-	if err == redis.Nil {
-		return nil
-	}
+	streams, err := w.redis.ReadFromStreamGroup(ctx, w.requestConsumerGroup, w.consumerName, w.requestStream, 1, 5*time.Second)
 	if err != nil {
 		return fmt.Errorf("XREADGROUP error: %w", err)
+	}
+
+	if streams == nil {
+		// Timeout, no messages
+		return nil
 	}
 
 	for _, stream := range streams {
@@ -145,7 +139,7 @@ func (w *HITLWorker) processNextRequest(ctx context.Context) error {
 			}
 
 			// ACK message
-			if err := w.redis.XAck(ctx, w.requestStream, w.requestConsumerGroup, message.ID).Err(); err != nil {
+			if err := w.redis.AckStreamMessage(ctx, w.requestStream, w.requestConsumerGroup, message.ID); err != nil {
 				w.logger.Error("failed to ACK request message", "message_id", message.ID, "error", err)
 			}
 		}
@@ -156,19 +150,14 @@ func (w *HITLWorker) processNextRequest(ctx context.Context) error {
 
 // processNextResponse reads and processes one approval decision
 func (w *HITLWorker) processNextResponse(ctx context.Context) error {
-	streams, err := w.redis.XReadGroup(ctx, &redis.XReadGroupArgs{
-		Group:    w.responseConsumerGroup,
-		Consumer: w.consumerName,
-		Streams:  []string{w.responseStream, ">"},
-		Count:    1,
-		Block:    5 * time.Second,
-	}).Result()
-
-	if err == redis.Nil {
-		return nil
-	}
+	streams, err := w.redis.ReadFromStreamGroup(ctx, w.responseConsumerGroup, w.consumerName, w.responseStream, 1, 5*time.Second)
 	if err != nil {
 		return fmt.Errorf("XREADGROUP error: %w", err)
+	}
+
+	if streams == nil {
+		// Timeout, no messages
+		return nil
 	}
 
 	for _, stream := range streams {
@@ -178,7 +167,7 @@ func (w *HITLWorker) processNextResponse(ctx context.Context) error {
 			}
 
 			// ACK message
-			if err := w.redis.XAck(ctx, w.responseStream, w.responseConsumerGroup, message.ID).Err(); err != nil {
+			if err := w.redis.AckStreamMessage(ctx, w.responseStream, w.responseConsumerGroup, message.ID); err != nil {
 				w.logger.Error("failed to ACK response message", "message_id", message.ID, "error", err)
 			}
 		}
@@ -234,7 +223,7 @@ func (w *HITLWorker) handleApprovalRequest(ctx context.Context, message redis.XM
 
 	// Load IR to get workflow tag and username for counter
 	irKey := fmt.Sprintf("ir:%s", token.RunID)
-	irJSON, err := w.redis.Get(ctx, irKey).Result()
+	irJSON, err := w.redis.Get(ctx, irKey)
 	if err != nil {
 		return fmt.Errorf("failed to load IR: %w", err)
 	}
@@ -264,7 +253,7 @@ func (w *HITLWorker) handleApprovalRequest(ctx context.Context, message redis.XM
 	runCounterKey := fmt.Sprintf("run:%s:pending_approvals", token.RunID)
 
 	// Atomic operation: SETNX approval + INCR both counters using Redis transaction
-	pipe := w.redis.TxPipeline()
+	tx := w.redis.NewTransaction()
 
 	// SETNX: only set if key doesn't exist (idempotency)
 	approvalRequest := map[string]interface{}{
@@ -283,17 +272,16 @@ func (w *HITLWorker) handleApprovalRequest(ctx context.Context, message redis.XM
 		return fmt.Errorf("failed to marshal approval request: %w", err)
 	}
 
-	setNXCmd := pipe.SetNX(ctx, approvalKey, requestJSON, 24*time.Hour)
-	workflowIncrCmd := pipe.Incr(ctx, workflowCounterKey)
-	runIncrCmd := pipe.Incr(ctx, runCounterKey)
+	setNXLabel := tx.SetNX(ctx, approvalKey, string(requestJSON), 24*time.Hour)
+	workflowIncrLabel := tx.Incr(ctx, workflowCounterKey)
+	runIncrLabel := tx.Incr(ctx, runCounterKey)
 
-	_, err = pipe.Exec(ctx)
-	if err != nil {
+	if err = tx.Exec(ctx); err != nil {
 		return fmt.Errorf("failed to execute Redis transaction: %w", err)
 	}
 
 	// Check if approval was newly created (SETNX returned true)
-	wasCreated, err := setNXCmd.Result()
+	wasCreated, err := tx.GetBoolResult(setNXLabel)
 	if err != nil {
 		return fmt.Errorf("failed to check SETNX result: %w", err)
 	}
@@ -303,17 +291,17 @@ func (w *HITLWorker) handleApprovalRequest(ctx context.Context, message redis.XM
 			"run_id", token.RunID,
 			"node_id", token.ToNode)
 		// INCR still happened for both counters, need to DECR both to maintain accuracy
-		if err := w.redis.Decr(ctx, workflowCounterKey).Err(); err != nil {
+		if _, err := w.redis.Decrement(ctx, workflowCounterKey); err != nil {
 			w.logger.Error("failed to decrement workflow counter after duplicate", "error", err)
 		}
-		if err := w.redis.Decr(ctx, runCounterKey).Err(); err != nil {
+		if _, err := w.redis.Decrement(ctx, runCounterKey); err != nil {
 			w.logger.Error("failed to decrement run counter after duplicate", "error", err)
 		}
 		return nil
 	}
 
-	workflowCount, _ := workflowIncrCmd.Result()
-	runCount, _ := runIncrCmd.Result()
+	workflowCount, _ := tx.GetIntResult(workflowIncrLabel)
+	runCount, _ := tx.GetIntResult(runIncrLabel)
 	w.logger.Info("approval request created",
 		"run_id", token.RunID,
 		"node_id", token.ToNode,
@@ -321,6 +309,18 @@ func (w *HITLWorker) handleApprovalRequest(ctx context.Context, message redis.XM
 		"workflow_tag", workflowTag,
 		"workflow_pending_count", workflowCount,
 		"run_pending_count", runCount)
+
+	// Set node status to "waiting_for_approval" in Redis
+	nodeStatusKey := fmt.Sprintf("run:%s:node:%s:status", token.RunID, token.ToNode)
+	if err := w.redis.Set(ctx, nodeStatusKey, "waiting_for_approval", 24*time.Hour); err != nil {
+		w.logger.Error("failed to set node status", "error", err)
+	}
+
+	// Set run status to "WAITING_FOR_APPROVAL"
+	runStatusKey := fmt.Sprintf("run:%s:status", token.RunID)
+	if err := w.redis.Set(ctx, runStatusKey, "WAITING_FOR_APPROVAL", 24*time.Hour); err != nil {
+		w.logger.Error("failed to set run status", "error", err)
+	}
 
 	// Publish event to notify user via fanout
 	if err := w.publishApprovalRequest(ctx, token.RunID, token.ToNode, workflowTag, config); err != nil {
@@ -375,25 +375,22 @@ func (w *HITLWorker) handleApprovalResponse(ctx context.Context, message redis.X
 
 	// Load approval from Redis to check status
 	approvalKey := fmt.Sprintf("hitl:approval:%s:%s", runID, nodeID)
-	data, err := w.redis.Get(ctx, approvalKey).Result()
+	data, err := w.redis.Get(ctx, approvalKey)
 
 	// Retry logic for race condition (approval might not exist yet)
-	if err == redis.Nil {
+	if err != nil {
 		w.logger.Warn("approval not found, retrying", "run_id", runID, "node_id", nodeID)
 		for i := 0; i < 3; i++ {
 			time.Sleep(time.Duration(i+1) * time.Second)
-			data, err = w.redis.Get(ctx, approvalKey).Result()
+			data, err = w.redis.Get(ctx, approvalKey)
 			if err == nil {
 				break
 			}
 		}
 	}
 
-	if err == redis.Nil {
-		return fmt.Errorf("approval not found after retries: %s:%s", runID, nodeID)
-	}
 	if err != nil {
-		return fmt.Errorf("failed to load approval: %w", err)
+		return fmt.Errorf("failed to load approval after retries: %w", err)
 	}
 
 	var approvalData map[string]interface{}
@@ -445,17 +442,16 @@ func (w *HITLWorker) handleApprovalResponse(ctx context.Context, message redis.X
 	workflowCounterKey := fmt.Sprintf("workflow:%s:%s:pending_approvals", username, workflowTag)
 	runCounterKey := fmt.Sprintf("run:%s:pending_approvals", runID)
 
-	// Use pipeline to decrement both counters atomically
-	pipe := w.redis.TxPipeline()
-	workflowDecrCmd := pipe.Decr(ctx, workflowCounterKey)
-	runDecrCmd := pipe.Decr(ctx, runCounterKey)
+	// Use transaction to decrement both counters atomically
+	tx := w.redis.NewTransaction()
+	workflowDecrLabel := tx.Decr(ctx, workflowCounterKey)
+	runDecrLabel := tx.Decr(ctx, runCounterKey)
 
-	_, err = pipe.Exec(ctx)
-	if err != nil {
+	if err = tx.Exec(ctx); err != nil {
 		w.logger.Error("failed to decrement counters", "error", err)
 	} else {
-		workflowCount, _ := workflowDecrCmd.Result()
-		runCount, _ := runDecrCmd.Result()
+		workflowCount, _ := tx.GetIntResult(workflowDecrLabel)
+		runCount, _ := tx.GetIntResult(runDecrLabel)
 		w.logger.Info("decremented approval counters",
 			"username", username,
 			"workflow_tag", workflowTag,
@@ -502,7 +498,7 @@ func (w *HITLWorker) handleApprovalResponse(ctx context.Context, message redis.X
 		"node_id", nodeID,
 		"approved", approved)
 
-	err = SignalCompletion(ctx, w.redis, w.logger, &CompletionOpts{
+	err = SignalCompletion(ctx, w.redis.GetUnderlying(), w.logger, &CompletionOpts{
 		Token:      &token,
 		Status:     "completed",
 		ResultData: result,
@@ -532,7 +528,7 @@ func (w *HITLWorker) handleApprovalResponse(ctx context.Context, message redis.X
 		w.logger.Error("failed to marshal updated approval data", "error", err)
 		// Don't return error - completion signal already sent successfully
 	} else {
-		if err := w.redis.Set(ctx, approvalKey, updatedJSON, 24*time.Hour).Err(); err != nil {
+		if err := w.redis.Set(ctx, approvalKey, string(updatedJSON), 24*time.Hour); err != nil {
 			w.logger.Error("failed to update approval status", "error", err)
 			// Don't return error - completion signal already sent successfully
 		} else {
@@ -543,6 +539,16 @@ func (w *HITLWorker) handleApprovalResponse(ctx context.Context, message redis.X
 		}
 	}
 
+	// Clear node waiting status (node is now completed)
+	nodeStatusKey := fmt.Sprintf("run:%s:node:%s:status", runID, nodeID)
+	if err := w.redis.Set(ctx, nodeStatusKey, "completed", 24*time.Hour); err != nil {
+		w.logger.Error("failed to update node status", "error", err)
+	}
+
+	// Note: Run status will be updated by coordinator/status manager based on overall workflow state
+	// If there are more pending approvals, it stays "WAITING_FOR_APPROVAL"
+	// If all approvals complete, it becomes "RUNNING" or "COMPLETED"
+
 	return nil
 }
 
@@ -550,7 +556,7 @@ func (w *HITLWorker) handleApprovalResponse(ctx context.Context, message redis.X
 func (w *HITLWorker) publishApprovalRequest(ctx context.Context, runID, nodeID, workflowTag string, config map[string]interface{}) error {
 	// Load IR to get username
 	irKey := fmt.Sprintf("ir:%s", runID)
-	irJSON, err := w.redis.Get(ctx, irKey).Result()
+	irJSON, err := w.redis.Get(ctx, irKey)
 	if err != nil {
 		return fmt.Errorf("failed to load IR: %w", err)
 	}
@@ -581,7 +587,7 @@ func (w *HITLWorker) publishApprovalRequest(ctx context.Context, runID, nodeID, 
 	}
 
 	channel := fmt.Sprintf("workflow:events:%s", username)
-	if err := w.redis.Publish(ctx, channel, eventJSON).Err(); err != nil {
+	if err := w.redis.PublishEvent(ctx, channel, string(eventJSON)); err != nil {
 		return fmt.Errorf("failed to publish event: %w", err)
 	}
 

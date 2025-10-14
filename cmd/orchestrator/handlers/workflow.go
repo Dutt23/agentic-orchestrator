@@ -1,12 +1,9 @@
 package handlers
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"net/url"
-	"strconv"
-	"strings"
 
 	"github.com/labstack/echo/v4"
 	"github.com/lyzr/orchestrator/cmd/orchestrator/container"
@@ -22,6 +19,8 @@ type WorkflowHandler struct {
 	tagService          *service.TagService
 	materializerService *service.MaterializerService
 	workflowService     *service.WorkflowServiceV2
+	responseBuilder     *WorkflowResponseBuilder
+	patcher             *WorkflowPatcher
 }
 
 // NewWorkflowHandler creates a new workflow handler
@@ -32,6 +31,11 @@ func NewWorkflowHandler(c *container.Container) *WorkflowHandler {
 		tagService:          c.TagService,
 		materializerService: c.MaterializerService,
 		workflowService:     c.WorkflowService,
+		responseBuilder: &WorkflowResponseBuilder{
+			materializerService: c.MaterializerService,
+			logger:              c.Components.Logger,
+		},
+		patcher: &WorkflowPatcher{},
 	}
 }
 
@@ -95,8 +99,8 @@ func (h *WorkflowHandler) CreateWorkflow(c echo.Context) error {
 		"artifact_id":  resp.ArtifactID,
 		"cas_id":       resp.CASID,
 		"version_hash": resp.VersionHash,
-		"tag":          resp.TagName,    // Tag name (e.g., "main")
-		"owner":        resp.Username,   // Owner (e.g., "sdutt")
+		"tag":          resp.TagName,  // Tag name (e.g., "main")
+		"owner":        resp.Username, // Owner (e.g., "sdutt")
 		"nodes_count":  resp.NodesCount,
 		"edges_count":  resp.EdgesCount,
 		"created_at":   resp.CreatedAt,
@@ -159,11 +163,11 @@ func (h *WorkflowHandler) GetWorkflow(c echo.Context) error {
 	}
 
 	// Build response
-	response := h.buildWorkflowResponse(tagName, username, components)
+	response := h.responseBuilder.BuildWorkflowResponse(tagName, username, components)
 
 	// Optionally materialize the workflow
 	if materialize {
-		if err := h.addMaterializedWorkflow(response, components); err != nil {
+		if err := h.responseBuilder.AddMaterializedWorkflow(response, components); err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{
 				"error": fmt.Sprintf("failed to materialize workflow: %v", err),
 			})
@@ -175,102 +179,14 @@ func (h *WorkflowHandler) GetWorkflow(c echo.Context) error {
 	return c.JSON(http.StatusOK, response)
 }
 
-// buildWorkflowResponse constructs the response with metadata and components
-func (h *WorkflowHandler) buildWorkflowResponse(tagName, owner string, components *models.WorkflowComponents) map[string]interface{} {
-	response := map[string]interface{}{
-		"tag":         tagName,            // Tag name (e.g., "main")
-		"owner":       owner,              // Owner username (e.g., "sdutt")
-		"artifact_id": components.ArtifactID,
-		"kind":        components.Kind,
-		"depth":       components.Depth,
-		"patch_count": components.PatchCount,
-		"created_at":  components.CreatedAt,
-	}
-
-	if components.CreatedBy != nil {
-		response["created_by"] = *components.CreatedBy
-	}
-
-	response["components"] = h.buildComponentDetails(components)
-
-	return response
-}
-
-// buildComponentDetails constructs the component details section of the response
-func (h *WorkflowHandler) buildComponentDetails(components *models.WorkflowComponents) map[string]interface{} {
-	details := map[string]interface{}{
-		"base_cas_id":       components.BaseCASID,
-		"base_version_hash": components.BaseVersionHash,
-	}
-
-	if components.BaseVersion != nil {
-		details["base_version"] = *components.BaseVersion
-	}
-
-	if len(components.PatchChain) > 0 {
-		details["patches"] = h.buildPatchChainMetadata(components.PatchChain)
-	}
-
-	return details
-}
-
-// buildPatchChainMetadata converts patch chain to metadata format (without content)
-func (h *WorkflowHandler) buildPatchChainMetadata(patchChain []models.PatchInfo) []map[string]interface{} {
-	patches := make([]map[string]interface{}, 0, len(patchChain))
-
-	for _, patch := range patchChain {
-		patchInfo := map[string]interface{}{
-			"seq":         patch.Seq,
-			"artifact_id": patch.ArtifactID,
-			"cas_id":      patch.CASID,
-			"depth":       patch.Depth,
-			"created_at":  patch.CreatedAt,
-		}
-
-		if patch.OpCount != nil {
-			patchInfo["op_count"] = *patch.OpCount
-		}
-		if patch.CreatedBy != nil {
-			patchInfo["created_by"] = *patch.CreatedBy
-		}
-
-		patches = append(patches, patchInfo)
-	}
-
-	return patches
-}
-
-// addMaterializedWorkflow materializes the workflow and adds it to the response
-func (h *WorkflowHandler) addMaterializedWorkflow(response map[string]interface{}, components *models.WorkflowComponents) error {
-	h.components.Logger.Info("materialization requested",
-		"tag", components.TagName,
-		"kind", components.Kind,
-		"depth", components.Depth,
-		"patch_count", components.PatchCount,
-	)
-
-	// Use MaterializerService to apply patches
-	workflow, err := h.materializerService.Materialize(context.Background(), components)
-	if err != nil {
-		h.components.Logger.Error("materialization failed",
-			"tag", components.TagName,
-			"error", err,
-		)
-		return fmt.Errorf("failed to materialize workflow: %w", err)
-	}
-
-	response["workflow"] = workflow
-	return nil
-}
-
 // ListWorkflows lists workflows (tags) for the authenticated user
 // GET /api/v1/workflows?scope=user|global|all
 //
 // Query parameters:
 //   - scope: "user" (default), "global", or "all"
-//     - user: List only the user's tags
-//     - global: List only global (system-wide) tags
-//     - all: List user's tags + global tags
+//   - user: List only the user's tags
+//   - global: List only global (system-wide) tags
+//   - all: List user's tags + global tags
 func (h *WorkflowHandler) ListWorkflows(c echo.Context) error {
 	ctx := c.Request().Context()
 
@@ -313,8 +229,8 @@ func (h *WorkflowHandler) ListWorkflows(c echo.Context) error {
 	workflows := make([]map[string]interface{}, len(tags))
 	for i, tag := range tags {
 		workflows[i] = map[string]interface{}{
-			"tag":         tag.TagName,    // Tag name (e.g., "main")
-			"owner":       tag.Username,   // Owner (e.g., "sdutt" or "_global_")
+			"tag":         tag.TagName,  // Tag name (e.g., "main")
+			"owner":       tag.Username, // Owner (e.g., "sdutt" or "_global_")
 			"target_id":   tag.TargetID,
 			"target_kind": tag.TargetKind,
 			"version":     tag.Version,
@@ -460,7 +376,7 @@ func (h *WorkflowHandler) PatchWorkflow(c echo.Context) error {
 	}
 
 	// Validate patch operations by trying to apply them
-	_, err = h.applyJSONPatchToWorkflow(currentWorkflow, req.Operations)
+	_, err = h.patcher.ApplyJSONPatchToWorkflow(currentWorkflow, req.Operations)
 	if err != nil {
 		h.components.Logger.Warn("failed to validate patch operations",
 			"username", username,
@@ -511,159 +427,6 @@ func (h *WorkflowHandler) PatchWorkflow(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, response)
-}
-
-// applyJSONPatchToWorkflow applies JSON Patch operations to a workflow
-func (h *WorkflowHandler) applyJSONPatchToWorkflow(workflow map[string]interface{}, operations []map[string]interface{}) (map[string]interface{}, error) {
-	// Create a deep copy of the workflow to avoid modifying the original
-	patchedWorkflow := make(map[string]interface{})
-	for k, v := range workflow {
-		// Deep copy arrays
-		if k == "nodes" || k == "edges" {
-			if arr, ok := v.([]interface{}); ok {
-				copyArr := make([]interface{}, len(arr))
-				copy(copyArr, arr)
-				patchedWorkflow[k] = copyArr
-			} else {
-				patchedWorkflow[k] = v
-			}
-		} else {
-			patchedWorkflow[k] = v
-		}
-	}
-
-	// Apply each operation
-	for i, op := range operations {
-		opType, ok := op["op"].(string)
-		if !ok {
-			return nil, fmt.Errorf("operation %d missing 'op' field", i)
-		}
-
-		path, ok := op["path"].(string)
-		if !ok {
-			return nil, fmt.Errorf("operation %d missing 'path' field", i)
-		}
-
-		switch opType {
-		case "add":
-			if err := h.applyAddOperation(patchedWorkflow, path, op["value"]); err != nil {
-				return nil, fmt.Errorf("operation %d (add) failed: %w", i, err)
-			}
-
-		case "remove":
-			if err := h.applyRemoveOperation(patchedWorkflow, path); err != nil {
-				return nil, fmt.Errorf("operation %d (remove) failed: %w", i, err)
-			}
-
-		case "replace":
-			if err := h.applyReplaceOperation(patchedWorkflow, path, op["value"]); err != nil {
-				return nil, fmt.Errorf("operation %d (replace) failed: %w", i, err)
-			}
-
-		default:
-			return nil, fmt.Errorf("unsupported operation type: %s", opType)
-		}
-	}
-
-	return patchedWorkflow, nil
-}
-
-// applyAddOperation handles "add" operations
-func (h *WorkflowHandler) applyAddOperation(workflow map[string]interface{}, path string, value interface{}) error {
-	if path == "/nodes/-" {
-		// Add node to the end of nodes array
-		nodes, ok := workflow["nodes"].([]interface{})
-		if !ok {
-			workflow["nodes"] = []interface{}{value}
-			return nil
-		}
-		workflow["nodes"] = append(nodes, value)
-		return nil
-	}
-
-	if path == "/edges/-" {
-		// Add edge to the end of edges array
-		edges, ok := workflow["edges"].([]interface{})
-		if !ok {
-			workflow["edges"] = []interface{}{value}
-			return nil
-		}
-		workflow["edges"] = append(edges, value)
-		return nil
-	}
-
-	return fmt.Errorf("unsupported add path: %s", path)
-}
-
-// applyRemoveOperation handles "remove" operations
-func (h *WorkflowHandler) applyRemoveOperation(workflow map[string]interface{}, path string) error {
-	// Parse path like "/nodes/2" or "/edges/1"
-	// Split by "/" and parse components
-	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
-	if len(parts) != 2 {
-		return fmt.Errorf("invalid remove path format: %s (expected format: /collection/index)", path)
-	}
-
-	collection := parts[0]
-	index, err := strconv.Atoi(parts[1])
-	if err != nil {
-		return fmt.Errorf("invalid index in path %s: %v", path, err)
-	}
-
-	if collection == "nodes" {
-		nodes, ok := workflow["nodes"].([]interface{})
-		if !ok || index < 0 || index >= len(nodes) {
-			return fmt.Errorf("invalid node index: %d", index)
-		}
-		workflow["nodes"] = append(nodes[:index], nodes[index+1:]...)
-		return nil
-	}
-
-	if collection == "edges" {
-		edges, ok := workflow["edges"].([]interface{})
-		if !ok || index < 0 || index >= len(edges) {
-			return fmt.Errorf("invalid edge index: %d", index)
-		}
-		workflow["edges"] = append(edges[:index], edges[index+1:]...)
-		return nil
-	}
-
-	return fmt.Errorf("unsupported remove collection: %s", collection)
-}
-
-// applyReplaceOperation handles "replace" operations
-func (h *WorkflowHandler) applyReplaceOperation(workflow map[string]interface{}, path string, value interface{}) error {
-	// Parse path like "/nodes/2" or "/edges/1"
-	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
-	if len(parts) != 2 {
-		return fmt.Errorf("invalid replace path format: %s (expected format: /collection/index)", path)
-	}
-
-	collection := parts[0]
-	index, err := strconv.Atoi(parts[1])
-	if err != nil {
-		return fmt.Errorf("invalid index in path %s: %v", path, err)
-	}
-
-	if collection == "nodes" {
-		nodes, ok := workflow["nodes"].([]interface{})
-		if !ok || index < 0 || index >= len(nodes) {
-			return fmt.Errorf("invalid node index: %d", index)
-		}
-		nodes[index] = value
-		return nil
-	}
-
-	if collection == "edges" {
-		edges, ok := workflow["edges"].([]interface{})
-		if !ok || index < 0 || index >= len(edges) {
-			return fmt.Errorf("invalid edge index: %d", index)
-		}
-		edges[index] = value
-		return nil
-	}
-
-	return fmt.Errorf("unsupported replace collection: %s", collection)
 }
 
 // GetWorkflowVersion retrieves a workflow at a specific version/sequence number
@@ -739,12 +502,12 @@ func (h *WorkflowHandler) GetWorkflowVersion(c echo.Context) error {
 	}
 
 	// Build response
-	response := h.buildWorkflowResponse(tagName, username, components)
+	response := h.responseBuilder.BuildWorkflowResponse(tagName, username, components)
 	response["seq"] = seq
 
 	// Optionally materialize the workflow
 	if materialize {
-		if err := h.addMaterializedWorkflow(response, components); err != nil {
+		if err := h.responseBuilder.AddMaterializedWorkflow(response, components); err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]interface{}{
 				"error": fmt.Sprintf("failed to materialize workflow: %v", err),
 			})

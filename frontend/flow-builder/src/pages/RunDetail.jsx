@@ -361,6 +361,10 @@ function RunExecutionGraph({ workflowIR, nodeExecutions, onNodeClick }) {
         bgColor = '#ADD8E6'; // light blue
         borderColor = '#3182ce'; // darker blue
       }
+      if (status === 'waiting_for_approval') {
+        bgColor = '#FFF9C4'; // light yellow
+        borderColor = '#F59E0B'; // amber/orange
+      }
       if (status === 'not_executed') {
         bgColor = '#e2e8f0'; // lighter grey
         borderColor = '#a0aec0'; // grey
@@ -538,6 +542,10 @@ function RunExecutionGraph({ workflowIR, nodeExecutions, onNodeClick }) {
             <HStack spacing={2}>
               <Box w="20px" h="20px" bg="#ADD8E6" border="2px solid #3182ce" borderRadius="md" />
               <Text fontSize="xs">Running</Text>
+            </HStack>
+            <HStack spacing={2}>
+              <Box w="20px" h="20px" bg="#FFF9C4" border="2px solid #F59E0B" borderRadius="md" />
+              <Text fontSize="xs">Waiting for Approval</Text>
             </HStack>
             <HStack spacing={2}>
               <Box w="20px" h="20px" bg="#f0f0f0" border="2px solid #333" borderRadius="md" />
