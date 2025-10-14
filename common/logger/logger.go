@@ -4,6 +4,10 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"runtime/debug"
+	"time"
+
+	"github.com/lmittmann/tint"
 )
 
 // Logger wraps slog.Logger with contextual fields
@@ -15,15 +19,21 @@ type Logger struct {
 func New(level, format string) *Logger {
 	var handler slog.Handler
 
-	opts := &slog.HandlerOptions{
-		Level: parseLevel(level),
-	}
+	logLevel := parseLevel(level)
 
 	switch format {
 	case "json":
+		opts := &slog.HandlerOptions{
+			Level: logLevel,
+		}
 		handler = slog.NewJSONHandler(os.Stdout, opts)
 	default:
-		handler = slog.NewTextHandler(os.Stdout, opts)
+		// Use tint for beautiful colored console output
+		handler = tint.NewHandler(os.Stdout, &tint.Options{
+			Level:      logLevel,
+			TimeFormat: time.TimeOnly, // HH:MM:SS
+			AddSource:  false,          // Don't show source file by default
+		})
 	}
 
 	return &Logger{
@@ -64,6 +74,22 @@ func (l *Logger) WithNodeID(nodeID string) *Logger {
 	return &Logger{
 		Logger: l.With("node_id", nodeID),
 	}
+}
+
+// Error logs an error with stack trace
+func (l *Logger) Error(msg string, args ...any) {
+	// Add stack trace to args
+	stack := string(debug.Stack())
+	args = append(args, "stack", stack)
+	l.Logger.Error(msg, args...)
+}
+
+// ErrorContext logs an error with context and stack trace
+func (l *Logger) ErrorContext(ctx context.Context, msg string, args ...any) {
+	// Add stack trace to args
+	stack := string(debug.Stack())
+	args = append(args, "stack", stack)
+	l.Logger.ErrorContext(ctx, msg, args...)
 }
 
 func parseLevel(level string) slog.Level {

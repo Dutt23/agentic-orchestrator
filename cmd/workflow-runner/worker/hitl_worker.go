@@ -218,7 +218,7 @@ func (w *HITLWorker) handleMessage(ctx context.Context, message redis.XMessage) 
 		return fmt.Errorf("failed to marshal result: %w", err)
 	}
 
-	resultRef, err := w.sdk.CASClient.Put(resultJSON, "application/json")
+	resultRef, err := w.sdk.CASClient.Put(ctx, resultJSON, "application/json")
 	if err != nil {
 		return fmt.Errorf("failed to store result: %w", err)
 	}
@@ -289,7 +289,7 @@ func (w *HITLWorker) loadConfig(ctx context.Context, configRef string) (map[stri
 		return make(map[string]interface{}), nil
 	}
 
-	data, err := w.sdk.CASClient.Get(configRef)
+	data, err := w.sdk.CASClient.Get(ctx, configRef)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get config from CAS: %w", err)
 	}

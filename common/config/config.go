@@ -80,7 +80,7 @@ func Load(serviceName string) (*Config, error) {
 			Port:        getEnvInt("PORT", 8080),
 			Environment: getEnv("ENVIRONMENT", "development"),
 			LogLevel:    getEnv("LOG_LEVEL", "info"),
-			LogFormat:   getEnv("LOG_FORMAT", "json"),
+			LogFormat:   getEnv("LOG_FORMAT", "text"), // Default to text for development
 		},
 		Database: DatabaseConfig{
 			Host:        getEnv("POSTGRES_HOST", "localhost"),

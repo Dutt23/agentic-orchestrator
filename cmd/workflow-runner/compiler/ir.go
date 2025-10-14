@@ -1,10 +1,12 @@
 package compiler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/sdk"
+	"github.com/lyzr/orchestrator/common/clients"
 )
 
 // Node type constants
@@ -104,7 +106,7 @@ type DSLEdge struct {
 }
 
 // CompileWorkflowSchema converts workflow.schema.json format to executable IR
-func CompileWorkflowSchema(schema *WorkflowSchema, casClient sdk.CASClient) (*sdk.IR, error) {
+func CompileWorkflowSchema(schema *WorkflowSchema, casClient clients.CASClient) (*sdk.IR, error) {
 	ir := &sdk.IR{
 		Version: "1.0",
 		Nodes:   make(map[string]*sdk.Node),
@@ -172,7 +174,7 @@ func CompileWorkflowSchema(schema *WorkflowSchema, casClient sdk.CASClient) (*sd
 }
 
 // convertWorkflowNode converts workflow.schema.json node to IR node with type mapping
-func convertWorkflowNode(wfNode *WorkflowNode, conditionalEdges map[string][]WorkflowEdge, casClient sdk.CASClient) (*sdk.Node, error) {
+func convertWorkflowNode(wfNode *WorkflowNode, conditionalEdges map[string][]WorkflowEdge, casClient clients.CASClient) (*sdk.Node, error) {
 	node := &sdk.Node{
 		ID:           wfNode.ID,
 		Dependencies: []string{},
@@ -189,7 +191,8 @@ func convertWorkflowNode(wfNode *WorkflowNode, conditionalEdges map[string][]Wor
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal config: %w", err)
 		}
-		casID, err := casClient.Put(configJSON, "application/json;type=node_config")
+		// Use background context for compiler operations
+		casID, err := casClient.Put(context.Background(), configJSON, "application/json;type=node_config")
 		if err == nil {
 			node.ConfigRef = casID
 		}

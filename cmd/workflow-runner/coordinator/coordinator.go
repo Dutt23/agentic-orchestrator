@@ -7,8 +7,12 @@ import (
 	"time"
 
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/condition"
+	"github.com/lyzr/orchestrator/cmd/workflow-runner/operators"
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/resolver"
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/sdk"
+	"github.com/lyzr/orchestrator/cmd/workflow-runner/workflow_lifecycle"
+	"github.com/lyzr/orchestrator/common/clients"
+	redisWrapper "github.com/lyzr/orchestrator/common/redis"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -25,12 +29,31 @@ type CompletionSignal struct {
 
 // Coordinator handles choreography for workflow execution
 type Coordinator struct {
-	redis     *redis.Client
-	sdk       *sdk.SDK
-	logger    Logger
-	router    *StreamRouter
-	evaluator *condition.Evaluator
-	resolver  *resolver.Resolver
+	redis               *redis.Client // Raw client for BLPOP and other blocking ops
+	redisWrapper        *redisWrapper.Client // Wrapped client for common ops
+	sdk                 *sdk.SDK
+	logger              Logger
+	router              *StreamRouter
+	evaluator           *condition.Evaluator
+	resolver            *resolver.Resolver
+	orchestratorClient  *clients.OrchestratorClient
+	orchestratorBaseURL string
+
+	// Extracted modules for clean separation of concerns
+	operators *OperatorOpts
+	lifecycle *LifecycleHandlerOpts
+}
+
+// OperatorOpts contains all control flow operators
+type OperatorOpts struct {
+	ControlFlowRouter *operators.ControlFlowRouter
+}
+
+// LifecycleHandlerOpts contains all workflow lifecycle handlers
+type LifecycleHandlerOpts struct {
+	CompletionChecker *workflow_lifecycle.CompletionChecker
+	EventPublisher    *workflow_lifecycle.EventPublisher
+	StatusManager     *workflow_lifecycle.StatusManager
 }
 
 // Logger interface for logging
@@ -41,15 +64,48 @@ type Logger interface {
 	Debug(msg string, keysAndValues ...interface{})
 }
 
+// CoordinatorOpts contains options for creating a coordinator
+type CoordinatorOpts struct {
+	Redis               *redis.Client
+	SDK                 *sdk.SDK
+	Logger              Logger
+	OrchestratorBaseURL string
+}
+
 // NewCoordinator creates a new coordinator instance
-func NewCoordinator(redis *redis.Client, sdk *sdk.SDK, logger Logger) *Coordinator {
+func NewCoordinator(opts *CoordinatorOpts) *Coordinator {
+	orchestratorClient := clients.NewOrchestratorClient(opts.OrchestratorBaseURL, opts.Logger)
+	evaluator := condition.NewEvaluator()
+
+	// Wrap Redis client for better abstractions and instrumentation
+	redisClient := redisWrapper.NewClient(opts.Redis, opts.Logger)
+
+	// Create workflow lifecycle modules with wrapped Redis client
+	eventPublisher := workflow_lifecycle.NewEventPublisher(redisClient, opts.Logger)
+	statusManager := workflow_lifecycle.NewStatusManager(redisClient, opts.Logger)
+	completionChecker := workflow_lifecycle.NewCompletionChecker(redisClient, opts.SDK, opts.Logger, eventPublisher, statusManager)
+
+	// Create control flow router (still uses raw Redis for complex operations like XREADGROUP)
+	controlFlowRouter := operators.NewControlFlowRouter(opts.Redis, opts.SDK, evaluator, opts.Logger)
+
 	return &Coordinator{
-		redis:     redis,
-		sdk:       sdk,
-		logger:    logger,
-		router:    NewStreamRouter(),
-		evaluator: condition.NewEvaluator(),
-		resolver:  resolver.NewResolver(sdk, logger),
+		redis:               opts.Redis, // Keep raw for BLPOP
+		redisWrapper:        redisClient, // Use wrapper for common ops
+		sdk:                 opts.SDK,
+		logger:              opts.Logger,
+		router:              NewStreamRouter(),
+		evaluator:           evaluator,
+		resolver:            resolver.NewResolver(opts.SDK, opts.Logger),
+		orchestratorClient:  orchestratorClient,
+		orchestratorBaseURL: opts.OrchestratorBaseURL,
+		operators: &OperatorOpts{
+			ControlFlowRouter: controlFlowRouter,
+		},
+		lifecycle: &LifecycleHandlerOpts{
+			CompletionChecker: completionChecker,
+			EventPublisher:    eventPublisher,
+			StatusManager:     statusManager,
+		},
 	}
 }
 
@@ -155,7 +211,7 @@ func (c *Coordinator) handleCompletion(ctx context.Context, signal *CompletionSi
 		// Publish node_failed event
 		if ir.Metadata != nil {
 			if username, ok := ir.Metadata["username"].(string); ok {
-				c.publishWorkflowEvent(ctx, username, map[string]interface{}{
+				c.lifecycle.EventPublisher.PublishWorkflowEvent(ctx, username, map[string]interface{}{
 					"type":      "node_failed",
 					"run_id":    signal.RunID,
 					"node_id":   signal.NodeID,
@@ -164,7 +220,7 @@ func (c *Coordinator) handleCompletion(ctx context.Context, signal *CompletionSi
 				})
 
 				// Also publish workflow_failed event to indicate the entire workflow failed
-				c.publishWorkflowEvent(ctx, username, map[string]interface{}{
+				c.lifecycle.EventPublisher.PublishWorkflowEvent(ctx, username, map[string]interface{}{
 					"type":      "workflow_failed",
 					"run_id":    signal.RunID,
 					"node_id":   signal.NodeID,
@@ -174,11 +230,30 @@ func (c *Coordinator) handleCompletion(ctx context.Context, signal *CompletionSi
 			}
 		}
 
+		// Update run status (both Redis hot path and DB cold path)
+		c.lifecycle.StatusManager.UpdateRunStatus(ctx, signal.RunID, "FAILED")
+
 		// TODO: Handle failure (DLQ, retry, etc.)
 		return
 	}
 
-	// 3. Consume token (apply -1 to counter)
+	// 3. Check if this was an agent node that might have created patches
+	if node.Type == "agent" {
+		c.logger.Info("agent node completed, checking for run patches",
+			"run_id", signal.RunID,
+			"node_id", signal.NodeID)
+
+		// Check if patches were created during this run
+		if err := c.reloadIRIfPatched(ctx, signal.RunID, ir); err != nil {
+			c.logger.Error("failed to reload IR after patch",
+				"run_id", signal.RunID,
+				"node_id", signal.NodeID,
+				"error", err)
+			// Continue execution even if patch reload fails
+		}
+	}
+
+	// 4. Consume token (apply -1 to counter)
 	if err := c.sdk.Consume(ctx, signal.RunID, signal.NodeID); err != nil {
 		c.logger.Error("failed to consume token",
 			"run_id", signal.RunID,
@@ -193,7 +268,7 @@ func (c *Coordinator) handleCompletion(ctx context.Context, signal *CompletionSi
 	// Publish node_completed event
 	if ir.Metadata != nil {
 		if username, ok := ir.Metadata["username"].(string); ok {
-			c.publishWorkflowEvent(ctx, username, map[string]interface{}{
+			c.lifecycle.EventPublisher.PublishWorkflowEvent(ctx, username, map[string]interface{}{
 				"type":       "node_completed",
 				"run_id":     signal.RunID,
 				"node_id":    signal.NodeID,
@@ -205,7 +280,7 @@ func (c *Coordinator) handleCompletion(ctx context.Context, signal *CompletionSi
 		}
 	}
 
-	// 4. Load result from CAS for context
+	// 5. Load result from CAS for context
 	if signal.ResultRef != "" {
 		// Store in context for downstream nodes
 		if err := c.sdk.StoreContext(ctx, signal.RunID, signal.NodeID+":output", signal.ResultRef); err != nil {
@@ -216,8 +291,25 @@ func (c *Coordinator) handleCompletion(ctx context.Context, signal *CompletionSi
 		}
 	}
 
-	// 5. Determine next nodes (handles branches, loops, etc.)
-	nextNodes, err := c.determineNextNodes(ctx, signal, node, ir)
+	// 6. Reload IR to get latest version with patches (if any)
+	ir, err = c.loadIR(ctx, signal.RunID)
+	if err != nil {
+		c.logger.Error("failed to reload IR",
+			"run_id", signal.RunID,
+			"error", err)
+		return
+	}
+
+	// 7. Determine next nodes (handles branches, loops, etc.)
+	nextNodes, err := c.operators.ControlFlowRouter.DetermineNextNodes(ctx, &operators.CompletionSignal{
+		Version:   signal.Version,
+		JobID:     signal.JobID,
+		RunID:     signal.RunID,
+		NodeID:    signal.NodeID,
+		Status:    signal.Status,
+		ResultRef: signal.ResultRef,
+		Metadata:  signal.Metadata,
+	}, node, ir)
 	if err != nil {
 		c.logger.Error("failed to determine next nodes",
 			"run_id", signal.RunID,
@@ -232,7 +324,7 @@ func (c *Coordinator) handleCompletion(ctx context.Context, signal *CompletionSi
 		"next_nodes", nextNodes,
 		"count", len(nextNodes))
 
-	// 6. Emit to appropriate streams and update counter
+	// 8. Emit to appropriate streams and update counter
 	if len(nextNodes) > 0 {
 		for _, nextNodeID := range nextNodes {
 			nextNode, exists := ir.Nodes[nextNodeID]
@@ -346,19 +438,122 @@ func (c *Coordinator) handleCompletion(ctx context.Context, signal *CompletionSi
 		}
 	}
 
-	// 7. Terminal node check
+	// 9. Terminal node check
 	if node.IsTerminal {
 		c.logger.Debug("terminal node completed, checking for run completion",
 			"run_id", signal.RunID,
 			"node_id", signal.NodeID)
-		c.checkCompletion(ctx, signal.RunID)
+		c.lifecycle.CompletionChecker.CheckCompletion(ctx, signal.RunID)
 	}
+}
+
+// reloadIRIfPatched checks if patches exist and reloads the IR with patches applied
+func (c *Coordinator) reloadIRIfPatched(ctx context.Context, runID string, currentIR *sdk.IR) error {
+	c.logger.Info("checking for run patches", "run_id", runID)
+
+	// Extract username from IR metadata and add to context
+	// This will automatically be used for authentication headers in HTTP requests
+	if currentIR.Metadata != nil {
+		if username, ok := currentIR.Metadata["username"].(string); ok {
+			ctx = clients.WithUserID(ctx, username)
+			c.logger.Info("added username to context for orchestrator client", "username", username)
+		}
+	}
+
+	// Fetch patches from orchestrator (context automatically includes auth)
+	patches, err := c.orchestratorClient.GetRunPatchesWithOperations(ctx, runID)
+	if err != nil {
+		return fmt.Errorf("failed to get run patches: %w", err)
+	}
+
+	if len(patches) == 0 {
+		c.logger.Debug("no run patches found, IR unchanged")
+		return nil
+	}
+
+	c.logger.Info("run patches found, materializing workflow",
+		"patch_count", len(patches))
+
+	// Get base workflow from IR metadata
+	// The IR was compiled from a workflow and should have the original workflow stored
+	// We need to reconstruct the workflow format from the IR
+	baseWorkflow := c.irToWorkflow(currentIR)
+
+	// Materialize workflow with patches applied
+	patchedWorkflow, err := c.orchestratorClient.MaterializeWorkflowForRun(ctx, baseWorkflow, runID)
+	if err != nil {
+		return fmt.Errorf("failed to materialize workflow: %w", err)
+	}
+
+	c.logger.Info("patched workflow materialized, updating IR in Redis")
+
+	// TODO: Recompile the patched workflow to IR format
+	// For now, we'll store both: keep the current IR structure but update it with new nodes/edges
+
+	// Convert patched workflow back to IR format and update Redis
+	// For now, we store the patched workflow in a way that loadIR can handle
+	patchedIRJSON, err := json.Marshal(patchedWorkflow)
+	if err != nil {
+		return fmt.Errorf("failed to marshal patched workflow: %w", err)
+	}
+
+	// Store updated workflow in Redis at a temporary key
+	// The IR will be recompiled on next load
+	workflowKey := fmt.Sprintf("workflow:%s:patched", runID)
+	if err := c.redisWrapper.SetWithExpiry(ctx, workflowKey, string(patchedIRJSON), 0); err != nil {
+		return fmt.Errorf("failed to store patched workflow: %w", err)
+	}
+
+	c.logger.Info("patched workflow stored, will be recompiled on next IR load",
+		"run_id", runID,
+		"patches_applied", len(patches))
+
+	return nil
+}
+
+// irToWorkflow converts IR back to workflow schema format
+func (c *Coordinator) irToWorkflow(ir *sdk.IR) map[string]interface{} {
+	// Build workflow from IR
+	nodes := []map[string]interface{}{}
+	edges := []map[string]interface{}{}
+
+	// Convert nodes
+	for _, node := range ir.Nodes {
+		wfNode := map[string]interface{}{
+			"id":   node.ID,
+			"type": node.Type,
+		}
+		if node.Config != nil {
+			wfNode["config"] = node.Config
+		}
+		nodes = append(nodes, wfNode)
+
+		// Convert edges from dependents
+		for _, dep := range node.Dependents {
+			edges = append(edges, map[string]interface{}{
+				"from": node.ID,
+				"to":   dep,
+			})
+		}
+	}
+
+	workflow := map[string]interface{}{
+		"nodes": nodes,
+		"edges": edges,
+	}
+
+	// Add metadata if present
+	if ir.Metadata != nil {
+		workflow["metadata"] = ir.Metadata
+	}
+
+	return workflow
 }
 
 // loadIR loads the latest IR from Redis (no caching for patch support)
 func (c *Coordinator) loadIR(ctx context.Context, runID string) (*sdk.IR, error) {
 	key := fmt.Sprintf("ir:%s", runID)
-	data, err := c.redis.Get(ctx, key).Result()
+	data, err := c.redisWrapper.Get(ctx, key)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get IR from Redis: %w", err)
 	}
@@ -369,172 +564,6 @@ func (c *Coordinator) loadIR(ctx context.Context, runID string) (*sdk.IR, error)
 	}
 
 	return &ir, nil
-}
-
-// determineNextNodes determines which nodes to route to based on node config
-func (c *Coordinator) determineNextNodes(ctx context.Context, signal *CompletionSignal, node *sdk.Node, ir *sdk.IR) ([]string, error) {
-	// 1. Check for loop configuration
-	if node.Loop != nil && node.Loop.Enabled {
-		return c.handleLoop(ctx, signal, node)
-	}
-
-	// 2. Check for branch configuration
-	if node.Branch != nil && node.Branch.Enabled {
-		return c.handleBranch(ctx, signal, node)
-	}
-
-	// 3. Default: static dependents
-	return node.Dependents, nil
-}
-
-// handleLoop determines next nodes for loop configuration
-func (c *Coordinator) handleLoop(ctx context.Context, signal *CompletionSignal, node *sdk.Node) ([]string, error) {
-	loopKey := fmt.Sprintf("loop:%s:%s", signal.RunID, signal.NodeID)
-
-	// Increment iteration counter
-	iteration, err := c.redis.HIncrBy(ctx, loopKey, "current_iteration", 1).Result()
-	if err != nil {
-		return nil, fmt.Errorf("failed to increment loop iteration: %w", err)
-	}
-
-	c.logger.Debug("loop iteration",
-		"run_id", signal.RunID,
-		"node_id", signal.NodeID,
-		"iteration", iteration,
-		"max", node.Loop.MaxIterations)
-
-	// Check max iterations
-	if int(iteration) >= node.Loop.MaxIterations {
-		c.logger.Info("loop max iterations reached",
-			"run_id", signal.RunID,
-			"node_id", signal.NodeID,
-			"iterations", iteration)
-		// Cleanup loop state
-		c.redis.Del(ctx, loopKey)
-		// Exit to timeout_path
-		return node.Loop.TimeoutPath, nil
-	}
-
-	// Evaluate condition if present
-	if node.Loop.Condition != nil {
-		// Load output from CAS for condition evaluation
-		output, err := c.sdk.LoadPayload(ctx, signal.ResultRef)
-		if err != nil {
-			c.logger.Error("failed to load output for loop condition",
-				"run_id", signal.RunID,
-				"node_id", signal.NodeID,
-				"error", err)
-			// On error, break loop
-			c.redis.Del(ctx, loopKey)
-			return node.Loop.BreakPath, nil
-		}
-
-		// Load context
-		context, err := c.sdk.LoadContext(ctx, signal.RunID)
-		if err != nil {
-			c.logger.Warn("failed to load context for loop condition",
-				"run_id", signal.RunID,
-				"error", err)
-			context = make(map[string]interface{})
-		}
-
-		// Evaluate condition
-		conditionMet, err := c.evaluator.Evaluate(node.Loop.Condition, output, context)
-		if err != nil {
-			c.logger.Error("loop condition evaluation failed",
-				"run_id", signal.RunID,
-				"node_id", signal.NodeID,
-				"expression", node.Loop.Condition.Expression,
-				"error", err)
-			// On error, break loop
-			c.redis.Del(ctx, loopKey)
-			return node.Loop.BreakPath, nil
-		}
-
-		c.logger.Debug("loop condition evaluated",
-			"run_id", signal.RunID,
-			"node_id", signal.NodeID,
-			"condition_met", conditionMet)
-
-		if conditionMet {
-			// Continue looping
-			return []string{node.Loop.LoopBackTo}, nil
-		}
-
-		// Condition not met, break loop
-		c.redis.Del(ctx, loopKey)
-		return node.Loop.BreakPath, nil
-	}
-
-	// No condition, continue looping (will eventually hit max iterations)
-	return []string{node.Loop.LoopBackTo}, nil
-}
-
-// handleBranch determines next nodes for branch configuration
-func (c *Coordinator) handleBranch(ctx context.Context, signal *CompletionSignal, node *sdk.Node) ([]string, error) {
-	// Load output from CAS for condition evaluation
-	output, err := c.sdk.LoadPayload(ctx, signal.ResultRef)
-	if err != nil {
-		c.logger.Error("failed to load output for branch condition",
-			"run_id", signal.RunID,
-			"node_id", signal.NodeID,
-			"error", err)
-		// On error, use default path
-		return node.Branch.Default, nil
-	}
-
-	// Load context
-	context, err := c.sdk.LoadContext(ctx, signal.RunID)
-	if err != nil {
-		c.logger.Warn("failed to load context for branch condition",
-			"run_id", signal.RunID,
-			"error", err)
-		context = make(map[string]interface{})
-	}
-
-	// Evaluate rules in order
-	for i, rule := range node.Branch.Rules {
-		if rule.Condition == nil {
-			c.logger.Warn("branch rule has nil condition, skipping",
-				"run_id", signal.RunID,
-				"node_id", signal.NodeID,
-				"rule_index", i)
-			continue
-		}
-
-		conditionMet, err := c.evaluator.Evaluate(rule.Condition, output, context)
-		if err != nil {
-			c.logger.Warn("branch rule evaluation failed",
-				"run_id", signal.RunID,
-				"node_id", signal.NodeID,
-				"rule_index", i,
-				"expression", rule.Condition.Expression,
-				"error", err)
-			continue
-		}
-
-		c.logger.Debug("branch rule evaluated",
-			"run_id", signal.RunID,
-			"node_id", signal.NodeID,
-			"rule_index", i,
-			"condition_met", conditionMet)
-
-		if conditionMet {
-			c.logger.Info("branch rule matched",
-				"run_id", signal.RunID,
-				"node_id", signal.NodeID,
-				"rule_index", i,
-				"next_nodes", rule.NextNodes)
-			return rule.NextNodes, nil
-		}
-	}
-
-	// No rule matched, use default
-	c.logger.Debug("no branch rule matched, using default",
-		"run_id", signal.RunID,
-		"node_id", signal.NodeID,
-		"default", node.Branch.Default)
-	return node.Branch.Default, nil
 }
 
 // publishToken publishes a token to a Redis stream with resolved config
@@ -614,14 +643,11 @@ func (c *Coordinator) publishToken(ctx context.Context, stream, runID, fromNode,
 		return fmt.Errorf("failed to marshal token: %w", err)
 	}
 
-	_, err = c.redis.XAdd(ctx, &redis.XAddArgs{
-		Stream: stream,
-		Values: map[string]interface{}{
-			"token":   string(tokenJSON),
-			"run_id":  runID,
-			"to_node": toNode,
-		},
-	}).Result()
+	_, err = c.redisWrapper.AddToStream(ctx, stream, map[string]interface{}{
+		"token":   string(tokenJSON),
+		"run_id":  runID,
+		"to_node": toNode,
+	})
 
 	if err != nil {
 		return fmt.Errorf("failed to add to stream: %w", err)
@@ -636,63 +662,3 @@ func (c *Coordinator) publishToken(ctx context.Context, stream, runID, fromNode,
 	return nil
 }
 
-// checkCompletion checks if the workflow run is complete
-func (c *Coordinator) checkCompletion(ctx context.Context, runID string) {
-	// Get counter value
-	counter, err := c.sdk.GetCounter(ctx, runID)
-	if err != nil {
-		c.logger.Error("failed to get counter",
-			"run_id", runID,
-			"error", err)
-		return
-	}
-
-	c.logger.Debug("checking completion",
-		"run_id", runID,
-		"counter", counter)
-
-	if counter == 0 {
-		c.logger.Info("workflow completed",
-			"run_id", runID)
-
-		// Load IR to get username for event publishing
-		ir, err := c.loadIR(ctx, runID)
-		if err == nil && ir.Metadata != nil {
-			if username, ok := ir.Metadata["username"].(string); ok {
-				// Publish workflow_completed event
-				c.publishWorkflowEvent(ctx, username, map[string]interface{}{
-					"type":      "workflow_completed",
-					"run_id":    runID,
-					"counter":   0,
-					"timestamp": time.Now().Unix(),
-				})
-			}
-		}
-
-		// TODO: Mark run as COMPLETED in database
-		// TODO: Cleanup Redis keys
-	}
-}
-
-// publishWorkflowEvent publishes an event to Redis PubSub for fanout service
-func (c *Coordinator) publishWorkflowEvent(ctx context.Context, username string, event map[string]interface{}) {
-	channel := fmt.Sprintf("workflow:events:%s", username)
-
-	eventJSON, err := json.Marshal(event)
-	if err != nil {
-		c.logger.Error("failed to marshal workflow event", "error", err)
-		return
-	}
-
-	err = c.redis.Publish(ctx, channel, eventJSON).Err()
-	if err != nil {
-		c.logger.Error("failed to publish workflow event",
-			"channel", channel,
-			"error", err)
-		return
-	}
-
-	c.logger.Debug("published workflow event",
-		"channel", channel,
-		"type", event["type"])
-}

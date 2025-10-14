@@ -2,20 +2,20 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
+	"github.com/lyzr/orchestrator/cmd/orchestrator/repository"
+	"github.com/lyzr/orchestrator/cmd/workflow-runner/consumer"
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/coordinator"
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/executor"
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/sdk"
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/supervisor"
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/worker"
 	"github.com/lyzr/orchestrator/common/bootstrap"
+	"github.com/lyzr/orchestrator/common/clients"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -33,61 +33,114 @@ func main() {
 
 	components.Logger.Info("workflow-runner starting")
 
+	// Initialize dependencies
+	deps, err := initializeDependencies(ctx, components)
+	if err != nil {
+		components.Logger.Error("failed to initialize dependencies", "error", err)
+		os.Exit(1)
+	}
+
+	// Create all workflow components
+	workflowComponents := createWorkflowComponents(deps, components)
+
+	// Start all components
+	errChan := startComponents(ctx, workflowComponents, components)
+
+	components.Logger.Info("workflow-runner started successfully",
+		"components", []string{"coordinator", "http_worker", "hitl_worker", "run_request_consumer", "status_update_consumer"})
+
+	// Wait for shutdown signal or error
+	waitForShutdown(ctx, cancel, errChan, components)
+
+	components.Logger.Info("workflow-runner shutting down gracefully")
+}
+
+// dependencies holds all external dependencies needed by workflow components
+type dependencies struct {
+	redisClient     *redis.Client
+	casClient       clients.CASClient
+	workflowSDK     *sdk.SDK
+	orchestratorURL string
+}
+
+// workflowComponents holds all workflow-runner components
+type workflowComponents struct {
+	coordinator     *coordinator.Coordinator
+	httpWorker      *worker.HTTPWorker
+	hitlWorker      *worker.HITLWorker
+	runConsumer     *executor.RunRequestConsumer
+	statusConsumer  *consumer.StatusUpdateConsumer
+}
+
+// initializeDependencies sets up Redis, CAS client, and SDK
+func initializeDependencies(ctx context.Context, components *bootstrap.Components) (*dependencies, error) {
 	// Create Redis client
 	redisClient, err := createRedisClient(components)
 	if err != nil {
-		components.Logger.Error("failed to create Redis client", "error", err)
-		os.Exit(1)
+		return nil, fmt.Errorf("failed to create Redis client: %w", err)
 	}
 
 	// Ping Redis
 	if err := redisClient.Ping(ctx).Err(); err != nil {
-		components.Logger.Error("failed to ping Redis", "error", err)
-		os.Exit(1)
+		return nil, fmt.Errorf("failed to ping Redis: %w", err)
 	}
 	components.Logger.Info("connected to Redis")
 
 	// Load Lua script for apply_delta
 	luaScript, err := os.ReadFile("scripts/apply_delta.lua")
 	if err != nil {
-		components.Logger.Error("failed to load Lua script", "error", err)
-		os.Exit(1)
+		return nil, fmt.Errorf("failed to load Lua script: %w", err)
 	}
 
 	// Create Redis-based CAS client for storing execution results
-	casClient := &redisCASClient{
-		redis:  redisClient,
-		logger: components.Logger,
-	}
+	casClient := clients.NewRedisCASClient(redisClient, components.Logger)
 
 	// Create SDK
 	workflowSDK := sdk.NewSDK(redisClient, casClient, components.Logger, string(luaScript))
 
-	// Create coordinator
-	coord := coordinator.NewCoordinator(redisClient, workflowSDK, components.Logger)
-
-	// Create HTTP worker
-	httpWorker := worker.NewHTTPWorker(redisClient, workflowSDK, components.Logger)
-
-	// Create HITL worker
-	hitlWorker := worker.NewHITLWorker(redisClient, workflowSDK, components.Logger)
-
-	// Create run request consumer
+	// Get orchestrator URL
 	orchestratorURL := getEnv("ORCHESTRATOR_URL", "http://localhost:8081")
-	runConsumer := executor.NewRunRequestConsumer(redisClient, workflowSDK, components.Logger, orchestratorURL)
 
+	return &dependencies{
+		redisClient:     redisClient,
+		casClient:       casClient,
+		workflowSDK:     workflowSDK,
+		orchestratorURL: orchestratorURL,
+	}, nil
+}
+
+// createWorkflowComponents initializes all workflow-runner components
+func createWorkflowComponents(deps *dependencies, components *bootstrap.Components) *workflowComponents {
 	// TODO: Create and start supervisors when needed
 	// For MVP integration tests, we only need the coordinator
 	_ = supervisor.NewCompletionSupervisor // Avoid unused import error
 	_ = supervisor.NewTimeoutDetector
 
-	// Start components in goroutines
-	errChan := make(chan error, 4)
+	// Create run repository for status updates
+	runRepo := repository.NewRunRepository(components.DB)
+
+	return &workflowComponents{
+		coordinator: coordinator.NewCoordinator(&coordinator.CoordinatorOpts{
+			Redis:               deps.redisClient,
+			SDK:                 deps.workflowSDK,
+			Logger:              components.Logger,
+			OrchestratorBaseURL: deps.orchestratorURL,
+		}),
+		httpWorker:     worker.NewHTTPWorker(deps.redisClient, deps.workflowSDK, components.Logger),
+		hitlWorker:     worker.NewHITLWorker(deps.redisClient, deps.workflowSDK, components.Logger),
+		runConsumer:    executor.NewRunRequestConsumer(deps.redisClient, deps.workflowSDK, components.Logger, deps.orchestratorURL),
+		statusConsumer: consumer.NewStatusUpdateConsumer(deps.redisClient, runRepo, components.Logger),
+	}
+}
+
+// startComponents starts all workflow components in goroutines
+func startComponents(ctx context.Context, wc *workflowComponents, components *bootstrap.Components) chan error {
+	errChan := make(chan error, 5) // Increased to 5 for status consumer
 
 	// Start coordinator
 	go func() {
 		components.Logger.Info("starting coordinator")
-		if err := coord.Start(ctx); err != nil && err != context.Canceled {
+		if err := wc.coordinator.Start(ctx); err != nil && err != context.Canceled {
 			errChan <- fmt.Errorf("coordinator error: %w", err)
 		}
 	}()
@@ -95,7 +148,7 @@ func main() {
 	// Start HTTP worker
 	go func() {
 		components.Logger.Info("starting HTTP worker")
-		if err := httpWorker.Start(ctx); err != nil && err != context.Canceled {
+		if err := wc.httpWorker.Start(ctx); err != nil && err != context.Canceled {
 			errChan <- fmt.Errorf("HTTP worker error: %w", err)
 		}
 	}()
@@ -103,7 +156,7 @@ func main() {
 	// Start HITL worker
 	go func() {
 		components.Logger.Info("starting HITL worker")
-		if err := hitlWorker.Start(ctx); err != nil && err != context.Canceled {
+		if err := wc.hitlWorker.Start(ctx); err != nil && err != context.Canceled {
 			errChan <- fmt.Errorf("HITL worker error: %w", err)
 		}
 	}()
@@ -111,15 +164,24 @@ func main() {
 	// Start run request consumer
 	go func() {
 		components.Logger.Info("starting run request consumer")
-		if err := runConsumer.Start(ctx); err != nil && err != context.Canceled {
+		if err := wc.runConsumer.Start(ctx); err != nil && err != context.Canceled {
 			errChan <- fmt.Errorf("run request consumer error: %w", err)
 		}
 	}()
 
-	components.Logger.Info("workflow-runner started successfully",
-		"components", []string{"coordinator", "http_worker", "hitl_worker", "run_request_consumer"})
+	// Start status update consumer
+	go func() {
+		components.Logger.Info("starting status update consumer")
+		if err := wc.statusConsumer.Start(ctx); err != nil && err != context.Canceled {
+			errChan <- fmt.Errorf("status update consumer error: %w", err)
+		}
+	}()
 
-	// Wait for shutdown signal or error
+	return errChan
+}
+
+// waitForShutdown waits for either an error or shutdown signal
+func waitForShutdown(ctx context.Context, cancel context.CancelFunc, errChan chan error, components *bootstrap.Components) {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
@@ -131,8 +193,6 @@ func main() {
 		components.Logger.Info("received shutdown signal", "signal", sig)
 		cancel()
 	}
-
-	components.Logger.Info("workflow-runner shutting down gracefully")
 }
 
 // createRedisClient creates a Redis client from config
@@ -158,51 +218,4 @@ func getEnv(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
-}
-
-// redisCASClient stores CAS blobs in Redis (for workflow execution results)
-type redisCASClient struct {
-	redis  *redis.Client
-	logger sdk.Logger
-}
-
-func (c *redisCASClient) Put(data []byte, contentType string) (string, error) {
-	// Generate SHA256 hash as CAS ID
-	hash := fmt.Sprintf("sha256:%x", sha256.Sum256(data))
-	casKey := fmt.Sprintf("cas:%s", hash)
-
-	// Store in Redis with 24 hour TTL (adjust based on needs)
-	err := c.redis.Set(context.Background(), casKey, data, 24*time.Hour).Err()
-	if err != nil {
-		c.logger.Error("failed to store in CAS", "cas_id", hash, "error", err)
-		return "", fmt.Errorf("failed to store in CAS: %w", err)
-	}
-
-	c.logger.Debug("stored in CAS", "cas_id", hash, "size", len(data))
-	return hash, nil
-}
-
-func (c *redisCASClient) Get(casID string) (interface{}, error) {
-	casKey := fmt.Sprintf("cas:%s", casID)
-
-	data, err := c.redis.Get(context.Background(), casKey).Bytes()
-	if err == redis.Nil {
-		c.logger.Warn("CAS entry not found", "cas_id", casID)
-		return nil, fmt.Errorf("CAS entry not found: %s", casID)
-	}
-	if err != nil {
-		c.logger.Error("failed to get from CAS", "cas_id", casID, "error", err)
-		return nil, fmt.Errorf("failed to get from CAS: %w", err)
-	}
-
-	c.logger.Debug("retrieved from CAS", "cas_id", casID, "size", len(data))
-	return data, nil
-}
-
-func (c *redisCASClient) Store(data interface{}) (string, error) {
-	jsonData, err := json.Marshal(data)
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal data: %w", err)
-	}
-	return c.Put(jsonData, "application/json")
 }

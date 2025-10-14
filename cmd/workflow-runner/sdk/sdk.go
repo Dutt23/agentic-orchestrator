@@ -6,13 +6,14 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/lyzr/orchestrator/common/clients"
 	"github.com/redis/go-redis/v9"
 )
 
 // SDK provides core workflow execution capabilities
 type SDK struct {
 	redis     *redis.Client
-	CASClient CASClient
+	CASClient clients.CASClient
 	logger    Logger
 	script    *redis.Script
 }
@@ -26,7 +27,7 @@ type Logger interface {
 }
 
 // NewSDK creates a new SDK instance
-func NewSDK(redisClient *redis.Client, casClient CASClient, logger Logger, luaScript string) *SDK {
+func NewSDK(redisClient *redis.Client, casClient clients.CASClient, logger Logger, luaScript string) *SDK {
 	return &SDK{
 		redis:     redisClient,
 		CASClient: casClient,
@@ -163,7 +164,7 @@ func (s *SDK) LoadContext(ctx context.Context, runID string) (map[string]interfa
 
 	for key, outputRef := range outputs {
 		// Load actual output from CAS
-		output, err := s.CASClient.Get(outputRef)
+		output, err := s.CASClient.Get(ctx, outputRef)
 		if err != nil {
 			s.logger.Warn("failed to load output from CAS",
 				"key", key,
@@ -197,7 +198,7 @@ func (s *SDK) LoadNodeOutput(ctx context.Context, runID, nodeID string) (interfa
 	}
 
 	// Load from CAS
-	data, err := s.CASClient.Get(casRef)
+	data, err := s.CASClient.Get(ctx, casRef)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load node output from CAS: %w", err)
 	}
@@ -217,12 +218,12 @@ func (s *SDK) LoadNodeOutput(ctx context.Context, runID, nodeID string) (interfa
 
 // LoadConfig loads node configuration from CAS
 func (s *SDK) LoadConfig(ctx context.Context, configRef string) (interface{}, error) {
-	return s.CASClient.Get(configRef)
+	return s.CASClient.Get(ctx, configRef)
 }
 
 // LoadPayload loads payload from CAS
 func (s *SDK) LoadPayload(ctx context.Context, payloadRef string) (interface{}, error) {
-	data, err := s.CASClient.Get(payloadRef)
+	data, err := s.CASClient.Get(ctx, payloadRef)
 	if err != nil {
 		return nil, err
 	}
@@ -245,7 +246,7 @@ func (s *SDK) StoreOutput(ctx context.Context, output interface{}) (string, erro
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal output: %w", err)
 	}
-	return s.CASClient.Put(data, "application/json")
+	return s.CASClient.Put(ctx, data, "application/json")
 }
 
 // GetCounter returns the current counter value

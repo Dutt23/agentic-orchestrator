@@ -4,46 +4,46 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/compiler"
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/sdk"
+	"github.com/lyzr/orchestrator/common/clients"
 	"github.com/redis/go-redis/v9"
 )
 
 // RunRequestConsumer listens to wf.run.requests stream and starts workflow execution
 type RunRequestConsumer struct {
-	redis           *redis.Client
-	sdk             *sdk.SDK
-	logger          sdk.Logger
-	stream          string
-	consumerGroup   string
-	consumerName    string
-	orchestratorURL string
+	redis              *redis.Client
+	sdk                *sdk.SDK
+	logger             sdk.Logger
+	stream             string
+	consumerGroup      string
+	consumerName       string
+	orchestratorClient *clients.OrchestratorClient
 }
 
 // RunRequest represents a workflow execution request
 type RunRequest struct {
-	RunID     string                 `json:"run_id"`
-	Tag       string                 `json:"tag"`
-	Username  string                 `json:"username"`
-	Inputs    map[string]interface{} `json:"inputs"`
-	CreatedAt int64                  `json:"created_at"`
+	RunID      string                 `json:"run_id"`
+	ArtifactID string                 `json:"artifact_id"`
+	Tag        string                 `json:"tag"`
+	Username   string                 `json:"username"`
+	Inputs     map[string]interface{} `json:"inputs"`
+	CreatedAt  int64                  `json:"created_at"`
 }
 
 // NewRunRequestConsumer creates a new run request consumer
 func NewRunRequestConsumer(redisClient *redis.Client, workflowSDK *sdk.SDK, logger sdk.Logger, orchestratorURL string) *RunRequestConsumer {
 	return &RunRequestConsumer{
-		redis:           redisClient,
-		sdk:             workflowSDK,
-		logger:          logger,
-		stream:          "wf.run.requests",
-		consumerGroup:   "run_executors",
-		consumerName:    fmt.Sprintf("executor_%s", uuid.New().String()[:8]),
-		orchestratorURL: orchestratorURL,
+		redis:              redisClient,
+		sdk:                workflowSDK,
+		logger:             logger,
+		stream:             "wf.run.requests",
+		consumerGroup:      "run_executors",
+		consumerName:       fmt.Sprintf("executor_%s", uuid.New().String()[:8]),
+		orchestratorClient: clients.NewOrchestratorClient(orchestratorURL, logger),
 	}
 }
 
@@ -127,6 +127,7 @@ func (c *RunRequestConsumer) handleMessage(ctx context.Context, message redis.XM
 
 	c.logger.Info("processing run request",
 		"run_id", runRequest.RunID,
+		"artifact_id", runRequest.ArtifactID,
 		"tag", runRequest.Tag)
 
 	// Check idempotency: ensure this run hasn't started already
@@ -141,13 +142,18 @@ func (c *RunRequestConsumer) handleMessage(ctx context.Context, message redis.XM
 		return nil
 	}
 
-	// Fetch workflow from orchestrator
-	workflow, err := c.fetchWorkflow(ctx, runRequest.Tag, runRequest.Username)
+	// Add username to context for authentication
+	ctx = clients.WithUserID(ctx, runRequest.Username)
+
+	// Fetch frozen workflow from artifact
+	workflow, err := c.fetchWorkflowFromArtifact(ctx, runRequest.ArtifactID)
 	if err != nil {
-		return fmt.Errorf("failed to fetch workflow: %w", err)
+		return fmt.Errorf("failed to fetch workflow from artifact: %w", err)
 	}
 
-	c.logger.Info("wf", workflow)
+	c.logger.Info("fetched frozen workflow from artifact",
+		"artifact_id", runRequest.ArtifactID,
+		"nodes", len(workflow.Nodes))
 	// Compile workflow to IR
 	ir, err := compiler.CompileWorkflowSchema(workflow, c.sdk.CASClient)
 	if err != nil {
@@ -283,45 +289,21 @@ func (c *RunRequestConsumer) handleMessage(ctx context.Context, message redis.XM
 	return nil
 }
 
-// fetchWorkflow fetches workflow from orchestrator API
-func (c *RunRequestConsumer) fetchWorkflow(ctx context.Context, tag, username string) (*compiler.WorkflowSchema, error) {
-	// Call orchestrator API: GET /api/v1/workflows/:tag?materialize=true
-	url := fmt.Sprintf("%s/api/v1/workflows/%s?materialize=true", c.orchestratorURL, tag)
-
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+// fetchWorkflowFromArtifact fetches frozen workflow from artifact by ID
+// Requires: ctx with UserID set via WithUserID()
+func (c *RunRequestConsumer) fetchWorkflowFromArtifact(ctx context.Context, artifactID string) (*compiler.WorkflowSchema, error) {
+	// Use orchestrator client to fetch artifact
+	artifact, err := c.orchestratorClient.GetArtifact(ctx, artifactID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		return nil, fmt.Errorf("failed to get artifact: %w", err)
 	}
 
-	// Set user from run request
-	req.Header.Set("X-User-ID", username)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch workflow: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("orchestrator returned status %d: %s", resp.StatusCode, string(body))
+	if artifact.Content == nil {
+		return nil, fmt.Errorf("artifact content is null")
 	}
 
-	// Parse response
-	var response struct {
-		Workflow map[string]interface{} `json:"workflow"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	if response.Workflow == nil {
-		return nil, fmt.Errorf("workflow is null (materialize=true required)")
-	}
-
-	// Convert to WorkflowSchema
-	schemaJSON, err := json.Marshal(response.Workflow)
+	// Convert content to WorkflowSchema
+	schemaJSON, err := json.Marshal(artifact.Content)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal workflow: %w", err)
 	}

@@ -101,7 +101,7 @@ return {new_value, 1, hit_zero}
 	workflowSDK := sdk.NewSDK(redisClient, casClient, logger, luaScript)
 
 	// Create coordinator
-	coord := coordinator.NewCoordinator(redisClient, workflowSDK, logger)
+	coord := coordinator.NewCoordinator(redisClient, workflowSDK, logger, "http://localhost")
 
 	// Start coordinator in background
 	go func() {

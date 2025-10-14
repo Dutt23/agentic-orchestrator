@@ -124,13 +124,6 @@ type ApplyDeltaResult struct {
 	HitZero      bool
 }
 
-// CASClient interface for content-addressable storage
-type CASClient interface {
-	Get(ref string) (interface{}, error)
-	Put(data []byte, mediaType string) (string, error)
-	Store(data interface{}) (string, error)
-}
-
 // EventType represents different evenyest types in the system
 type EventType string
 
