@@ -443,6 +443,44 @@ function NodeMetricCard({ nodeId, execution, isSelected, onClick }) {
             </HStack>
           )}
 
+          {/* System Information */}
+          {metrics.system && (
+            <>
+              <Divider />
+              <Box>
+                <Text color="blue.600" fontWeight="bold" mb={1}>
+                  System Info:
+                </Text>
+                <VStack align="stretch" spacing={1} fontSize="xs">
+                  <HStack justify="space-between">
+                    <Text color="gray.600">OS:</Text>
+                    <Text fontWeight="medium">{metrics.system.os} {metrics.system.os_version}</Text>
+                  </HStack>
+                  <HStack justify="space-between">
+                    <Text color="gray.600">Arch:</Text>
+                    <Text fontWeight="medium">{metrics.system.arch}</Text>
+                  </HStack>
+                  <HStack justify="space-between">
+                    <Text color="gray.600">CPUs:</Text>
+                    <Text fontWeight="medium">{metrics.system.cpu_cores}p / {metrics.system.cpu_logical}l</Text>
+                  </HStack>
+                  <HStack justify="space-between">
+                    <Text color="gray.600">RAM:</Text>
+                    <Text fontWeight="medium">{metrics.system.total_memory_mb} MB</Text>
+                  </HStack>
+                  {metrics.system.in_container && (
+                    <HStack justify="space-between">
+                      <Text color="gray.600">Container:</Text>
+                      <Badge colorScheme="purple" fontSize="9px">
+                        {metrics.system.container_runtime || 'yes'}
+                      </Badge>
+                    </HStack>
+                  )}
+                </VStack>
+              </Box>
+            </>
+          )}
+
           {/* Error Details */}
           {execution.error && (
             <>

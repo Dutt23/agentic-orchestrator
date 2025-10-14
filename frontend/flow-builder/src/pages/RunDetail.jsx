@@ -636,6 +636,39 @@ function NodeExecutionDetails({ nodeExecutions, selectedNode }) {
               <NodeMetricsDisplay metrics={execution.metrics} />
             </Box>
           )}
+
+          {execution.metrics?.system && (
+            <Box>
+              <Text fontWeight="bold" mb={2}>
+                System Information:
+              </Text>
+              <Card variant="info">
+                <KeyValueList
+                  items={[
+                    { label: 'OS', value: execution.metrics.system.os },
+                    { label: 'OS Version', value: execution.metrics.system.os_version },
+                    { label: 'Architecture', value: execution.metrics.system.arch },
+                    { label: 'Hostname', value: execution.metrics.system.hostname, code: true },
+                    { label: 'CPU Cores', value: `${execution.metrics.system.cpu_cores} physical / ${execution.metrics.system.cpu_logical} logical` },
+                    { label: 'Total Memory', value: `${execution.metrics.system.total_memory_mb} MB` },
+                    {
+                      label: 'Container',
+                      value: execution.metrics.system.in_container
+                        ? `Yes (${execution.metrics.system.container_runtime || 'unknown'})`
+                        : 'No',
+                      badge: execution.metrics.system.in_container,
+                      colorScheme: execution.metrics.system.in_container ? 'purple' : 'gray'
+                    },
+                    {
+                      label: 'Runtime Version',
+                      value: execution.metrics.system.go_version || execution.metrics.system.python_version,
+                      code: true
+                    },
+                  ]}
+                />
+              </Card>
+            </Box>
+          )}
         </VStack>
       </Box>
     </VStack>

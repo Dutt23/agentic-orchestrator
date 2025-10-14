@@ -224,17 +224,18 @@ type NodeExecution struct {
 
 // ExecutionMetrics represents performance metrics for node execution
 type ExecutionMetrics struct {
-	SentAt          string  `json:"sent_at"`
-	StartTime       string  `json:"start_time"`
-	EndTime         string  `json:"end_time"`
-	QueueTimeMs     int     `json:"queue_time_ms"`
-	ExecutionTimeMs int     `json:"execution_time_ms"`
-	TotalDurationMs int     `json:"total_duration_ms"`
-	MemoryStartMb   float64 `json:"memory_start_mb"`
-	MemoryPeakMb    float64 `json:"memory_peak_mb"`
-	MemoryEndMb     float64 `json:"memory_end_mb"`
-	CpuPercent      float64 `json:"cpu_percent"`
-	ThreadCount     int     `json:"thread_count"`
+	SentAt          string                 `json:"sent_at"`
+	StartTime       string                 `json:"start_time"`
+	EndTime         string                 `json:"end_time"`
+	QueueTimeMs     int                    `json:"queue_time_ms"`
+	ExecutionTimeMs int                    `json:"execution_time_ms"`
+	TotalDurationMs int                    `json:"total_duration_ms"`
+	MemoryStartMb   float64                `json:"memory_start_mb"`
+	MemoryPeakMb    float64                `json:"memory_peak_mb"`
+	MemoryEndMb     float64                `json:"memory_end_mb"`
+	CpuPercent      float64                `json:"cpu_percent"`
+	ThreadCount     int                    `json:"thread_count"`
+	System          map[string]interface{} `json:"system,omitempty"` // System information
 }
 
 // PatchInfo represents a patch applied during execution
@@ -286,6 +287,11 @@ func parseMetrics(metricsData map[string]interface{}) *ExecutionMetrics {
 	}
 	if v, ok := metricsData["cpu_percent"].(float64); ok {
 		metrics.CpuPercent = v
+	}
+
+	// Extract system information (nested map)
+	if systemData, ok := metricsData["system"].(map[string]interface{}); ok {
+		metrics.System = systemData
 	}
 
 	return metrics
