@@ -569,7 +569,7 @@ func (c *Coordinator) loadIR(ctx context.Context, runID string) (*sdk.IR, error)
 // publishToken publishes a token to a Redis stream with resolved config
 func (c *Coordinator) publishToken(ctx context.Context, stream, runID, fromNode, toNode, payloadRef string, resolvedConfig map[string]interface{}, ir *sdk.IR) error {
 	// Generate unique job ID for this token
-	jobID := fmt.Sprintf("%s-%s-%s", runID, toNode, time.Now().UnixNano())
+	jobID := fmt.Sprintf("%s-%s-%d", runID, toNode, time.Now().UnixNano())
 
 	// Debug log the resolvedConfig
 	c.logger.Info("publishToken called",

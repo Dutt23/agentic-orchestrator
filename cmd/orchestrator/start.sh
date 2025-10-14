@@ -16,7 +16,7 @@ fi
 export SERVICE_NAME="${SERVICE_NAME}"
 export PORT="${ORCHESTRATOR_PORT:-8081}"
 export LOG_LEVEL="${LOG_LEVEL:-info}"
-export LOG_FORMAT="${LOG_FORMAT:-json}"
+export LOG_FORMAT="${LOG_FORMAT:-text}"
 
 # Performance tuning
 export GOMAXPROCS="${GOMAXPROCS:-8}"

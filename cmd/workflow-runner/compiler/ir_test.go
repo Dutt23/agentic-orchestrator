@@ -1,10 +1,11 @@
 package compiler
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
-	"github.com/lyzr/orchestrator/cmd/workflow-runner/sdk"
+	_ "github.com/lyzr/orchestrator/cmd/workflow-runner/sdk"
 )
 
 // MockCASClient for testing
@@ -18,7 +19,7 @@ func NewMockCASClient() *MockCASClient {
 	}
 }
 
-func (m *MockCASClient) Get(ref string) (interface{}, error) {
+func (m *MockCASClient) Get(ctx context.Context, ref string) (interface{}, error) {
 	data, exists := m.storage[ref]
 	if !exists {
 		return nil, nil
@@ -28,15 +29,15 @@ func (m *MockCASClient) Get(ref string) (interface{}, error) {
 	return result, nil
 }
 
-func (m *MockCASClient) Put(data []byte, mediaType string) (string, error) {
+func (m *MockCASClient) Put(ctx context.Context, data []byte, mediaType string) (string, error) {
 	ref := "cas://test-" + string(data[:10])
 	m.storage[ref] = data
 	return ref, nil
 }
 
-func (m *MockCASClient) Store(data interface{}) (string, error) {
+func (m *MockCASClient) Store(ctx context.Context, data interface{}) (string, error) {
 	jsonData, _ := json.Marshal(data)
-	return m.Put(jsonData, "application/json")
+	return m.Put(ctx, jsonData, "application/json")
 }
 
 // TestCompileWorkflowSchema_SimpleSequential tests A->B->C sequential workflow
@@ -64,27 +65,33 @@ func TestCompileWorkflowSchema_SimpleSequential(t *testing.T) {
 		t.Errorf("Expected 3 nodes, got %d", len(ir.Nodes))
 	}
 
-	// Verify all nodes are type "task"
-	for _, node := range ir.Nodes {
-		if node.Type != "task" {
-			t.Errorf("Node %s: expected type 'task', got '%s'", node.ID, node.Type)
-		}
+	// Verify node types are preserved
+	nodeA := ir.Nodes["A"]
+	if nodeA.Type != "function" {
+		t.Errorf("Node A: expected type 'function', got '%s'", nodeA.Type)
+	}
+
+	nodeB := ir.Nodes["B"]
+	if nodeB.Type != "transform" {
+		t.Errorf("Node B: expected type 'transform', got '%s'", nodeB.Type)
+	}
+
+	nodeC := ir.Nodes["C"]
+	if nodeC.Type != "http" {
+		t.Errorf("Node C: expected type 'http', got '%s'", nodeC.Type)
 	}
 
 	// Verify dependencies
-	nodeB := ir.Nodes["B"]
 	if len(nodeB.Dependencies) != 1 || nodeB.Dependencies[0] != "A" {
 		t.Errorf("Node B: expected dependency [A], got %v", nodeB.Dependencies)
 	}
 
 	// Verify terminal node
-	nodeC := ir.Nodes["C"]
 	if !nodeC.IsTerminal {
 		t.Errorf("Node C should be marked as terminal")
 	}
 
 	// Verify entry node
-	nodeA := ir.Nodes["A"]
 	if len(nodeA.Dependencies) != 0 {
 		t.Errorf("Node A should have no dependencies (entry node)")
 	}
@@ -255,12 +262,22 @@ func TestCompileWorkflowSchema_Loop(t *testing.T) {
 
 // TestCompileWorkflowSchema_TypeMapping tests all type mappings
 func TestCompileWorkflowSchema_TypeMapping(t *testing.T) {
-	types := []string{"function", "http", "transform", "aggregate", "filter", "parallel"}
+	tests := []struct {
+		inputType    string
+		expectedType string
+	}{
+		{"function", "function"},   // Executable types are preserved
+		{"http", "http"},
+		{"transform", "transform"},
+		{"aggregate", "aggregate"},
+		{"filter", "filter"},
+		{"parallel", "task"},       // Control flow type mapped to task
+	}
 
-	for _, nodeType := range types {
+	for _, tt := range tests {
 		schema := &WorkflowSchema{
 			Nodes: []WorkflowNode{
-				{ID: "test", Type: nodeType, Config: map[string]interface{}{}},
+				{ID: "test", Type: tt.inputType, Config: map[string]interface{}{}},
 			},
 			Edges: []WorkflowEdge{},
 		}
@@ -268,13 +285,14 @@ func TestCompileWorkflowSchema_TypeMapping(t *testing.T) {
 		casClient := NewMockCASClient()
 		ir, err := CompileWorkflowSchema(schema, casClient)
 		if err != nil {
-			t.Errorf("Failed to compile node type '%s': %v", nodeType, err)
+			t.Errorf("Failed to compile node type '%s': %v", tt.inputType, err)
 			continue
 		}
 
 		node := ir.Nodes["test"]
-		if node.Type != "task" {
-			t.Errorf("Type '%s': expected IR type 'task', got '%s'", nodeType, node.Type)
+		// Verify the type mapping is correct
+		if node.Type != tt.expectedType {
+			t.Errorf("Type '%s': expected IR type '%s', got '%s'", tt.inputType, tt.expectedType, node.Type)
 		}
 	}
 }

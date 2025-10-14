@@ -23,8 +23,8 @@ func NewRunPatchRepository(database *db.DB) *RunPatchRepository {
 // Create inserts a new run patch
 func (r *RunPatchRepository) Create(ctx context.Context, runPatch *models.RunPatch) error {
 	query := `
-		INSERT INTO run_patches (id, run_id, artifact_id, seq, description, created_by)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO run_patches (id, run_id, artifact_id, seq, node_id, description, created_by)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING created_at
 	`
 
@@ -35,12 +35,13 @@ func (r *RunPatchRepository) Create(ctx context.Context, runPatch *models.RunPat
 		runPatch.RunID,
 		runPatch.ArtifactID,
 		runPatch.Seq,
+		runPatch.NodeID,
 		runPatch.Description,
 		runPatch.CreatedBy,
 	)
 
 	if err != nil {
-		return fmt.Errorf("failed to create CAS blob: %w", err)
+		return fmt.Errorf("failed to create run patch: %w", err)
 	}
 
 	return nil
@@ -49,7 +50,7 @@ func (r *RunPatchRepository) Create(ctx context.Context, runPatch *models.RunPat
 // GetByRunID retrieves all patches for a specific run, ordered by sequence
 func (r *RunPatchRepository) GetByRunID(ctx context.Context, runID string) ([]*models.RunPatch, error) {
 	query := `
-		SELECT id, run_id, artifact_id, seq, description, created_at, created_by
+		SELECT id, run_id, artifact_id, seq, node_id, description, created_at, created_by
 		FROM run_patches
 		WHERE run_id = $1
 		ORDER BY seq ASC
@@ -64,7 +65,7 @@ func (r *RunPatchRepository) GetByRunID(ctx context.Context, runID string) ([]*m
 	var patches []*models.RunPatch
 	for rows.Next() {
 		patch := &models.RunPatch{}
-		err := rows.Scan(&patch.ID, &patch.RunID, &patch.ArtifactID, &patch.Seq, &patch.Description, &patch.CreatedAt, &patch.CreatedBy)
+		err := rows.Scan(&patch.ID, &patch.RunID, &patch.ArtifactID, &patch.Seq, &patch.NodeID, &patch.Description, &patch.CreatedAt, &patch.CreatedBy)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan run patch: %w", err)
 		}
@@ -86,6 +87,7 @@ func (r *RunPatchRepository) GetByRunIDWithDetails(ctx context.Context, runID st
 			rp.run_id,
 			rp.artifact_id,
 			rp.seq,
+			rp.node_id,
 			rp.description,
 			rp.created_at,
 			rp.created_by,
@@ -112,6 +114,7 @@ func (r *RunPatchRepository) GetByRunIDWithDetails(ctx context.Context, runID st
 			&patch.RunID,
 			&patch.ArtifactID,
 			&patch.Seq,
+			&patch.NodeID,
 			&patch.Description,
 			&patch.CreatedAt,
 			&patch.CreatedBy,
@@ -152,13 +155,13 @@ func (r *RunPatchRepository) GetNextSeq(ctx context.Context, runID string) (int,
 // GetByID retrieves a specific run patch by ID
 func (r *RunPatchRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.RunPatch, error) {
 	query := `
-		SELECT id, run_id, artifact_id, seq, description, created_at, created_by
+		SELECT id, run_id, artifact_id, seq, node_id, description, created_at, created_by
 		FROM run_patches
 		WHERE id = $1
 	`
 
 	patch := &models.RunPatch{}
-	err := r.db.QueryRow(ctx, query, id).Scan(&patch.ID, &patch.RunID, &patch.ArtifactID, &patch.Seq, &patch.Description, &patch.CreatedAt, &patch.CreatedBy)
+	err := r.db.QueryRow(ctx, query, id).Scan(&patch.ID, &patch.RunID, &patch.ArtifactID, &patch.Seq, &patch.NodeID, &patch.Description, &patch.CreatedAt, &patch.CreatedBy)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

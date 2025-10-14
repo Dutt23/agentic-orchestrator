@@ -61,6 +61,47 @@ func (c *Client) Get(ctx context.Context, key string) (string, error) {
 	return val, nil
 }
 
+// GetMultiple retrieves multiple keys using pipeline (single network round-trip)
+// Returns a map of key -> value. Keys that don't exist are omitted from result.
+func (c *Client) GetMultiple(ctx context.Context, keys []string) (map[string]string, error) {
+	if len(keys) == 0 {
+		return make(map[string]string), nil
+	}
+
+	pipe := c.redis.Pipeline()
+	cmds := make([]*redis.StringCmd, len(keys))
+
+	// Queue all GET commands
+	for i, key := range keys {
+		cmds[i] = pipe.Get(ctx, key)
+	}
+
+	// Execute pipeline
+	_, err := pipe.Exec(ctx)
+	if err != nil && err != redis.Nil {
+		c.logger.Error("redis pipeline GET failed", "key_count", len(keys), "error", err)
+		return nil, fmt.Errorf("failed to get multiple keys: %w", err)
+	}
+
+	// Collect results
+	result := make(map[string]string)
+	for i, cmd := range cmds {
+		val, err := cmd.Result()
+		if err == redis.Nil {
+			// Key doesn't exist, skip it
+			continue
+		}
+		if err != nil {
+			c.logger.Warn("redis GET failed for key in pipeline", "key", keys[i], "error", err)
+			continue
+		}
+		result[keys[i]] = val
+	}
+
+	c.logger.Debug("redis pipeline GET", "requested", len(keys), "found", len(result))
+	return result, nil
+}
+
 // SetNX sets a key only if it doesn't exist (for idempotency checks)
 func (c *Client) SetNX(ctx context.Context, key, value string, expiry time.Duration) (bool, error) {
 	wasSet, err := c.redis.SetNX(ctx, key, value, expiry).Result()
@@ -142,6 +183,32 @@ func (c *Client) SetHash(ctx context.Context, key, field, value string) error {
 		return fmt.Errorf("failed to set hash %s field %s: %w", key, field, err)
 	}
 	c.logger.Debug("redis HSET", "key", key, "field", field)
+	return nil
+}
+
+// GetAllHash retrieves all fields and values of a hash
+func (c *Client) GetAllHash(ctx context.Context, key string) (map[string]string, error) {
+	val, err := c.redis.HGetAll(ctx, key).Result()
+	if err != nil {
+		c.logger.Error("redis HGETALL failed", "key", key, "error", err)
+		return nil, fmt.Errorf("failed to get all hash fields %s: %w", key, err)
+	}
+	c.logger.Debug("redis HGETALL", "key", key, "field_count", len(val))
+	return val, nil
+}
+
+// Set sets a key with optional expiration (0 = no expiration)
+func (c *Client) Set(ctx context.Context, key, value string, expiry time.Duration) error {
+	err := c.redis.Set(ctx, key, value, expiry).Err()
+	if err != nil {
+		c.logger.Error("redis SET failed", "key", key, "error", err)
+		return fmt.Errorf("failed to set key %s: %w", key, err)
+	}
+	if expiry > 0 {
+		c.logger.Debug("redis SET", "key", key, "expiry", expiry)
+	} else {
+		c.logger.Debug("redis SET", "key", key)
+	}
 	return nil
 }
 

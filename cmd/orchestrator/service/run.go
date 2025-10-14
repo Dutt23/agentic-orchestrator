@@ -10,7 +10,7 @@ import (
 	"github.com/lyzr/orchestrator/cmd/orchestrator/models"
 	"github.com/lyzr/orchestrator/cmd/orchestrator/repository"
 	"github.com/lyzr/orchestrator/common/bootstrap"
-	"github.com/redis/go-redis/v9"
+	rediscommon "github.com/lyzr/orchestrator/common/redis"
 )
 
 // RunService handles business logic for workflow runs
@@ -20,8 +20,9 @@ type RunService struct {
 	casService      *CASService
 	workflowSvc     *WorkflowServiceV2
 	materializerSvc *MaterializerService
+	runPatchService *RunPatchService
 	components      *bootstrap.Components
-	redis           *redis.Client
+	redis           *rediscommon.Client
 }
 
 // NewRunService creates a new run service
@@ -31,8 +32,9 @@ func NewRunService(
 	casService *CASService,
 	workflowSvc *WorkflowServiceV2,
 	materializerSvc *MaterializerService,
+	runPatchService *RunPatchService,
 	components *bootstrap.Components,
-	redis *redis.Client,
+	redis *rediscommon.Client,
 ) *RunService {
 	return &RunService{
 		runRepo:         runRepo,
@@ -40,6 +42,7 @@ func NewRunService(
 		casService:      casService,
 		workflowSvc:     workflowSvc,
 		materializerSvc: materializerSvc,
+		runPatchService: runPatchService,
 		components:      components,
 		redis:           redis,
 	}
@@ -157,13 +160,9 @@ func (s *RunService) CreateRun(ctx context.Context, req *CreateRunRequest) (*Cre
 		return nil, fmt.Errorf("failed to marshal run request: %w", err)
 	}
 
-	err = s.redis.XAdd(ctx, &redis.XAddArgs{
-		Stream: "wf.run.requests",
-		Values: map[string]interface{}{
-			"request": string(requestJSON),
-		},
-	}).Err()
-
+	_, err = s.redis.AddToStream(ctx, "wf.run.requests", map[string]interface{}{
+		"request": string(requestJSON),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to publish run request: %w", err)
 	}
@@ -202,10 +201,11 @@ func (s *RunService) ListRunsForWorkflow(ctx context.Context, tag string, limit 
 
 // RunDetails represents comprehensive run information
 type RunDetails struct {
-	Run            *models.Run                   `json:"run"`
-	WorkflowIR     map[string]interface{}        `json:"workflow_ir"`
-	NodeExecutions map[string]*NodeExecution     `json:"node_executions"`
-	Patches        []PatchInfo                   `json:"patches,omitempty"`
+	Run             *models.Run                   `json:"run"`
+	BaseWorkflowIR  map[string]interface{}        `json:"base_workflow_ir"` // Workflow before any patches
+	WorkflowIR      map[string]interface{}        `json:"workflow_ir"`      // Workflow after all patches
+	NodeExecutions  map[string]*NodeExecution     `json:"node_executions"`
+	Patches         []PatchInfo                   `json:"patches,omitempty"`
 }
 
 // NodeExecution represents execution details for a single node
@@ -222,29 +222,17 @@ type NodeExecution struct {
 // PatchInfo represents a patch applied during execution
 type PatchInfo struct {
 	Seq         int                      `json:"seq"`
+	NodeID      *string                  `json:"node_id,omitempty"` // Which node generated this patch
 	Operations  []map[string]interface{} `json:"operations"`
 	Description string                   `json:"description"`
 }
 
-// GetRunDetails retrieves comprehensive run details including execution data
-func (s *RunService) GetRunDetails(ctx context.Context, runID uuid.UUID) (*RunDetails, error) {
-	// 1. Get run from database
-	run, err := s.runRepo.GetByID(ctx, runID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get run: %w", err)
-	}
-
-	// 2. Load workflow IR from Redis
+// loadWorkflowIR loads the workflow IR from Redis for a given run
+func (s *RunService) loadWorkflowIR(ctx context.Context, runID uuid.UUID) (map[string]interface{}, error) {
 	irKey := fmt.Sprintf("ir:%s", runID.String())
-	irJSON, err := s.redis.Get(ctx, irKey).Result()
+	irJSON, err := s.redis.Get(ctx, irKey)
 	if err != nil {
-		s.components.Logger.Warn("failed to load IR from Redis (may have expired)", "run_id", runID, "error", err)
-		// Return partial data without execution details
-		return &RunDetails{
-			Run:            run,
-			WorkflowIR:     make(map[string]interface{}),
-			NodeExecutions: make(map[string]*NodeExecution),
-		}, nil
+		return nil, fmt.Errorf("failed to load IR from Redis: %w", err)
 	}
 
 	var workflowIR map[string]interface{}
@@ -252,90 +240,234 @@ func (s *RunService) GetRunDetails(ctx context.Context, runID uuid.UUID) (*RunDe
 		return nil, fmt.Errorf("failed to unmarshal IR: %w", err)
 	}
 
-	// 3. Load node execution context from Redis
-	contextKey := fmt.Sprintf("context:%s", runID.String())
-	nodeExecutions := make(map[string]*NodeExecution)
-
-	// Get all fields from the context hash
-	contextData, err := s.redis.HGetAll(ctx, contextKey).Result()
-	if err != nil {
-		s.components.Logger.Warn("failed to load context", "run_id", runID, "error", err)
-	}
-
-	// Parse node outputs and build execution map
-	nodes, ok := workflowIR["nodes"].(map[string]interface{})
-	if ok {
-		// Determine default status based on overall run status
-		defaultStatus := "pending"
-		if run.Status == models.StatusCompleted {
-			defaultStatus = "completed" // If run completed, assume nodes completed
-		} else if run.Status == models.StatusFailed {
-			defaultStatus = "failed" // If run failed, nodes may have failed
-		} else if run.Status == models.StatusRunning {
-			defaultStatus = "running"
-		}
-
-		for nodeID := range nodes {
-			execution := &NodeExecution{
-				NodeID: nodeID,
-				Status: defaultStatus, // Use inferred status
-			}
-
-			// Check if node has output in context (more specific status)
-			outputKey := nodeID + ":output"
-			if outputRef, exists := contextData[outputKey]; exists {
-				// Load output from CAS
-				if output, err := s.loadFromCAS(ctx, outputRef); err == nil {
-					execution.Output = output
-					execution.Status = "completed"
-				} else {
-					s.components.Logger.Warn("failed to load output from CAS",
-						"node_id", nodeID,
-						"cas_ref", outputRef,
-						"error", err)
-				}
-			}
-
-			// Check for failure (overrides other status)
-			failureKey := nodeID + ":failure"
-			if failureData, exists := contextData[failureKey]; exists {
-				var failure map[string]interface{}
-				if err := json.Unmarshal([]byte(failureData), &failure); err == nil {
-					execution.Status = "failed"
-					if errMsg, ok := failure["error"].(string); ok {
-						execution.Error = &errMsg
-					}
-				}
-			}
-
-			nodeExecutions[nodeID] = execution
-		}
-	}
-
-	// 4. TODO: Load patches if this run had any
-	// For now, return empty patches array
-	patches := []PatchInfo{}
-
-	return &RunDetails{
-		Run:            run,
-		WorkflowIR:     workflowIR,
-		NodeExecutions: nodeExecutions,
-		Patches:        patches,
-	}, nil
+	return workflowIR, nil
 }
 
-// loadFromCAS helper to load and parse CAS data
-func (s *RunService) loadFromCAS(ctx context.Context, casRef string) (map[string]interface{}, error) {
-	casKey := fmt.Sprintf("cas:%s", casRef)
-	data, err := s.redis.Get(ctx, casKey).Result()
+// loadBaseWorkflow loads the base workflow (before patches) from the artifact
+func (s *RunService) loadBaseWorkflow(ctx context.Context, run *models.Run) (map[string]interface{}, error) {
+	// Parse base_ref to get artifact ID
+	artifactID, err := uuid.Parse(run.BaseRef)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("invalid base_ref: %w", err)
 	}
 
-	var result map[string]interface{}
-	if err := json.Unmarshal([]byte(data), &result); err != nil {
-		return nil, err
+	// Get artifact
+	artifact, err := s.artifactRepo.GetByID(ctx, artifactID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get base artifact: %w", err)
 	}
 
-	return result, nil
+	// Load workflow from CAS
+	workflowJSON, err := s.casService.GetContent(ctx, artifact.CasID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load workflow from CAS: %w", err)
+	}
+
+	var baseWorkflow map[string]interface{}
+	if err := json.Unmarshal(workflowJSON, &baseWorkflow); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal base workflow: %w", err)
+	}
+
+	return baseWorkflow, nil
+}
+
+// loadContextData loads the context hash data from Redis for a given run
+func (s *RunService) loadContextData(ctx context.Context, runID uuid.UUID) (map[string]string, error) {
+	contextKey := fmt.Sprintf("context:%s", runID.String())
+	contextData, err := s.redis.GetAllHash(ctx, contextKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load context: %w", err)
+	}
+	return contextData, nil
+}
+
+// bulkFetchCASData fetches CAS data in bulk for the given node outputs
+func (s *RunService) bulkFetchCASData(ctx context.Context, contextData map[string]string, nodes map[string]interface{}) (map[string]map[string]interface{}, error) {
+	// Collect all CAS IDs for bulk fetch
+	casRefs := make([]string, 0)
+	casRefToNodeID := make(map[string]string)
+
+	for nodeID := range nodes {
+		outputKey := nodeID + ":output"
+		if outputRef, exists := contextData[outputKey]; exists {
+			casRefs = append(casRefs, outputRef)
+			casRefToNodeID[outputRef] = nodeID
+		}
+	}
+
+	casDataMap := make(map[string]map[string]interface{})
+	if len(casRefs) == 0 {
+		return casDataMap, nil
+	}
+
+	// Build cas keys
+	casKeys := make([]string, len(casRefs))
+	for i, casRef := range casRefs {
+		casKeys[i] = fmt.Sprintf("cas:%s", casRef)
+	}
+
+	// Bulk GET with pipeline
+	casResults, err := s.redis.GetMultiple(ctx, casKeys)
+	if err != nil {
+		return nil, fmt.Errorf("failed to bulk fetch CAS data: %w", err)
+	}
+
+	// Parse all CAS results
+	for casKey, data := range casResults {
+		// Extract casRef from "cas:{casRef}"
+		casRef := casKey[4:] // Remove "cas:" prefix
+
+		var result map[string]interface{}
+		if err := json.Unmarshal([]byte(data), &result); err != nil {
+			s.components.Logger.Warn("failed to unmarshal CAS data",
+				"cas_ref", casRef,
+				"error", err)
+			continue
+		}
+		casDataMap[casRef] = result
+	}
+
+	return casDataMap, nil
+}
+
+// buildNodeExecutions builds the node execution map from workflow IR, context data, and CAS data
+func (s *RunService) buildNodeExecutions(
+	ctx context.Context,
+	run *models.Run,
+	workflowIR map[string]interface{},
+	contextData map[string]string,
+	casDataMap map[string]map[string]interface{},
+) map[string]*NodeExecution {
+	nodeExecutions := make(map[string]*NodeExecution)
+
+	nodes, ok := workflowIR["nodes"].(map[string]interface{})
+	if !ok {
+		return nodeExecutions
+	}
+
+	// Use centralized status logic from Run model
+	defaultStatus := run.GetDefaultNodeStatus()
+
+	for nodeID := range nodes {
+		execution := &NodeExecution{
+			NodeID: nodeID,
+			Status: defaultStatus, // Use inferred status
+		}
+
+		// Check if node has output in context (more specific status)
+		outputKey := nodeID + ":output"
+		if outputRef, exists := contextData[outputKey]; exists {
+			// Get output from bulk-fetched CAS data
+			if output, found := casDataMap[outputRef]; found {
+				execution.Output = output
+				execution.Status = "completed"
+			}
+		}
+
+		// Check for failure (overrides other status)
+		failureKey := nodeID + ":failure"
+		if failureData, exists := contextData[failureKey]; exists {
+			var failure map[string]interface{}
+			if err := json.Unmarshal([]byte(failureData), &failure); err == nil {
+				execution.Status = "failed"
+				if errMsg, ok := failure["error"].(string); ok {
+					execution.Error = &errMsg
+				}
+			}
+		}
+
+		nodeExecutions[nodeID] = execution
+	}
+
+	return nodeExecutions
+}
+
+// loadRunPatches loads patches for the given run with operations
+func (s *RunService) loadRunPatches(ctx context.Context, runID uuid.UUID) ([]PatchInfo, error) {
+	patches := []PatchInfo{}
+
+	patchesWithOps, err := s.runPatchService.GetRunPatchesWithOperations(ctx, runID.String())
+	if err != nil {
+		return patches, fmt.Errorf("failed to load patches with operations: %w", err)
+	}
+
+	// Convert to PatchInfo format
+	for _, p := range patchesWithOps {
+		patches = append(patches, PatchInfo{
+			Seq:         p.Seq,
+			Operations:  p.Operations,
+			Description: p.Description,
+		})
+	}
+
+	return patches, nil
+}
+
+// GetRunDetails retrieves comprehensive run details including execution data
+// This method acts as a facade, delegating work to specialized helper methods
+func (s *RunService) GetRunDetails(ctx context.Context, runID uuid.UUID) (*RunDetails, error) {
+	// 1. Get run from database
+	run, err := s.runRepo.GetByID(ctx, runID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get run: %w", err)
+	}
+
+	// 2. Load base workflow from artifact (before any patches)
+	baseWorkflowIR, err := s.loadBaseWorkflow(ctx, run)
+	if err != nil {
+		s.components.Logger.Warn("failed to load base workflow", "run_id", runID, "error", err)
+		baseWorkflowIR = make(map[string]interface{}) // Continue with empty base
+	}
+
+	// 3. Load workflow IR from Redis (after patches applied)
+	workflowIR, err := s.loadWorkflowIR(ctx, runID)
+	if err != nil {
+		s.components.Logger.Warn("failed to load IR from Redis (may have expired)", "run_id", runID, "error", err)
+		// Return partial data without execution details
+		return &RunDetails{
+			Run:             run,
+			BaseWorkflowIR:  baseWorkflowIR,
+			WorkflowIR:      make(map[string]interface{}),
+			NodeExecutions:  make(map[string]*NodeExecution),
+		}, nil
+	}
+
+	// 4. Load context data from Redis
+	contextData, err := s.loadContextData(ctx, runID)
+	if err != nil {
+		s.components.Logger.Warn("failed to load context", "run_id", runID, "error", err)
+		contextData = make(map[string]string) // Continue with empty context
+	}
+
+	// 5. Build node executions
+	var nodeExecutions map[string]*NodeExecution
+	nodes, ok := workflowIR["nodes"].(map[string]interface{})
+	if ok {
+		// Bulk fetch CAS data for node outputs
+		casDataMap, err := s.bulkFetchCASData(ctx, contextData, nodes)
+		if err != nil {
+			s.components.Logger.Warn("failed to bulk fetch CAS data", "error", err)
+			casDataMap = make(map[string]map[string]interface{}) // Continue with empty CAS data
+		}
+
+		// Build node executions using the fetched data
+		nodeExecutions = s.buildNodeExecutions(ctx, run, workflowIR, contextData, casDataMap)
+	} else {
+		nodeExecutions = make(map[string]*NodeExecution)
+	}
+
+	// 6. Load patches for this run
+	patches, err := s.loadRunPatches(ctx, runID)
+	if err != nil {
+		s.components.Logger.Warn("failed to load patches with operations", "run_id", runID, "error", err)
+		patches = []PatchInfo{} // Continue with empty patches
+	}
+
+	return &RunDetails{
+		Run:             run,
+		BaseWorkflowIR:  baseWorkflowIR,
+		WorkflowIR:      workflowIR,
+		NodeExecutions:  nodeExecutions,
+		Patches:         patches,
+	}, nil
 }

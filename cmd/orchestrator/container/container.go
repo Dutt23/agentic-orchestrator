@@ -7,6 +7,7 @@ import (
 	"github.com/lyzr/orchestrator/cmd/orchestrator/repository"
 	"github.com/lyzr/orchestrator/cmd/orchestrator/service"
 	"github.com/lyzr/orchestrator/common/bootstrap"
+	rediscommon "github.com/lyzr/orchestrator/common/redis"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -14,7 +15,8 @@ import (
 type Container struct {
 	// Components
 	Components *bootstrap.Components
-	Redis      *redis.Client
+	Redis      *rediscommon.Client
+	RedisRaw   *redis.Client // Keep for backward compatibility if needed
 
 	// Repositories
 	RunRepo      *repository.RunRepository
@@ -28,16 +30,20 @@ type Container struct {
 	TagService          *service.TagService
 	MaterializerService *service.MaterializerService
 	WorkflowService     *service.WorkflowServiceV2
+	RunPatchService     *service.RunPatchService
 	RunService          *service.RunService
 }
 
 // NewContainer initializes all services and repositories once
 func NewContainer(components *bootstrap.Components) (*Container, error) {
-	// Create Redis client
-	redisClient, err := createRedisClient()
+	// Create Redis client (raw)
+	redisRaw, err := createRedisClient()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create redis client: %w", err)
 	}
+
+	// Wrap with common redis client for instrumentation and common operations
+	redisClient := rediscommon.NewClient(redisRaw, components.Logger)
 
 	// Initialize repositories
 	runRepo := repository.NewRunRepository(components.DB)
@@ -56,12 +62,24 @@ func NewContainer(components *bootstrap.Components) (*Container, error) {
 		tagService,
 		components.Logger,
 	)
+
+	// Initialize RunPatchRepository and RunPatchService
+	runPatchRepo := repository.NewRunPatchRepository(components.DB)
+	runPatchService := service.NewRunPatchService(
+		runPatchRepo,
+		runRepo,
+		casService,
+		artifactRepo,
+		components,
+	)
+
 	runService := service.NewRunService(
 		runRepo,
 		artifactRepo,
 		casService,
 		workflowService,
 		materializerService,
+		runPatchService,
 		components,
 		redisClient,
 	)
@@ -69,6 +87,7 @@ func NewContainer(components *bootstrap.Components) (*Container, error) {
 	return &Container{
 		Components:          components,
 		Redis:               redisClient,
+		RedisRaw:            redisRaw,
 		RunRepo:             runRepo,
 		ArtifactRepo:        artifactRepo,
 		CASBlobRepo:         casBlobRepo,
@@ -78,6 +97,7 @@ func NewContainer(components *bootstrap.Components) (*Container, error) {
 		TagService:          tagService,
 		MaterializerService: materializerService,
 		WorkflowService:     workflowService,
+		RunPatchService:     runPatchService,
 		RunService:          runService,
 	}, nil
 }

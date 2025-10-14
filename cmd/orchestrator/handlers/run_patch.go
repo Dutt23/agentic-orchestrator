@@ -57,6 +57,7 @@ func (h *RunPatchHandler) CreateRunPatch(c echo.Context) error {
 
 	// Parse request
 	var req struct {
+		NodeID      string                   `json:"node_id"` // Optional: which node generated this patch
 		Operations  []map[string]interface{} `json:"operations"`
 		Description string                   `json:"description"`
 	}
@@ -76,11 +77,13 @@ func (h *RunPatchHandler) CreateRunPatch(c echo.Context) error {
 	h.components.Logger.Info("creating run patch",
 		"run_id", runID,
 		"username", username,
+		"node_id", req.NodeID,
 		"operations", len(req.Operations))
 
 	// Create run patch
 	createReq := &service.CreateRunPatchRequest{
 		RunID:       runID,
+		NodeID:      req.NodeID,
 		Operations:  req.Operations,
 		Description: req.Description,
 		CreatedBy:   username,

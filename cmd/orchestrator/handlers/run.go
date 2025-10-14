@@ -14,13 +14,13 @@ import (
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/sdk"
 	"github.com/lyzr/orchestrator/common/bootstrap"
 	"github.com/lyzr/orchestrator/common/clients"
-	"github.com/redis/go-redis/v9"
+	rediscommon "github.com/lyzr/orchestrator/common/redis"
 )
 
 // RunHandler handles run-related operations including patching
 type RunHandler struct {
 	components *bootstrap.Components
-	redis      *redis.Client
+	redis      *rediscommon.Client
 	casClient  clients.CASClient
 	runService *service.RunService
 }
@@ -39,7 +39,7 @@ type PatchOperation struct {
 }
 
 // NewRunHandler creates a new run handler
-func NewRunHandler(components *bootstrap.Components, redis *redis.Client, casClient clients.CASClient, runService *service.RunService) *RunHandler {
+func NewRunHandler(components *bootstrap.Components, redis *rediscommon.Client, casClient clients.CASClient, runService *service.RunService) *RunHandler {
 	return &RunHandler{
 		components: components,
 		redis:      redis,
@@ -64,11 +64,12 @@ func (h *RunHandler) PatchRun(c echo.Context) error {
 
 	// 1. Load current IR from Redis
 	irKey := fmt.Sprintf("ir:%s", runID)
-	irJSON, err := h.redis.Get(c.Request().Context(), irKey).Result()
-	if err == redis.Nil {
-		return echo.NewHTTPError(http.StatusNotFound, "run not found")
-	}
+	irJSON, err := h.redis.Get(c.Request().Context(), irKey)
 	if err != nil {
+		// Check if it's a "not found" error
+		if err.Error() == fmt.Sprintf("key not found: %s", irKey) {
+			return echo.NewHTTPError(http.StatusNotFound, "run not found")
+		}
 		h.components.Logger.Error("failed to load IR", "run_id", runID, "error", err)
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to load workflow IR")
 	}
@@ -107,7 +108,7 @@ func (h *RunHandler) PatchRun(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to serialize new IR")
 	}
 
-	if err := h.redis.Set(c.Request().Context(), irKey, newIRJSON, 0).Err(); err != nil {
+	if err := h.redis.Set(c.Request().Context(), irKey, string(newIRJSON), 0); err != nil {
 		h.components.Logger.Error("failed to update IR in Redis",
 			"run_id", runID,
 			"error", err)

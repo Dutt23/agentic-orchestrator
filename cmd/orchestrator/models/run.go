@@ -56,6 +56,22 @@ type Run struct {
 	SubmittedAt time.Time `db:"submitted_at" json:"submitted_at"`
 }
 
+// GetDefaultNodeStatus returns the expected node status based on run status
+// This centralizes the logic for determining what status nodes should have
+// when Redis context data is missing or expired
+func (r *Run) GetDefaultNodeStatus() string {
+	switch r.Status {
+	case StatusCompleted:
+		return "completed"
+	case StatusFailed:
+		return "failed"
+	case StatusRunning:
+		return "running"
+	default:
+		return "pending"
+	}
+}
+
 // RunSnapshotIndex links runs to cached snapshots
 // Maps to: run_snapshot_index table
 type RunSnapshotIndex struct {

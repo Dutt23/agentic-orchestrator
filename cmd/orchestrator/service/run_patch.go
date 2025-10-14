@@ -40,6 +40,7 @@ func NewRunPatchService(
 // CreateRunPatchRequest represents a request to create a run patch
 type CreateRunPatchRequest struct {
 	RunID       string                   `json:"run_id"`
+	NodeID      string                   `json:"node_id"` // Which node generated this patch
 	Operations  []map[string]interface{} `json:"operations"`
 	Description string                   `json:"description"`
 	CreatedBy   string                   `json:"created_by"`
@@ -147,6 +148,7 @@ func (s *RunPatchService) CreateRunPatch(ctx context.Context, req *CreateRunPatc
 	// Create run patch entry
 	description := req.Description
 	createdBy := req.CreatedBy
+	nodeID := req.NodeID
 	runPatch := &models.RunPatch{
 		ID:          uuid.New(),
 		RunID:       req.RunID,
@@ -154,6 +156,11 @@ func (s *RunPatchService) CreateRunPatch(ctx context.Context, req *CreateRunPatc
 		Seq:         nextSeq,
 		Description: &description,
 		CreatedBy:   &createdBy,
+	}
+
+	// Add node_id if provided
+	if nodeID != "" {
+		runPatch.NodeID = &nodeID
 	}
 
 	if err := s.runPatchRepo.Create(ctx, runPatch); err != nil {
@@ -207,4 +214,71 @@ func (s *RunPatchService) GetPatchOperations(ctx context.Context, casID string) 
 	}
 
 	return patchData.Operations, nil
+}
+
+// PatchWithOperations represents a patch with its operations loaded
+type PatchWithOperations struct {
+	Seq         int                      `json:"seq"`
+	NodeID      *string                  `json:"node_id,omitempty"`
+	Operations  []map[string]interface{} `json:"operations"`
+	Description string                   `json:"description"`
+}
+
+// GetRunPatchesWithOperations retrieves all patches for a run with operations in a single bulk call
+// This avoids N+1 queries by fetching all CAS data at once
+func (s *RunPatchService) GetRunPatchesWithOperations(ctx context.Context, runID string) ([]*PatchWithOperations, error) {
+	// 1. Get all patches with details (single DB query)
+	patches, err := s.runPatchRepo.GetByRunIDWithDetails(ctx, runID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get run patches: %w", err)
+	}
+
+	if len(patches) == 0 {
+		return []*PatchWithOperations{}, nil
+	}
+
+	// 2. Collect all CAS IDs
+	casIDs := make([]string, len(patches))
+	for i, patch := range patches {
+		casIDs[i] = patch.CASID
+	}
+
+	// 3. Bulk fetch all CAS content (single operation if CAS supports it)
+	// For now, we'll fetch them all but cache in a map to avoid re-fetching
+	casDataMap := make(map[string][]map[string]interface{})
+	for _, casID := range casIDs {
+		operations, err := s.GetPatchOperations(ctx, casID)
+		if err != nil {
+			s.components.Logger.Warn("failed to load patch operations",
+				"run_id", runID,
+				"cas_id", casID,
+				"error", err)
+			// Store empty array for failed operations
+			casDataMap[casID] = []map[string]interface{}{}
+			continue
+		}
+		casDataMap[casID] = operations
+	}
+
+	// 4. Build result with operations included
+	result := make([]*PatchWithOperations, 0, len(patches))
+	for _, patch := range patches {
+		description := ""
+		if patch.Description != nil {
+			description = *patch.Description
+		}
+
+		result = append(result, &PatchWithOperations{
+			Seq:         patch.Seq,
+			NodeID:      patch.NodeID,
+			Operations:  casDataMap[patch.CASID],
+			Description: description,
+		})
+	}
+
+	s.components.Logger.Info("retrieved run patches with operations",
+		"run_id", runID,
+		"count", len(result))
+
+	return result, nil
 }
