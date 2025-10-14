@@ -1,8 +1,10 @@
 """System prompt for agent LLM (designed for OpenAI prompt caching)."""
-from typing import Optional
+from typing import Optional, Dict, Any
+import json
 
 
-def get_system_prompt(workflow_schema_summary: Optional[str] = None) -> str:
+def get_system_prompt(workflow_schema_summary: Optional[str] = None,
+                      current_workflow: Optional[Dict[str, Any]] = None) -> str:
     """Get system prompt for agent.
 
     This prompt is designed to be >1024 tokens for OpenAI prompt caching.
@@ -164,4 +166,69 @@ Remember: You are executing within a live workflow. Be precise, efficient, and p
     if workflow_schema_summary:
         base_prompt += f"\n\n{workflow_schema_summary}"
 
+    # Append current workflow structure for caching (OpenAI caches prefix)
+    # By putting workflow in system prompt, it's cached when workflow doesn't change
+    if current_workflow:
+        base_prompt += "\n\n## Current Workflow Structure\n"
+        base_prompt += _format_workflow_structure(current_workflow)
+
     return base_prompt
+
+
+def _format_workflow_structure(workflow: Dict[str, Any]) -> str:
+    """Format workflow structure for inclusion in system prompt.
+
+    Args:
+        workflow: Workflow definition (either IR or schema format)
+
+    Returns:
+        Formatted string describing workflow structure
+    """
+    parts = []
+
+    # Show nodes
+    nodes = workflow.get('nodes', {})
+    if nodes:
+        # Handle both dict (IR format) and list (workflow format)
+        if isinstance(nodes, dict):
+            # IR format: nodes is a map[string]*Node
+            parts.append(f"**Nodes ({len(nodes)}):**")
+            for node_id, node in nodes.items():
+                node_type = node.get('type', 'unknown') if isinstance(node, dict) else 'unknown'
+                config_keys = list(node.get('config', {}).keys()) if isinstance(node, dict) and node.get('config') else []
+                config_summary = f", config: {config_keys}" if config_keys else ""
+                parts.append(f"- `{node_id}` (type: {node_type}{config_summary})")
+        elif isinstance(nodes, list):
+            # Workflow format: nodes is a list
+            parts.append(f"**Nodes ({len(nodes)}):**")
+            for node in nodes:
+                node_id = node.get('id', 'unknown')
+                node_type = node.get('type', 'unknown')
+                config_keys = list(node.get('config', {}).keys()) if node.get('config') else []
+                config_summary = f", config: {config_keys}" if config_keys else ""
+                parts.append(f"- `{node_id}` (type: {node_type}{config_summary})")
+
+    # Show edges
+    edges = workflow.get('edges', [])
+    if edges:
+        parts.append(f"\n**Edges ({len(edges)}):**")
+        for edge in edges:
+            if isinstance(edge, dict):
+                from_node = edge.get('from', '?')
+                to_node = edge.get('to', '?')
+                condition = edge.get('condition')
+                condition_str = f" [if {condition}]" if condition else ""
+                parts.append(f"- {from_node} → {to_node}{condition_str}")
+    elif isinstance(nodes, dict):
+        # IR format: reconstruct edges from node dependents
+        edge_list = []
+        for node_id, node in nodes.items():
+            if isinstance(node, dict) and node.get('dependents'):
+                for dependent in node.get('dependents', []):
+                    edge_list.append((node_id, dependent))
+        if edge_list:
+            parts.append(f"\n**Edges ({len(edge_list)}):**")
+            for from_node, to_node in edge_list:
+                parts.append(f"- {from_node} → {to_node}")
+
+    return "\n".join(parts)

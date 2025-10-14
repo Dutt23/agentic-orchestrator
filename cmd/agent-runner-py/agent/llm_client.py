@@ -1,8 +1,9 @@
-"""OpenAI LLM client with prompt caching."""
+"""OpenAI LLM client with prompt caching and connection pooling."""
 from openai import OpenAI
 from typing import Dict, Any, List, Optional
 import logging
 import time
+import httpx
 
 from agent.tools import get_tool_schemas
 from agent.system_prompt import get_system_prompt
@@ -11,45 +12,73 @@ logger = logging.getLogger(__name__)
 
 
 class LLMClient:
-    """OpenAI client with function calling and prompt caching."""
+    """OpenAI client with function calling, prompt caching, and connection pooling."""
 
-    def __init__(self, config: Dict[str, Any], workflow_schema_summary: Optional[str] = None):
-        """Initialize OpenAI client.
+    def __init__(self, config: Dict[str, Any], workflow_schema_summary: Optional[str] = None,
+                 current_workflow: Optional[Dict[str, Any]] = None):
+        """Initialize OpenAI client with optimizations.
 
         Args:
             config: LLM configuration
-            workflow_schema_summary: Optional workflow schema summary to include in system prompt
+            workflow_schema_summary: Optional workflow schema summary
+            current_workflow: Current workflow structure (for prompt caching)
         """
         self.config = config
-        self.client = OpenAI()  # Uses OPENAI_API_KEY env var
         self.model = 'gpt-5-mini'
         self.temperature = 1
         self.max_tokens = config.get('max_tokens', 4000)
         self.timeout = config.get('timeout_sec', 30)
 
-        # Static system prompt (will be cached by OpenAI)
-        self.system_prompt = get_system_prompt(workflow_schema_summary)
+        # Configure HTTP client with connection pooling
+        # Reuses TCP connections to reduce latency (saves 100-300ms per request)
+        http_client = httpx.Client(
+            limits=httpx.Limits(
+                max_connections=100,  # Max concurrent connections
+                max_keepalive_connections=20,  # Keep 20 connections warm
+                keepalive_expiry=300  # Keep alive for 5 minutes
+            ),
+            timeout=self.timeout
+        )
+
+        # Initialize OpenAI client with connection pooling
+        self.client = OpenAI(http_client=http_client)
+
+        # System prompt with workflow context (cached by OpenAI if >1024 tokens)
+        # OpenAI automatically caches the prefix when same prompt is reused
+        self.system_prompt = get_system_prompt(workflow_schema_summary, current_workflow)
 
         # Tool schemas
         self.tools = get_tool_schemas()
 
-        logger.info(f"LLM client initialized with model: {self.model}")
+        logger.info(f"LLM client initialized with model: {self.model}, connection pooling enabled")
 
     def chat(self, user_prompt: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Send chat request to LLM with function calling.
 
         Args:
             user_prompt: User's natural language instruction
-            context: Optional context (previous results, session info)
+            context: Optional context (previous results, session info, current_workflow)
 
         Returns:
             Dictionary with tool calls and metadata
         """
         start_time = time.time()
 
+        # Rebuild system prompt with current workflow if provided (for caching)
+        # OpenAI caches the system prompt prefix - if workflow doesn't change, cache hit!
+        system_prompt = self.system_prompt
+        if context and context.get('current_workflow'):
+            system_prompt = get_system_prompt(
+                workflow_schema_summary=None,  # Already in base prompt
+                current_workflow=context['current_workflow']
+            )
+            # Prepend the base prompt (without workflow schema to avoid duplication)
+            base = self.system_prompt.split('\n\n## Current Workflow Structure')[0]
+            system_prompt = base + "\n\n## Current Workflow Structure\n" + system_prompt.split('\n\n## Current Workflow Structure\n')[-1]
+
         # Build messages
         messages = [
-            {"role": "system", "content": self.system_prompt},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": self._build_user_message(user_prompt, context)}
         ]
 
@@ -112,68 +141,20 @@ class LLMClient:
     def _build_user_message(self, prompt: str, context: Optional[Dict[str, Any]]) -> str:
         """Build user message with context.
 
+        Note: Workflow structure is now in system prompt for caching.
+        This message should only contain dynamic, per-request information.
+
         Args:
             prompt: User's prompt
             context: Optional context information
 
         Returns:
-            Formatted user message
+            Formatted user message (task-focused, minimal)
         """
         message_parts = [prompt]
 
         if context:
-            # Add current workflow structure if available
-            if context.get('current_workflow'):
-                workflow = context['current_workflow']
-                message_parts.append("\n\n## Current Workflow Structure")
-
-                # Show nodes (can be either dict (IR format) or list (workflow format))
-                nodes = workflow.get('nodes', {})
-                if nodes:
-                    # Handle both dict and list formats
-                    if isinstance(nodes, dict):
-                        # IR format: nodes is a map[string]*Node
-                        message_parts.append(f"\n**Nodes ({len(nodes)}):**")
-                        for node_id, node in nodes.items():
-                            node_type = node.get('type', 'unknown') if isinstance(node, dict) else 'unknown'
-                            config_keys = list(node.get('config', {}).keys()) if isinstance(node, dict) and node.get('config') else []
-                            config_summary = f", config: {config_keys}" if config_keys else ""
-                            message_parts.append(f"- `{node_id}` (type: {node_type}{config_summary})")
-                    elif isinstance(nodes, list):
-                        # Workflow format: nodes is a list
-                        message_parts.append(f"\n**Nodes ({len(nodes)}):**")
-                        for node in nodes:
-                            node_id = node.get('id', 'unknown')
-                            node_type = node.get('type', 'unknown')
-                            config_keys = list(node.get('config', {}).keys()) if node.get('config') else []
-                            config_summary = f", config: {config_keys}" if config_keys else ""
-                            message_parts.append(f"- `{node_id}` (type: {node_type}{config_summary})")
-
-                # Show edges
-                edges = workflow.get('edges', [])
-                if edges:
-                    message_parts.append(f"\n**Edges ({len(edges)}):**")
-                    for edge in edges:
-                        # Handle both dict and potentially other formats
-                        if isinstance(edge, dict):
-                            from_node = edge.get('from', '?')
-                            to_node = edge.get('to', '?')
-                            condition = edge.get('condition')
-                            condition_str = f" [if {condition}]" if condition else ""
-                            message_parts.append(f"- {from_node} → {to_node}{condition_str}")
-                elif isinstance(nodes, dict):
-                    # IR format: reconstruct edges from node dependents
-                    edge_list = []
-                    for node_id, node in nodes.items():
-                        if isinstance(node, dict) and node.get('dependents'):
-                            for dependent in node.get('dependents', []):
-                                edge_list.append((node_id, dependent))
-                    if edge_list:
-                        message_parts.append(f"\n**Edges ({len(edge_list)}):**")
-                        for from_node, to_node in edge_list:
-                            message_parts.append(f"- {from_node} → {to_node}")
-
-            # Add previous results if available
+            # Add previous results if available (dynamic per-run)
             if context.get('previous_results'):
                 message_parts.append("\n\n## Available Data")
                 for result in context['previous_results']:
@@ -182,11 +163,11 @@ class LLMClient:
                     preview = result.get('preview', {})
                     message_parts.append(f"- From {node_id}: {result_ref} (preview: {preview})")
 
-            # Add session info
+            # Add session info (dynamic per-session)
             if context.get('session_id'):
                 message_parts.append(f"\n\n## Session: {context['session_id']}")
 
-            # Add workflow state
+            # Add workflow state (dynamic per-step)
             if context.get('workflow_state'):
                 state = context['workflow_state']
                 message_parts.append(f"\n\n## Workflow State")
