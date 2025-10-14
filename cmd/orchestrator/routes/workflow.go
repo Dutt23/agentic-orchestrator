@@ -2,15 +2,15 @@ package routes
 
 import (
 	"github.com/labstack/echo/v4"
+	"github.com/lyzr/orchestrator/cmd/orchestrator/container"
 	"github.com/lyzr/orchestrator/cmd/orchestrator/handlers"
 	"github.com/lyzr/orchestrator/cmd/orchestrator/middleware"
-	"github.com/lyzr/orchestrator/common/bootstrap"
 )
 
 // RegisterWorkflowRoutes registers all workflow-related routes
-func RegisterWorkflowRoutes(e *echo.Echo, components *bootstrap.Components) {
-	// Create handler with dependencies
-	h := handlers.NewWorkflowHandler(components)
+func RegisterWorkflowRoutes(e *echo.Echo, c *container.Container) {
+	// Create handler using services from container
+	h := handlers.NewWorkflowHandler(c)
 
 	// Workflow routes with username extraction middleware
 	wf := e.Group("/api/v1/workflows")

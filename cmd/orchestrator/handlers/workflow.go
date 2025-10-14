@@ -9,9 +9,9 @@ import (
 	"strings"
 
 	"github.com/labstack/echo/v4"
+	"github.com/lyzr/orchestrator/cmd/orchestrator/container"
 	"github.com/lyzr/orchestrator/cmd/orchestrator/middleware"
 	"github.com/lyzr/orchestrator/cmd/orchestrator/models"
-	"github.com/lyzr/orchestrator/cmd/orchestrator/repository"
 	"github.com/lyzr/orchestrator/cmd/orchestrator/service"
 	"github.com/lyzr/orchestrator/common/bootstrap"
 )
@@ -25,24 +25,15 @@ type WorkflowHandler struct {
 }
 
 // NewWorkflowHandler creates a new workflow handler
-func NewWorkflowHandler(components *bootstrap.Components) *WorkflowHandler {
-	// Initialize repositories
-	casBlobRepo := repository.NewCASBlobRepository(components.DB)
-	artifactRepo := repository.NewArtifactRepository(components.DB)
-	tagRepo := repository.NewTagRepository(components.DB)
-
-	// Initialize services
-	casService := service.NewCASService(casBlobRepo, components.Logger)
-	artifactService := service.NewArtifactService(artifactRepo, components.Logger)
-	tagService := service.NewTagService(tagRepo, components.Logger)
-	materializerService := service.NewMaterializerService(components.Logger)
-	workflowService := service.NewWorkflowServiceV2(casService, artifactService, tagService, components.Logger)
+func NewWorkflowHandler(c *container.Container) *WorkflowHandler {
+	// Use services from container (singleton pattern)
+	materializerService := service.NewMaterializerService(c.Components.Logger)
 
 	return &WorkflowHandler{
-		components:          components,
-		tagService:          tagService,
+		components:          c.Components,
+		tagService:          c.TagService,
 		materializerService: materializerService,
-		workflowService:     workflowService,
+		workflowService:     c.WorkflowService,
 	}
 }
 

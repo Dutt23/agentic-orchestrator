@@ -2,14 +2,14 @@ package routes
 
 import (
 	"github.com/labstack/echo/v4"
+	"github.com/lyzr/orchestrator/cmd/orchestrator/container"
 	"github.com/lyzr/orchestrator/cmd/orchestrator/handlers"
-	"github.com/lyzr/orchestrator/common/bootstrap"
 )
 
 // RegisterTagRoutes registers tag-related routes (planned, not yet implemented)
 // Note: Tag operations are currently handled through /api/v1/workflows endpoints
-func RegisterTagRoutes(e *echo.Echo, components *bootstrap.Components) {
-	h := handlers.NewPlaceholderHandler(components)
+func RegisterTagRoutes(e *echo.Echo, c *container.Container) {
+	h := handlers.NewPlaceholderHandler(c.Components)
 
 	// Tag routes (not yet implemented)
 	tags := e.Group("/api/v1/tags")

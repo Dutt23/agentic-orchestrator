@@ -2,30 +2,26 @@ package routes
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/labstack/echo/v4"
+	"github.com/lyzr/orchestrator/cmd/orchestrator/container"
 	"github.com/lyzr/orchestrator/cmd/orchestrator/handlers"
 	"github.com/lyzr/orchestrator/cmd/orchestrator/middleware"
 	_ "github.com/lyzr/orchestrator/cmd/workflow-runner/sdk"
-	"github.com/lyzr/orchestrator/common/bootstrap"
 	"github.com/lyzr/orchestrator/common/logger"
-	"github.com/redis/go-redis/v9"
 )
 
 // RegisterRunRoutes registers run and patch routes
-func RegisterRunRoutes(e *echo.Echo, components *bootstrap.Components) {
-	// Create Redis client
-	redisClient := createRedisClient(components)
-
+func RegisterRunRoutes(e *echo.Echo, c *container.Container) {
 	// Create CAS client (mock for MVP)
-	casClient := &mockCASClient{logger: components.Logger}
+	casClient := &mockCASClient{logger: c.Components.Logger}
 
-	// Create run handler
-	runHandler := handlers.NewRunHandler(components, redisClient, casClient)
+	// Create handlers using services from container
+	runHandler := handlers.NewRunHandler(c.Components, c.Redis, casClient, c.RunService)
+	artifactHandler := handlers.NewArtifactHandler(c.Components, c.CASService, c.ArtifactService)
 
 	// Placeholder handler for unimplemented routes
-	placeholder := handlers.NewPlaceholderHandler(components)
+	placeholder := handlers.NewPlaceholderHandler(c.Components)
 
 	// Workflow execution routes
 	workflows := e.Group("/api/v1/workflows")
@@ -49,29 +45,12 @@ func RegisterRunRoutes(e *echo.Echo, components *bootstrap.Components) {
 		patches.POST("", placeholder.NotImplemented)    // POST /api/v1/patches
 		patches.GET("/:id", placeholder.NotImplemented) // GET /api/v1/patches/{patch_id}
 	}
-}
 
-// createRedisClient creates a Redis client from config
-func createRedisClient(components *bootstrap.Components) *redis.Client {
-	redisHost := getEnv("REDIS_HOST", "localhost")
-	redisPort := getEnv("REDIS_PORT", "6379")
-	redisPassword := getEnv("REDIS_PASSWORD", "")
-
-	client := redis.NewClient(&redis.Options{
-		Addr:     fmt.Sprintf("%s:%s", redisHost, redisPort),
-		Password: redisPassword,
-		DB:       0,
-	})
-
-	return client
-}
-
-// getEnv gets an environment variable or returns a default
-func getEnv(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
+	// Artifact routes
+	artifacts := e.Group("/api/v1/artifacts")
+	{
+		artifacts.GET("/:id", artifactHandler.GetArtifact) // GET /api/v1/artifacts/{artifact_id}
 	}
-	return defaultValue
 }
 
 // mockCASClient is a placeholder CAS client for MVP

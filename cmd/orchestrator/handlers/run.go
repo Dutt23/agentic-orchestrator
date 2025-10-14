@@ -1,13 +1,13 @@
 package handlers
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"time"
 
+	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
+	"github.com/lyzr/orchestrator/cmd/orchestrator/service"
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/compiler"
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/sdk"
 	"github.com/lyzr/orchestrator/common/bootstrap"
@@ -19,6 +19,7 @@ type RunHandler struct {
 	components *bootstrap.Components
 	redis      *redis.Client
 	casClient  sdk.CASClient
+	runService *service.RunService
 }
 
 // PatchRequest represents a request to patch a workflow
@@ -35,11 +36,12 @@ type PatchOperation struct {
 }
 
 // NewRunHandler creates a new run handler
-func NewRunHandler(components *bootstrap.Components, redis *redis.Client, casClient sdk.CASClient) *RunHandler {
+func NewRunHandler(components *bootstrap.Components, redis *redis.Client, casClient sdk.CASClient, runService *service.RunService) *RunHandler {
 	return &RunHandler{
 		components: components,
 		redis:      redis,
 		casClient:  casClient,
+		runService: runService,
 	}
 }
 
@@ -273,7 +275,7 @@ func (h *RunHandler) applyPatch(schema *compiler.WorkflowSchema, operations []Pa
 	return schema, nil
 }
 
-// ExecuteWorkflow publishes a workflow execution request to Redis stream
+// ExecuteWorkflow creates a new workflow run with materialized workflow
 func (h *RunHandler) ExecuteWorkflow(c echo.Context) error {
 	ctx := c.Request().Context()
 	tagName := c.Param("tag")
@@ -293,82 +295,51 @@ func (h *RunHandler) ExecuteWorkflow(c echo.Context) error {
 		username = "system"
 	}
 
-	// Generate idempotent run_id: tag:timestamp_hash
-	timestamp := time.Now().UnixNano()
-	runID := fmt.Sprintf("%s:%x", tagName, timestamp)
-
 	h.components.Logger.Info("execute workflow request",
 		"tag", tagName,
-		"run_id", runID,
 		"username", username)
 
-	// Publish run request to Redis stream
-	runRequest := map[string]interface{}{
-		"run_id":     runID,
-		"tag":        tagName,
-		"username":   username,
-		"inputs":     req.Inputs,
-		"created_at": time.Now().Unix(),
+	// Create run using RunService
+	// This will: materialize workflow, store as artifact, create run entry, publish to stream
+	createReq := &service.CreateRunRequest{
+		Tag:      tagName,
+		Username: username,
+		Inputs:   req.Inputs,
 	}
 
-	requestJSON, err := json.Marshal(runRequest)
+	response, err := h.runService.CreateRun(ctx, createReq)
 	if err != nil {
-		h.components.Logger.Error("failed to marshal run request", "error", err)
-		return echo.NewHTTPError(http.StatusInternalServerError, "failed to create run request")
+		h.components.Logger.Error("failed to create run", "error", err)
+		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("failed to create run: %v", err))
 	}
 
-	// Publish to wf.run.requests stream
-	err = h.redis.XAdd(ctx, &redis.XAddArgs{
-		Stream: "wf.run.requests",
-		Values: map[string]interface{}{
-			"request": string(requestJSON),
-		},
-	}).Err()
-
-	if err != nil {
-		h.components.Logger.Error("failed to publish run request", "run_id", runID, "error", err)
-		return echo.NewHTTPError(http.StatusInternalServerError, "failed to publish run request")
-	}
-
-	h.components.Logger.Info("published run request",
-		"run_id", runID,
+	h.components.Logger.Info("run created successfully",
+		"run_id", response.RunID,
+		"artifact_id", response.ArtifactID,
 		"tag", tagName)
 
 	return c.JSON(http.StatusCreated, map[string]interface{}{
-		"run_id": runID,
-		"status": "queued",
-		"tag":    tagName,
+		"run_id":      response.RunID.String(),
+		"artifact_id": response.ArtifactID.String(),
+		"status":      response.Status,
+		"tag":         response.Tag,
 	})
 }
 
 // GetRun returns run status and metadata
 func (h *RunHandler) GetRun(c echo.Context) error {
-	runID := c.Param("id")
+	runIDStr := c.Param("id")
 
-	// Query database for run
-	query := `
-		SELECT run_id, status, submitted_at, started_at, ended_at
-		FROM run
-		WHERE run_id = $1
-	`
-
-	var run struct {
-		RunID       string
-		Status      string
-		SubmittedAt string
-		StartedAt   *string
-		EndedAt     *string
+	// Parse UUID
+	runID, err := uuid.Parse(runIDStr)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "invalid run_id format")
 	}
 
-	err := h.components.DB.QueryRow(context.Background(), query, runID).Scan(
-		&run.RunID,
-		&run.Status,
-		&run.SubmittedAt,
-		&run.StartedAt,
-		&run.EndedAt,
-	)
-
+	// Get run from service
+	run, err := h.runService.GetRun(c.Request().Context(), runID)
 	if err != nil {
+		h.components.Logger.Error("failed to get run", "run_id", runID, "error", err)
 		return echo.NewHTTPError(http.StatusNotFound, "run not found")
 	}
 
