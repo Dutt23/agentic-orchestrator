@@ -1,0 +1,45 @@
+[package]
+name = "workflow-optimiser"
+version = "0.1.0"
+edition = "2021"
+authors = ["Lyzr Team"]
+description = "WASM-based workflow optimization engine for real-time suggestions"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# WASM bindings
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling
+thiserror = "1.0"
+
+# JavaScript interop
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["console"] }
+
+# Petgraph for dependency analysis
+petgraph = "0.6"
+
+# Optional: CEL expression evaluation
+# cel-interpreter = "0.5"
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+[profile.release]
+# Optimize for size for WASM
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-Oz", "--enable-mutable-globals"]
