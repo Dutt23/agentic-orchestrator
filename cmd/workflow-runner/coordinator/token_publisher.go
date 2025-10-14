@@ -9,6 +9,85 @@ import (
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/sdk"
 )
 
+// loadAndResolveConfig loads node config (inline or from CAS) and resolves variables
+// Returns the resolved config map, or nil if config loading/resolution fails
+func (c *Coordinator) loadAndResolveConfig(ctx context.Context, runID, nodeID string, node *sdk.Node) map[string]interface{} {
+	// Load node config (inline or CAS)
+	c.logger.Info("loading node config",
+		"run_id", runID,
+		"node_id", nodeID,
+		"node_type", node.Type,
+		"has_inline_config", len(node.Config) > 0,
+		"has_config_ref", node.ConfigRef != "",
+		"inline_config", node.Config,
+		"config_ref", node.ConfigRef)
+
+	var config map[string]interface{}
+	c.logger.Info("config is ehre",
+		"config", node.Config)
+	if len(node.Config) > 0 {
+		config = node.Config
+		c.logger.Info("using inline config", "config", config)
+	} else if node.ConfigRef != "" {
+		c.logger.Info("loading config from CAS", "config_ref", node.ConfigRef)
+		configData, err := c.sdk.LoadConfig(ctx, node.ConfigRef)
+		if err != nil {
+			c.logger.Error("failed to load config from CAS",
+				"run_id", runID,
+				"node_id", nodeID,
+				"config_ref", node.ConfigRef,
+				"error", err)
+			return nil
+		}
+		// Convert to map
+		if configMap, ok := configData.(map[string]interface{}); ok {
+			config = configMap
+			c.logger.Info("loaded config from CAS", "config", config)
+		} else {
+			c.logger.Error("config is not a map",
+				"run_id", runID,
+				"node_id", nodeID)
+			return nil
+		}
+	} else {
+		c.logger.Warn("node has no config (neither inline nor CAS ref)",
+			"run_id", runID,
+			"node_id", nodeID)
+	}
+
+	// Resolve variables in config (e.g., $nodes.node_id)
+	c.logger.Info("about to resolve config",
+		"run_id", runID,
+		"node_id", nodeID,
+		"config_is_nil", config == nil,
+		"config", config)
+
+	var resolvedConfig map[string]interface{}
+	if config != nil {
+		var err error
+		resolvedConfig, err = c.resolver.ResolveConfig(ctx, runID, config)
+		if err != nil {
+			c.logger.Error("failed to resolve config variables",
+				"run_id", runID,
+				"node_id", nodeID,
+				"error", err)
+			// Continue with unresolved config as fallback
+			resolvedConfig = config
+		} else {
+			c.logger.Info("resolved config variables successfully",
+				"run_id", runID,
+				"node_id", nodeID,
+				"resolvedConfig", resolvedConfig)
+		}
+	} else {
+		c.logger.Warn("config is nil, cannot resolve - resolvedConfig will be nil",
+			"run_id", runID,
+			"node_id", nodeID)
+	}
+
+	return resolvedConfig
+}
+
 // publishToken publishes a token to a Redis stream with resolved config
 func (c *Coordinator) publishToken(ctx context.Context, stream, runID, fromNode, toNode, payloadRef string, resolvedConfig map[string]interface{}, ir *sdk.IR) error {
 	// Generate unique job ID for this token
@@ -105,83 +184,4 @@ func (c *Coordinator) publishToken(ctx context.Context, stream, runID, fromNode,
 		"has_task", metadata["task"] != nil)
 
 	return nil
-}
-
-// loadAndResolveConfig loads node config (inline or from CAS) and resolves variables
-// Returns the resolved config map, or nil if config loading/resolution fails
-func (c *Coordinator) loadAndResolveConfig(ctx context.Context, runID, nodeID string, node *sdk.Node) map[string]interface{} {
-	// Load node config (inline or CAS)
-	c.logger.Info("loading node config",
-		"run_id", runID,
-		"node_id", nodeID,
-		"node_type", node.Type,
-		"has_inline_config", len(node.Config) > 0,
-		"has_config_ref", node.ConfigRef != "",
-		"inline_config", node.Config,
-		"config_ref", node.ConfigRef)
-
-	var config map[string]interface{}
-	c.logger.Info("config is ehre",
-		"config", node.Config)
-	if len(node.Config) > 0 {
-		config = node.Config
-		c.logger.Info("using inline config", "config", config)
-	} else if node.ConfigRef != "" {
-		c.logger.Info("loading config from CAS", "config_ref", node.ConfigRef)
-		configData, err := c.sdk.LoadConfig(ctx, node.ConfigRef)
-		if err != nil {
-			c.logger.Error("failed to load config from CAS",
-				"run_id", runID,
-				"node_id", nodeID,
-				"config_ref", node.ConfigRef,
-				"error", err)
-			return nil
-		}
-		// Convert to map
-		if configMap, ok := configData.(map[string]interface{}); ok {
-			config = configMap
-			c.logger.Info("loaded config from CAS", "config", config)
-		} else {
-			c.logger.Error("config is not a map",
-				"run_id", runID,
-				"node_id", nodeID)
-			return nil
-		}
-	} else {
-		c.logger.Warn("node has no config (neither inline nor CAS ref)",
-			"run_id", runID,
-			"node_id", nodeID)
-	}
-
-	// Resolve variables in config (e.g., $nodes.node_id)
-	c.logger.Info("about to resolve config",
-		"run_id", runID,
-		"node_id", nodeID,
-		"config_is_nil", config == nil,
-		"config", config)
-
-	var resolvedConfig map[string]interface{}
-	if config != nil {
-		var err error
-		resolvedConfig, err = c.resolver.ResolveConfig(ctx, runID, config)
-		if err != nil {
-			c.logger.Error("failed to resolve config variables",
-				"run_id", runID,
-				"node_id", nodeID,
-				"error", err)
-			// Continue with unresolved config as fallback
-			resolvedConfig = config
-		} else {
-			c.logger.Info("resolved config variables successfully",
-				"run_id", runID,
-				"node_id", nodeID,
-				"resolvedConfig", resolvedConfig)
-		}
-	} else {
-		c.logger.Warn("config is nil, cannot resolve - resolvedConfig will be nil",
-			"run_id", runID,
-			"node_id", nodeID)
-	}
-
-	return resolvedConfig
 }
