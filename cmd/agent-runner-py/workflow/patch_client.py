@@ -68,18 +68,19 @@ class PatchClient:
                 logger.error(f"Response body: {e.response.text}")
             raise ValueError(f"Patch request failed: {e}")
 
-    def apply_run_patch(self, run_id: str, workflow_owner: str, patch_spec: Dict[str, Any]) -> Dict[str, Any]:
+    def apply_run_patch(self, run_id: str, workflow_owner: str, patch_spec: Dict[str, Any], node_id: str = None) -> Dict[str, Any]:
         """Apply patch to a specific workflow run.
 
         Args:
             run_id: Workflow run ID
             workflow_owner: Owner of the workflow
             patch_spec: Patch specification with operations and description
+            node_id: ID of the node generating this patch (for tracking)
 
         Returns:
             Response from orchestrator with patch details
         """
-        logger.info(f"Applying run patch: run_id={run_id}, owner={workflow_owner}")
+        logger.info(f"Applying run patch: run_id={run_id}, owner={workflow_owner}, node_id={node_id}")
 
         # Build API request for run-specific patches
         url = f"{self.orchestrator_url}/api/v1/runs/{run_id}/patches"
@@ -91,6 +92,10 @@ class PatchClient:
             "operations": patch_spec.get('operations', []),
             "description": patch_spec.get('description', 'Agent-generated patch during run')
         }
+
+        # Add node_id if provided
+        if node_id:
+            payload["node_id"] = node_id
 
         logger.info(f"Sending POST request to {url} with owner={workflow_owner}")
 
@@ -120,13 +125,14 @@ class PatchClient:
             raise ValueError(f"Run patch request failed: {e}")
 
 
-def patch_workflow_tool(args: Dict[str, Any], orchestrator_url: str, run_id: str = None) -> Dict[str, Any]:
+def patch_workflow_tool(args: Dict[str, Any], orchestrator_url: str, run_id: str = None, node_id: str = None) -> Dict[str, Any]:
     """Execute patch_workflow tool.
 
     Args:
         args: Tool arguments with patch_spec and optionally run_id
         orchestrator_url: Orchestrator API URL
         run_id: Workflow run ID (for run-specific patches)
+        node_id: Node ID (which node is generating this patch)
 
     Returns:
         Result dictionary with patch_id and status
@@ -138,6 +144,10 @@ def patch_workflow_tool(args: Dict[str, Any], orchestrator_url: str, run_id: str
     if not run_id:
         run_id = args.get('run_id')
 
+    # Get node_id from args or parameter
+    if not node_id:
+        node_id = args.get('node_id')
+
     if not patch_spec:
         raise ValueError("patch_workflow requires 'patch_spec'")
 
@@ -148,4 +158,4 @@ def patch_workflow_tool(args: Dict[str, Any], orchestrator_url: str, run_id: str
         raise ValueError("patch_workflow requires 'run_id' for run-specific patches")
 
     client = PatchClient(orchestrator_url)
-    return client.apply_run_patch(run_id, workflow_owner, patch_spec)
+    return client.apply_run_patch(run_id, workflow_owner, patch_spec, node_id=node_id)

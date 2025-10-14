@@ -166,31 +166,60 @@ func (w *HTTPWorker) handleMessage(ctx context.Context, message redis.XMessage) 
 		}
 	}
 
+	// Track timing for metrics
+	startTime := time.Now()
+
 	// Execute HTTP request
 	result, err := w.executeHTTPRequest(ctx, config)
+	endTime := time.Now()
+
+	// Calculate metrics (even on failure)
+	executionTimeMs := endTime.Sub(startTime).Milliseconds()
+	metrics := map[string]interface{}{
+		"sent_at":           startTime.Format(time.RFC3339Nano),
+		"start_time":        startTime.Format(time.RFC3339Nano),
+		"end_time":          endTime.Format(time.RFC3339Nano),
+		"queue_time_ms":     0,
+		"execution_time_ms": executionTimeMs,
+		"total_duration_ms": executionTimeMs,
+		"memory_start_mb":   0.0,
+		"memory_peak_mb":    0.0,
+		"memory_end_mb":     0.0,
+		"cpu_percent":       0.0,
+		"thread_count":      1,
+	}
+
 	if err != nil {
 		w.logger.Error("HTTP request failed", "error", err)
-		// Signal failure
-		return w.signalCompletion(ctx, &token, "failed", "", map[string]interface{}{
-			"error": err.Error(),
+		// Signal failure with error metadata AND metrics
+		failureResult := map[string]interface{}{
+			"status":  "failed",
+			"error":   err.Error(),
+			"metrics": metrics,
+		}
+		return SignalCompletion(ctx, w.redis, w.logger, &CompletionOpts{
+			Token:      &token,
+			Status:     "failed",
+			ResultData: failureResult, // Send result data even on failure
+			Metadata: map[string]interface{}{
+				"error_type":    "HTTPRequestError",
+				"error_message": err.Error(),
+			},
 		})
 	}
 
-	// Store result in CAS
-	resultJSON, err := json.Marshal(result)
-	if err != nil {
-		return fmt.Errorf("failed to marshal result: %w", err)
-	}
+	// Add metrics to successful result
+	result["metrics"] = metrics
 
-	resultRef, err := w.sdk.CASClient.Put(ctx, resultJSON, "application/json")
-	if err != nil {
-		return fmt.Errorf("failed to store result: %w", err)
-	}
-
-	// Signal completion
-	return w.signalCompletion(ctx, &token, "completed", resultRef, map[string]interface{}{
-		"status_code": result["status_code"],
-		"duration_ms": result["duration_ms"],
+	// Signal completion with result data (Option B: coordinator stores in CAS)
+	return SignalCompletion(ctx, w.redis, w.logger, &CompletionOpts{
+		Token:      &token,
+		Status:     "completed",
+		ResultData: result,
+		Metadata: map[string]interface{}{
+			"status_code": result["status_code"],
+			"duration_ms": result["duration_ms"],
+		},
 	})
 }
 
@@ -281,33 +310,4 @@ func (w *HTTPWorker) executeHTTPRequest(ctx context.Context, config map[string]i
 		"duration_ms", duration.Milliseconds())
 
 	return result, nil
-}
-
-// signalCompletion sends a completion signal to the coordinator
-func (w *HTTPWorker) signalCompletion(ctx context.Context, token *sdk.Token, status, resultRef string, metadata map[string]interface{}) error {
-	signal := map[string]interface{}{
-		"version":    "1.0",
-		"job_id":     token.ID,
-		"run_id":     token.RunID,
-		"node_id":    token.ToNode,
-		"status":     status,
-		"result_ref": resultRef,
-		"metadata":   metadata,
-	}
-
-	signalJSON, err := json.Marshal(signal)
-	if err != nil {
-		return fmt.Errorf("failed to marshal signal: %w", err)
-	}
-
-	if err := w.redis.RPush(ctx, "completion_signals", signalJSON).Err(); err != nil {
-		return fmt.Errorf("failed to push completion signal: %w", err)
-	}
-
-	w.logger.Info("signaled completion",
-		"run_id", token.RunID,
-		"node_id", token.ToNode,
-		"status", status)
-
-	return nil
 }

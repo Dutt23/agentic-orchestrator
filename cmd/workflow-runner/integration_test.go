@@ -106,6 +106,7 @@ return {new_value, 1, hit_zero}
 		SDK:                 workflowSDK,
 		Logger:              logger,
 		OrchestratorBaseURL: "http://localhost:8081",
+		CASClient:           casClient,
 	})
 
 	// Start coordinator in background

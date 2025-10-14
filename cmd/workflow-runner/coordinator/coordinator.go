@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/lyzr/orchestrator/cmd/workflow-runner/compiler"
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/condition"
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/operators"
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/resolver"
@@ -18,13 +19,14 @@ import (
 
 // CompletionSignal represents a worker's completion notification
 type CompletionSignal struct {
-	Version   string                 `json:"version"`    // Protocol version (1.0)
-	JobID     string                 `json:"job_id"`     // Unique job ID
-	RunID     string                 `json:"run_id"`     // Workflow run ID
-	NodeID    string                 `json:"node_id"`    // Node that completed
-	Status    string                 `json:"status"`     // completed|failed
-	ResultRef string                 `json:"result_ref"` // CAS reference to result
-	Metadata  map[string]interface{} `json:"metadata,omitempty"`
+	Version    string                 `json:"version"`              // Protocol version (1.0)
+	JobID      string                 `json:"job_id"`               // Unique job ID
+	RunID      string                 `json:"run_id"`               // Workflow run ID
+	NodeID     string                 `json:"node_id"`              // Node that completed
+	Status     string                 `json:"status"`               // completed|failed
+	ResultData map[string]interface{} `json:"result_data,omitempty"` // Actual result data (coordinator stores in CAS)
+	ResultRef  string                 `json:"result_ref,omitempty"` // CAS reference (deprecated, for backward compat)
+	Metadata   map[string]interface{} `json:"metadata,omitempty"`
 }
 
 // Coordinator handles choreography for workflow execution
@@ -38,6 +40,7 @@ type Coordinator struct {
 	resolver            *resolver.Resolver
 	orchestratorClient  *clients.OrchestratorClient
 	orchestratorBaseURL string
+	casClient           clients.CASClient // CAS client for compiler
 
 	// Extracted modules for clean separation of concerns
 	operators *OperatorOpts
@@ -70,6 +73,7 @@ type CoordinatorOpts struct {
 	SDK                 *sdk.SDK
 	Logger              Logger
 	OrchestratorBaseURL string
+	CASClient           clients.CASClient
 }
 
 // NewCoordinator creates a new coordinator instance
@@ -98,6 +102,7 @@ func NewCoordinator(opts *CoordinatorOpts) *Coordinator {
 		resolver:            resolver.NewResolver(opts.SDK, opts.Logger),
 		orchestratorClient:  orchestratorClient,
 		orchestratorBaseURL: opts.OrchestratorBaseURL,
+		casClient:           opts.CASClient,
 		operators: &OperatorOpts{
 			ControlFlowRouter: controlFlowRouter,
 		},
@@ -179,6 +184,26 @@ func (c *Coordinator) handleCompletion(ctx context.Context, signal *CompletionSi
 			"node_id", signal.NodeID,
 			"result_ref", signal.ResultRef,
 			"error", signal.Metadata)
+
+		// Store result_data in CAS even on failure (for metrics)
+		var failureResultRef string
+		if signal.ResultData != nil {
+			resultID := fmt.Sprintf("artifact://%s-%s-%d", signal.RunID, signal.NodeID, time.Now().UnixNano())
+			casKey := fmt.Sprintf("cas:%s", resultID)
+
+			resultJSON, err := json.Marshal(signal.ResultData)
+			if err == nil {
+				if err := c.redisWrapper.Set(ctx, casKey, string(resultJSON), 0); err == nil {
+					failureResultRef = resultID
+					// Store at :output so RunService can find it
+					c.sdk.StoreContext(ctx, signal.RunID, signal.NodeID, failureResultRef)
+					c.logger.Info("stored failure result in CAS",
+						"run_id", signal.RunID,
+						"node_id", signal.NodeID,
+						"result_ref", failureResultRef)
+				}
+			}
+		}
 
 		// Store failure information in context for debugging and retry logic
 		failureData := map[string]interface{}{
@@ -265,6 +290,55 @@ func (c *Coordinator) handleCompletion(ctx context.Context, signal *CompletionSi
 	// Get counter after consumption for event
 	counter, _ := c.sdk.GetCounter(ctx, signal.RunID)
 
+	// 5. Store result data in CAS and create reference
+	var resultRef string
+	if signal.ResultData != nil {
+		// Generate CAS key
+		resultID := fmt.Sprintf("artifact://%s-%s-%d", signal.RunID, signal.NodeID, time.Now().UnixNano())
+		casKey := fmt.Sprintf("cas:%s", resultID)
+
+		// Store result data in CAS
+		resultJSON, err := json.Marshal(signal.ResultData)
+		if err != nil {
+			c.logger.Error("failed to marshal result data",
+				"run_id", signal.RunID,
+				"node_id", signal.NodeID,
+				"error", err)
+		} else {
+			if err := c.redisWrapper.Set(ctx, casKey, string(resultJSON), 0); err != nil {
+				c.logger.Error("failed to store result in CAS",
+					"run_id", signal.RunID,
+					"node_id", signal.NodeID,
+					"cas_key", casKey,
+					"error", err)
+			} else {
+				resultRef = resultID
+				c.logger.Info("stored result in CAS",
+					"run_id", signal.RunID,
+					"node_id", signal.NodeID,
+					"result_ref", resultRef,
+					"cas_key", casKey)
+			}
+		}
+	} else if signal.ResultRef != "" {
+		// Backward compatibility: use provided ResultRef
+		resultRef = signal.ResultRef
+		c.logger.Debug("using provided result_ref (backward compat)",
+			"run_id", signal.RunID,
+			"node_id", signal.NodeID,
+			"result_ref", resultRef)
+	}
+
+	// Store reference in context for downstream nodes
+	if resultRef != "" {
+		if err := c.sdk.StoreContext(ctx, signal.RunID, signal.NodeID, resultRef); err != nil {
+			c.logger.Error("failed to store context",
+				"run_id", signal.RunID,
+				"node_id", signal.NodeID,
+				"error", err)
+		}
+	}
+
 	// Publish node_completed event
 	if ir.Metadata != nil {
 		if username, ok := ir.Metadata["username"].(string); ok {
@@ -274,20 +348,9 @@ func (c *Coordinator) handleCompletion(ctx context.Context, signal *CompletionSi
 				"node_id":    signal.NodeID,
 				"status":     signal.Status,
 				"counter":    counter,
-				"result_ref": signal.ResultRef,
+				"result_ref": resultRef,
 				"timestamp":  time.Now().Unix(),
 			})
-		}
-	}
-
-	// 5. Load result from CAS for context
-	if signal.ResultRef != "" {
-		// Store in context for downstream nodes
-		if err := c.sdk.StoreContext(ctx, signal.RunID, signal.NodeID+":output", signal.ResultRef); err != nil {
-			c.logger.Error("failed to store context",
-				"run_id", signal.RunID,
-				"node_id", signal.NodeID,
-				"error", err)
 		}
 	}
 
@@ -300,6 +363,21 @@ func (c *Coordinator) handleCompletion(ctx context.Context, signal *CompletionSi
 		return
 	}
 
+	// Re-fetch node from patched IR (in case patches changed its edges or terminal status)
+	node, exists = ir.Nodes[signal.NodeID]
+	if !exists {
+		c.logger.Error("node not found in patched IR",
+			"run_id", signal.RunID,
+			"node_id", signal.NodeID)
+		return
+	}
+
+	c.logger.Info("re-fetched node from patched IR",
+		"run_id", signal.RunID,
+		"node_id", signal.NodeID,
+		"is_terminal", node.IsTerminal,
+		"dependents_count", len(node.Dependents))
+
 	// 7. Determine next nodes (handles branches, loops, etc.)
 	nextNodes, err := c.operators.ControlFlowRouter.DetermineNextNodes(ctx, &operators.CompletionSignal{
 		Version:   signal.Version,
@@ -307,7 +385,7 @@ func (c *Coordinator) handleCompletion(ctx context.Context, signal *CompletionSi
 		RunID:     signal.RunID,
 		NodeID:    signal.NodeID,
 		Status:    signal.Status,
-		ResultRef: signal.ResultRef,
+		ResultRef: resultRef, // Use the CAS ref we just created
 		Metadata:  signal.Metadata,
 	}, node, ir)
 	if err != nil {
@@ -326,6 +404,10 @@ func (c *Coordinator) handleCompletion(ctx context.Context, signal *CompletionSi
 
 	// 8. Emit to appropriate streams and update counter
 	if len(nextNodes) > 0 {
+		// Track which nodes are absorbers (handled inline) vs. workers (published to streams)
+		absorberNodes := []string{}
+		workerNodes := []string{}
+
 		for _, nextNodeID := range nextNodes {
 			nextNode, exists := ir.Nodes[nextNodeID]
 			if !exists {
@@ -334,6 +416,24 @@ func (c *Coordinator) handleCompletion(ctx context.Context, signal *CompletionSi
 					"next_node_id", nextNodeID)
 				continue
 			}
+
+			// Check if this is an absorber node (branch or loop) - handle inline
+			if (nextNode.Branch != nil && nextNode.Branch.Enabled) || (nextNode.Loop != nil && nextNode.Loop.Enabled) {
+				c.logger.Info("detected absorber node (branch/loop) - handling inline",
+					"run_id", signal.RunID,
+					"node_id", nextNodeID,
+					"has_branch", nextNode.Branch != nil && nextNode.Branch.Enabled,
+					"has_loop", nextNode.Loop != nil && nextNode.Loop.Enabled)
+
+				absorberNodes = append(absorberNodes, nextNodeID)
+
+				// Handle absorber node inline - immediately trigger downstream nodes
+				go c.handleAbsorberNode(ctx, signal.RunID, signal.NodeID, nextNodeID, resultRef, nextNode, ir)
+				continue
+			}
+
+			// Regular worker node - publish to stream
+			workerNodes = append(workerNodes, nextNodeID)
 
 			// Load node config (inline or CAS)
 			c.logger.Info("loading node config",
@@ -412,7 +512,7 @@ func (c *Coordinator) handleCompletion(ctx context.Context, signal *CompletionSi
 			stream := c.router.GetStreamForNodeType(nextNode.Type)
 
 			// Publish token to stream with resolved config and IR
-			if err := c.publishToken(ctx, stream, signal.RunID, signal.NodeID, nextNodeID, signal.ResultRef, resolvedConfig, ir); err != nil {
+			if err := c.publishToken(ctx, stream, signal.RunID, signal.NodeID, nextNodeID, resultRef, resolvedConfig, ir); err != nil {
 				c.logger.Error("failed to publish token",
 					"run_id", signal.RunID,
 					"to_node", nextNodeID,
@@ -428,13 +528,21 @@ func (c *Coordinator) handleCompletion(ctx context.Context, signal *CompletionSi
 				"stream", stream)
 		}
 
-		// Apply counter update (+N)
-		if err := c.sdk.Emit(ctx, signal.RunID, signal.NodeID, nextNodes, signal.ResultRef); err != nil {
-			c.logger.Error("failed to emit counter update",
-				"run_id", signal.RunID,
-				"node_id", signal.NodeID,
-				"next_nodes_count", len(nextNodes),
-				"error", err)
+		c.logger.Info("next nodes categorized",
+			"run_id", signal.RunID,
+			"absorber_nodes", absorberNodes,
+			"worker_nodes", workerNodes)
+
+		// Apply counter update (+N) only for worker nodes
+		// Absorber nodes will handle their own counter updates when they complete
+		if len(workerNodes) > 0 {
+			if err := c.sdk.Emit(ctx, signal.RunID, signal.NodeID, workerNodes, resultRef); err != nil {
+				c.logger.Error("failed to emit counter update",
+					"run_id", signal.RunID,
+					"node_id", signal.NodeID,
+					"next_nodes_count", len(workerNodes),
+					"error", err)
+			}
 		}
 	}
 
@@ -471,83 +579,84 @@ func (c *Coordinator) reloadIRIfPatched(ctx context.Context, runID string, curre
 		return nil
 	}
 
-	c.logger.Info("run patches found, materializing workflow",
+	c.logger.Info("run patches found, fetching base workflow from DB",
 		"patch_count", len(patches))
 
-	// Get base workflow from IR metadata
-	// The IR was compiled from a workflow and should have the original workflow stored
-	// We need to reconstruct the workflow format from the IR
-	baseWorkflow := c.irToWorkflow(currentIR)
+	// Fetch base workflow from DB (via orchestrator API)
+	// This ensures we always apply ALL patches to the original base workflow
+	// Not the current cached IR (which may already have patches applied)
+	run, err := c.orchestratorClient.GetRun(ctx, runID)
+	if err != nil {
+		return fmt.Errorf("failed to get run: %w", err)
+	}
+
+	c.logger.Info("fetched run info",
+		"run_id", runID,
+		"base_ref", run.BaseRef)
+
+	// Fetch base artifact containing the original workflow
+	artifact, err := c.orchestratorClient.GetArtifact(ctx, run.BaseRef)
+	if err != nil {
+		return fmt.Errorf("failed to get base artifact: %w", err)
+	}
+
+	c.logger.Info("fetched base workflow artifact",
+		"artifact_id", artifact.ArtifactID,
+		"cas_id", artifact.CASID)
+
+	// Use the artifact content as base workflow
+	baseWorkflow := artifact.Content
 
 	// Materialize workflow with patches applied
+	// This applies ALL patches (1, 2, 3, ...) cumulatively to the base
 	patchedWorkflow, err := c.orchestratorClient.MaterializeWorkflowForRun(ctx, baseWorkflow, runID)
 	if err != nil {
 		return fmt.Errorf("failed to materialize workflow: %w", err)
 	}
 
-	c.logger.Info("patched workflow materialized, updating IR in Redis")
+	c.logger.Info("patched workflow materialized, recompiling to IR format")
 
-	// TODO: Recompile the patched workflow to IR format
-	// For now, we'll store both: keep the current IR structure but update it with new nodes/edges
+	// Parse patched workflow into WorkflowSchema format for compiler
+	workflowSchema := &compiler.WorkflowSchema{}
 
-	// Convert patched workflow back to IR format and update Redis
-	// For now, we store the patched workflow in a way that loadIR can handle
-	patchedIRJSON, err := json.Marshal(patchedWorkflow)
+	// Marshal and unmarshal to convert map to struct
+	patchedWorkflowJSON, err := json.Marshal(patchedWorkflow)
 	if err != nil {
 		return fmt.Errorf("failed to marshal patched workflow: %w", err)
 	}
 
-	// Store updated workflow in Redis at a temporary key
-	// The IR will be recompiled on next load
-	workflowKey := fmt.Sprintf("workflow:%s:patched", runID)
-	if err := c.redisWrapper.SetWithExpiry(ctx, workflowKey, string(patchedIRJSON), 0); err != nil {
-		return fmt.Errorf("failed to store patched workflow: %w", err)
+	if err := json.Unmarshal(patchedWorkflowJSON, workflowSchema); err != nil {
+		return fmt.Errorf("failed to unmarshal patched workflow to schema: %w", err)
 	}
 
-	c.logger.Info("patched workflow stored, will be recompiled on next IR load",
+	// Recompile the patched workflow to IR format
+	patchedIR, err := compiler.CompileWorkflowSchema(workflowSchema, c.casClient)
+	if err != nil {
+		return fmt.Errorf("failed to compile patched workflow: %w", err)
+	}
+
+	c.logger.Info("patched workflow recompiled to IR",
 		"run_id", runID,
+		"node_count", len(patchedIR.Nodes),
+		"patches_applied", len(patches))
+
+	// Store the recompiled IR in Redis (replacing the old IR)
+	patchedIRJSON, err := json.Marshal(patchedIR)
+	if err != nil {
+		return fmt.Errorf("failed to marshal patched IR: %w", err)
+	}
+
+	irKey := fmt.Sprintf("ir:%s", runID)
+	if err := c.redisWrapper.Set(ctx, irKey, string(patchedIRJSON), 0); err != nil {
+		return fmt.Errorf("failed to store patched IR: %w", err)
+	}
+
+	c.logger.Info("patched IR stored successfully",
+		"run_id", runID,
+		"ir_key", irKey,
 		"patches_applied", len(patches))
 
 	return nil
-}
-
-// irToWorkflow converts IR back to workflow schema format
-func (c *Coordinator) irToWorkflow(ir *sdk.IR) map[string]interface{} {
-	// Build workflow from IR
-	nodes := []map[string]interface{}{}
-	edges := []map[string]interface{}{}
-
-	// Convert nodes
-	for _, node := range ir.Nodes {
-		wfNode := map[string]interface{}{
-			"id":   node.ID,
-			"type": node.Type,
-		}
-		if node.Config != nil {
-			wfNode["config"] = node.Config
-		}
-		nodes = append(nodes, wfNode)
-
-		// Convert edges from dependents
-		for _, dep := range node.Dependents {
-			edges = append(edges, map[string]interface{}{
-				"from": node.ID,
-				"to":   dep,
-			})
-		}
-	}
-
-	workflow := map[string]interface{}{
-		"nodes": nodes,
-		"edges": edges,
-	}
-
-	// Add metadata if present
-	if ir.Metadata != nil {
-		workflow["metadata"] = ir.Metadata
-	}
-
-	return workflow
 }
 
 // loadIR loads the latest IR from Redis (no caching for patch support)
@@ -566,6 +675,168 @@ func (c *Coordinator) loadIR(ctx context.Context, runID string) (*sdk.IR, error)
 	return &ir, nil
 }
 
+// handleAbsorberNode handles branch/loop nodes inline (no worker needed)
+func (c *Coordinator) handleAbsorberNode(ctx context.Context, runID, fromNode, absorberNodeID, payloadRef string, absorberNode *sdk.Node, ir *sdk.IR) {
+	startTime := time.Now()
+	c.logger.Info("handling absorber node inline",
+		"run_id", runID,
+		"from_node", fromNode,
+		"absorber_node", absorberNodeID)
+
+	// Create output with metrics for the absorber node (so it shows up in UI)
+	// Branch/loop nodes execute in ~1ms with zero resources
+	absorberOutput := map[string]interface{}{
+		"status": "completed",
+		"metrics": map[string]interface{}{
+			"sent_at":           startTime.Format(time.RFC3339Nano),
+			"start_time":        startTime.Format(time.RFC3339Nano),
+			"end_time":          startTime.Add(1 * time.Millisecond).Format(time.RFC3339Nano),
+			"queue_time_ms":     0,
+			"execution_time_ms": 1, // Absorbers execute in ~1ms
+			"total_duration_ms": 1,
+			"memory_start_mb":   0.0,
+			"memory_peak_mb":    0.0,
+			"memory_end_mb":     0.0,
+			"cpu_percent":       0.0,
+			"thread_count":      0,
+		},
+	}
+
+	// Store absorber output in CAS (so it appears in node executions)
+	absorberResultID := fmt.Sprintf("artifact://%s-%s-%d", runID, absorberNodeID, time.Now().UnixNano())
+	absorberCASKey := fmt.Sprintf("cas:%s", absorberResultID)
+	absorberJSON, err := json.Marshal(absorberOutput)
+	if err == nil {
+		if err := c.redisWrapper.Set(ctx, absorberCASKey, string(absorberJSON), 0); err == nil {
+			// Store reference in context
+			c.sdk.StoreContext(ctx, runID, absorberNodeID, absorberResultID)
+			c.logger.Debug("stored absorber output in CAS",
+				"run_id", runID,
+				"absorber_node", absorberNodeID,
+				"result_ref", absorberResultID)
+		}
+	}
+
+	// Create a synthetic completion signal for the absorber node
+	// This allows us to reuse the existing control flow logic
+	absorberSignal := &operators.CompletionSignal{
+		Version:   "1.0",
+		JobID:     fmt.Sprintf("%s-%s-absorber", runID, absorberNodeID),
+		RunID:     runID,
+		NodeID:    absorberNodeID,
+		Status:    "completed",
+		ResultRef: payloadRef, // Use the output from the previous node for condition evaluation
+		Metadata:  make(map[string]interface{}),
+	}
+
+	// Determine next nodes using control flow logic (handles branch/loop evaluation)
+	nextNodes, err := c.operators.ControlFlowRouter.DetermineNextNodes(ctx, absorberSignal, absorberNode, ir)
+	if err != nil {
+		c.logger.Error("failed to determine next nodes for absorber",
+			"run_id", runID,
+			"absorber_node", absorberNodeID,
+			"error", err)
+		return
+	}
+
+	c.logger.Info("absorber node determined next nodes",
+		"run_id", runID,
+		"absorber_node", absorberNodeID,
+		"next_nodes", nextNodes,
+		"count", len(nextNodes))
+
+	// Emit tokens to next nodes (recursively handles nested absorbers)
+	if len(nextNodes) > 0 {
+		for _, nextNodeID := range nextNodes {
+			nextNode, exists := ir.Nodes[nextNodeID]
+			if !exists {
+				c.logger.Error("next node not found in IR",
+					"run_id", runID,
+					"next_node_id", nextNodeID)
+				continue
+			}
+
+			// Check if next node is also an absorber - recurse
+			if (nextNode.Branch != nil && nextNode.Branch.Enabled) || (nextNode.Loop != nil && nextNode.Loop.Enabled) {
+				c.logger.Info("next node is also an absorber - recursing",
+					"run_id", runID,
+					"absorber_node", absorberNodeID,
+					"next_absorber", nextNodeID)
+				go c.handleAbsorberNode(ctx, runID, absorberNodeID, nextNodeID, payloadRef, nextNode, ir)
+				continue
+			}
+
+			// Load and resolve config for worker node
+			var config map[string]interface{}
+			if len(nextNode.Config) > 0 {
+				config = nextNode.Config
+			} else if nextNode.ConfigRef != "" {
+				configData, err := c.sdk.LoadConfig(ctx, nextNode.ConfigRef)
+				if err != nil {
+					c.logger.Error("failed to load config from CAS",
+						"run_id", runID,
+						"node_id", nextNodeID,
+						"config_ref", nextNode.ConfigRef,
+						"error", err)
+					continue
+				}
+				if configMap, ok := configData.(map[string]interface{}); ok {
+					config = configMap
+				} else {
+					c.logger.Error("config is not a map",
+						"run_id", runID,
+						"node_id", nextNodeID)
+					continue
+				}
+			}
+
+			var resolvedConfig map[string]interface{}
+			if config != nil {
+				var err error
+				resolvedConfig, err = c.resolver.ResolveConfig(ctx, runID, config)
+				if err != nil {
+					c.logger.Error("failed to resolve config variables",
+						"run_id", runID,
+						"node_id", nextNodeID,
+						"error", err)
+					resolvedConfig = config
+				}
+			}
+
+			// Publish to worker stream
+			stream := c.router.GetStreamForNodeType(nextNode.Type)
+			if err := c.publishToken(ctx, stream, runID, absorberNodeID, nextNodeID, payloadRef, resolvedConfig, ir); err != nil {
+				c.logger.Error("failed to publish token from absorber",
+					"run_id", runID,
+					"absorber_node", absorberNodeID,
+					"to_node", nextNodeID,
+					"error", err)
+				continue
+			}
+
+			c.logger.Debug("absorber published token to worker",
+				"run_id", runID,
+				"absorber_node", absorberNodeID,
+				"to_node", nextNodeID,
+				"stream", stream)
+		}
+
+		// Update counter for worker nodes emitted by absorber
+		if err := c.sdk.Emit(ctx, runID, absorberNodeID, nextNodes, payloadRef); err != nil {
+			c.logger.Error("failed to emit counter update from absorber",
+				"run_id", runID,
+				"absorber_node", absorberNodeID,
+				"next_nodes_count", len(nextNodes),
+				"error", err)
+		}
+	}
+
+	c.logger.Info("absorber node completed inline",
+		"run_id", runID,
+		"absorber_node", absorberNodeID,
+		"emitted_count", len(nextNodes))
+}
+
 // publishToken publishes a token to a Redis stream with resolved config
 func (c *Coordinator) publishToken(ctx context.Context, stream, runID, fromNode, toNode, payloadRef string, resolvedConfig map[string]interface{}, ir *sdk.IR) error {
 	// Generate unique job ID for this token
@@ -578,13 +849,15 @@ func (c *Coordinator) publishToken(ctx context.Context, stream, runID, fromNode,
 		"resolvedConfig_nil", resolvedConfig == nil,
 		"resolvedConfig", resolvedConfig)
 
+	sentAt := time.Now().UTC()
 	token := map[string]interface{}{
 		"id":          jobID, // Add job ID for agent-runner-py
 		"run_id":      runID,
 		"from_node":   fromNode,
 		"to_node":     toNode,
 		"payload_ref": payloadRef,
-		"created_at":  time.Now().UTC().Format(time.RFC3339),
+		"created_at":  sentAt.Format(time.RFC3339),
+		"sent_at":     sentAt.Format(time.RFC3339Nano), // High precision timestamp for metrics
 	}
 
 	// Include resolved config if available

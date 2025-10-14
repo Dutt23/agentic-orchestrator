@@ -125,6 +125,7 @@ func createWorkflowComponents(deps *dependencies, components *bootstrap.Componen
 			SDK:                 deps.workflowSDK,
 			Logger:              components.Logger,
 			OrchestratorBaseURL: deps.orchestratorURL,
+			CASClient:           deps.casClient,
 		}),
 		httpWorker:     worker.NewHTTPWorker(deps.redisClient, deps.workflowSDK, components.Logger),
 		hitlWorker:     worker.NewHITLWorker(deps.redisClient, deps.workflowSDK, components.Logger),

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -205,6 +206,7 @@ type RunDetails struct {
 	BaseWorkflowIR  map[string]interface{}        `json:"base_workflow_ir"` // Workflow before any patches
 	WorkflowIR      map[string]interface{}        `json:"workflow_ir"`      // Workflow after all patches
 	NodeExecutions  map[string]*NodeExecution     `json:"node_executions"`
+	NodeOutputsRaw  map[string]interface{}        `json:"node_outputs_raw,omitempty"` // Raw node outputs from Redis context
 	Patches         []PatchInfo                   `json:"patches,omitempty"`
 }
 
@@ -217,6 +219,22 @@ type NodeExecution struct {
 	StartedAt   *time.Time             `json:"started_at,omitempty"`
 	CompletedAt *time.Time             `json:"completed_at,omitempty"`
 	Error       *string                `json:"error,omitempty"`
+	Metrics     *ExecutionMetrics      `json:"metrics,omitempty"`
+}
+
+// ExecutionMetrics represents performance metrics for node execution
+type ExecutionMetrics struct {
+	SentAt          string  `json:"sent_at"`
+	StartTime       string  `json:"start_time"`
+	EndTime         string  `json:"end_time"`
+	QueueTimeMs     int     `json:"queue_time_ms"`
+	ExecutionTimeMs int     `json:"execution_time_ms"`
+	TotalDurationMs int     `json:"total_duration_ms"`
+	MemoryStartMb   float64 `json:"memory_start_mb"`
+	MemoryPeakMb    float64 `json:"memory_peak_mb"`
+	MemoryEndMb     float64 `json:"memory_end_mb"`
+	CpuPercent      float64 `json:"cpu_percent"`
+	ThreadCount     int     `json:"thread_count"`
 }
 
 // PatchInfo represents a patch applied during execution
@@ -225,6 +243,52 @@ type PatchInfo struct {
 	NodeID      *string                  `json:"node_id,omitempty"` // Which node generated this patch
 	Operations  []map[string]interface{} `json:"operations"`
 	Description string                   `json:"description"`
+}
+
+// parseMetrics extracts metrics from output data
+func parseMetrics(metricsData map[string]interface{}) *ExecutionMetrics {
+	metrics := &ExecutionMetrics{}
+
+	// Extract string fields
+	if v, ok := metricsData["sent_at"].(string); ok {
+		metrics.SentAt = v
+	}
+	if v, ok := metricsData["start_time"].(string); ok {
+		metrics.StartTime = v
+	}
+	if v, ok := metricsData["end_time"].(string); ok {
+		metrics.EndTime = v
+	}
+
+	// Extract int fields (may come as float64 from JSON)
+	if v, ok := metricsData["queue_time_ms"].(float64); ok {
+		metrics.QueueTimeMs = int(v)
+	}
+	if v, ok := metricsData["execution_time_ms"].(float64); ok {
+		metrics.ExecutionTimeMs = int(v)
+	}
+	if v, ok := metricsData["total_duration_ms"].(float64); ok {
+		metrics.TotalDurationMs = int(v)
+	}
+	if v, ok := metricsData["thread_count"].(float64); ok {
+		metrics.ThreadCount = int(v)
+	}
+
+	// Extract float64 fields
+	if v, ok := metricsData["memory_start_mb"].(float64); ok {
+		metrics.MemoryStartMb = v
+	}
+	if v, ok := metricsData["memory_peak_mb"].(float64); ok {
+		metrics.MemoryPeakMb = v
+	}
+	if v, ok := metricsData["memory_end_mb"].(float64); ok {
+		metrics.MemoryEndMb = v
+	}
+	if v, ok := metricsData["cpu_percent"].(float64); ok {
+		metrics.CpuPercent = v
+	}
+
+	return metrics
 }
 
 // loadWorkflowIR loads the workflow IR from Redis for a given run
@@ -330,6 +394,53 @@ func (s *RunService) bulkFetchCASData(ctx context.Context, contextData map[strin
 	return casDataMap, nil
 }
 
+// bulkFetchAllCASFromContext fetches ALL CAS references from context data (not limited to IR nodes)
+func (s *RunService) bulkFetchAllCASFromContext(ctx context.Context, contextData map[string]string) (map[string]map[string]interface{}, error) {
+	// Collect all CAS references from ALL context keys ending with :output
+	casRefs := make([]string, 0)
+
+	for key, value := range contextData {
+		// Check if this is an output key and the value looks like a CAS reference
+		if strings.HasSuffix(key, ":output") && strings.HasPrefix(value, "artifact://") {
+			casRefs = append(casRefs, value)
+		}
+	}
+
+	casDataMap := make(map[string]map[string]interface{})
+	if len(casRefs) == 0 {
+		return casDataMap, nil
+	}
+
+	// Build cas keys
+	casKeys := make([]string, len(casRefs))
+	for i, casRef := range casRefs {
+		casKeys[i] = fmt.Sprintf("cas:%s", casRef)
+	}
+
+	// Bulk GET with pipeline
+	casResults, err := s.redis.GetMultiple(ctx, casKeys)
+	if err != nil {
+		return nil, fmt.Errorf("failed to bulk fetch CAS data: %w", err)
+	}
+
+	// Parse all CAS results
+	for casKey, data := range casResults {
+		// Extract casRef from "cas:{casRef}"
+		casRef := strings.TrimPrefix(casKey, "cas:")
+
+		var result map[string]interface{}
+		if err := json.Unmarshal([]byte(data), &result); err != nil {
+			s.components.Logger.Warn("failed to unmarshal CAS data",
+				"cas_ref", casRef,
+				"error", err)
+			continue
+		}
+		casDataMap[casRef] = result
+	}
+
+	return casDataMap, nil
+}
+
 // buildNodeExecutions builds the node execution map from workflow IR, context data, and CAS data
 func (s *RunService) buildNodeExecutions(
 	ctx context.Context,
@@ -345,22 +456,24 @@ func (s *RunService) buildNodeExecutions(
 		return nodeExecutions
 	}
 
-	// Use centralized status logic from Run model
-	defaultStatus := run.GetDefaultNodeStatus()
-
 	for nodeID := range nodes {
 		execution := &NodeExecution{
 			NodeID: nodeID,
-			Status: defaultStatus, // Use inferred status
+			Status: "pending", // Default to pending (not yet executed)
 		}
 
-		// Check if node has output in context (more specific status)
+		// Check if node has output in context
 		outputKey := nodeID + ":output"
 		if outputRef, exists := contextData[outputKey]; exists {
 			// Get output from bulk-fetched CAS data
 			if output, found := casDataMap[outputRef]; found {
 				execution.Output = output
-				execution.Status = "completed"
+				execution.Status = "completed" // Only mark completed if has output
+
+				// Extract metrics if present in output
+				if metricsData, ok := output["metrics"].(map[string]interface{}); ok {
+					execution.Metrics = parseMetrics(metricsData)
+				}
 			}
 		}
 
@@ -370,8 +483,20 @@ func (s *RunService) buildNodeExecutions(
 			var failure map[string]interface{}
 			if err := json.Unmarshal([]byte(failureData), &failure); err == nil {
 				execution.Status = "failed"
+
+				// Extract error message
 				if errMsg, ok := failure["error"].(string); ok {
 					execution.Error = &errMsg
+				} else if errMap, ok := failure["error"].(map[string]interface{}); ok {
+					// Error might be a nested object
+					if msg, ok := errMap["error_message"].(string); ok {
+						execution.Error = &msg
+					}
+				}
+
+				// Extract metrics from failure if present
+				if metricsData, ok := failure["metrics"].(map[string]interface{}); ok {
+					execution.Metrics = parseMetrics(metricsData)
 				}
 			}
 		}
@@ -380,6 +505,44 @@ func (s *RunService) buildNodeExecutions(
 	}
 
 	return nodeExecutions
+}
+
+// buildNodeOutputsRaw builds a raw map of node outputs directly from Redis context
+func (s *RunService) buildNodeOutputsRaw(
+	ctx context.Context,
+	contextData map[string]string,
+	casDataMap map[string]map[string]interface{},
+) map[string]interface{} {
+	nodeOutputsRaw := make(map[string]interface{})
+
+	// Iterate through all context data
+	for key, value := range contextData {
+		// Check if this is an output key (format: "nodeID:output")
+		if strings.HasSuffix(key, ":output") {
+			nodeID := strings.TrimSuffix(key, ":output")
+
+			// Try to get the actual output data from CAS
+			if output, found := casDataMap[value]; found {
+				nodeOutputsRaw[nodeID] = output
+			} else {
+				// If not in CAS, store the reference itself
+				nodeOutputsRaw[nodeID] = map[string]interface{}{
+					"ref": value,
+				}
+			}
+		} else if strings.HasSuffix(key, ":failure") {
+			// Also capture failure data
+			nodeID := strings.TrimSuffix(key, ":failure")
+
+			var failureData map[string]interface{}
+			if err := json.Unmarshal([]byte(value), &failureData); err == nil {
+				// Store under a special key to indicate failure
+				nodeOutputsRaw[nodeID+"_failure"] = failureData
+			}
+		}
+	}
+
+	return nodeOutputsRaw
 }
 
 // loadRunPatches loads patches for the given run with operations
@@ -439,28 +602,36 @@ func (s *RunService) GetRunDetails(ctx context.Context, runID uuid.UUID) (*RunDe
 		contextData = make(map[string]string) // Continue with empty context
 	}
 
-	// 5. Build node executions
-	var nodeExecutions map[string]*NodeExecution
-	nodes, ok := workflowIR["nodes"].(map[string]interface{})
-	if ok {
-		// Bulk fetch CAS data for node outputs
-		casDataMap, err := s.bulkFetchCASData(ctx, contextData, nodes)
+	// 5. Bulk fetch ALL CAS data from context (including dynamically added nodes)
+	casDataMap := make(map[string]map[string]interface{})
+	if len(contextData) > 0 {
+		var err error
+		casDataMap, err = s.bulkFetchAllCASFromContext(ctx, contextData)
 		if err != nil {
 			s.components.Logger.Warn("failed to bulk fetch CAS data", "error", err)
 			casDataMap = make(map[string]map[string]interface{}) // Continue with empty CAS data
 		}
+	}
 
-		// Build node executions using the fetched data
+	// 6. Build node executions (only for nodes in workflow IR)
+	var nodeExecutions map[string]*NodeExecution
+	if _, ok := workflowIR["nodes"].(map[string]interface{}); ok {
 		nodeExecutions = s.buildNodeExecutions(ctx, run, workflowIR, contextData, casDataMap)
 	} else {
 		nodeExecutions = make(map[string]*NodeExecution)
 	}
 
-	// 6. Load patches for this run
+	// 7. Load patches for this run
 	patches, err := s.loadRunPatches(ctx, runID)
 	if err != nil {
 		s.components.Logger.Warn("failed to load patches with operations", "run_id", runID, "error", err)
 		patches = []PatchInfo{} // Continue with empty patches
+	}
+
+	// 8. Build raw node outputs map (all nodes from Redis context, including dynamically added ones)
+	var nodeOutputsRaw map[string]interface{}
+	if len(contextData) > 0 {
+		nodeOutputsRaw = s.buildNodeOutputsRaw(ctx, contextData, casDataMap)
 	}
 
 	return &RunDetails{
@@ -468,6 +639,7 @@ func (s *RunService) GetRunDetails(ctx context.Context, runID uuid.UUID) (*RunDe
 		BaseWorkflowIR:  baseWorkflowIR,
 		WorkflowIR:      workflowIR,
 		NodeExecutions:  nodeExecutions,
+		NodeOutputsRaw:  nodeOutputsRaw,
 		Patches:         patches,
 	}, nil
 }

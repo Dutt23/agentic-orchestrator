@@ -198,34 +198,33 @@ func (w *HITLWorker) handleMessage(ctx context.Context, message redis.XMessage) 
 	approved, approvalData, err := w.waitForApproval(ctx, approvalKey, timeout)
 	if err != nil {
 		w.logger.Error("failed to wait for approval", "error", err)
-		return w.signalCompletion(ctx, &token, "failed", "", map[string]interface{}{
-			"error": err.Error(),
+		return SignalCompletion(ctx, w.redis, w.logger, &CompletionOpts{
+			Token:  &token,
+			Status: "failed",
+			Metadata: map[string]interface{}{
+				"error_type":    "ApprovalError",
+				"error_message": err.Error(),
+			},
 		})
 	}
 
 	// Create result
 	result := map[string]interface{}{
-		"status":       "completed",
-		"approved":     approved,
+		"status":        "completed",
+		"approved":      approved,
 		"approval_data": approvalData,
-		"node_id":      token.ToNode,
-		"timestamp":    time.Now().Unix(),
+		"node_id":       token.ToNode,
+		"timestamp":     time.Now().Unix(),
 	}
 
-	// Store result in CAS
-	resultJSON, err := json.Marshal(result)
-	if err != nil {
-		return fmt.Errorf("failed to marshal result: %w", err)
-	}
-
-	resultRef, err := w.sdk.CASClient.Put(ctx, resultJSON, "application/json")
-	if err != nil {
-		return fmt.Errorf("failed to store result: %w", err)
-	}
-
-	// Signal completion
-	return w.signalCompletion(ctx, &token, "completed", resultRef, map[string]interface{}{
-		"approved": approved,
+	// Signal completion with result data (Option B: coordinator stores in CAS)
+	return SignalCompletion(ctx, w.redis, w.logger, &CompletionOpts{
+		Token:      &token,
+		Status:     "completed",
+		ResultData: result,
+		Metadata: map[string]interface{}{
+			"approved": approved,
+		},
 	})
 }
 
@@ -344,35 +343,6 @@ func (w *HITLWorker) publishApprovalRequest(ctx context.Context, runID, nodeID s
 		"channel", channel,
 		"run_id", runID,
 		"node_id", nodeID)
-
-	return nil
-}
-
-// signalCompletion sends a completion signal to the coordinator
-func (w *HITLWorker) signalCompletion(ctx context.Context, token *sdk.Token, status, resultRef string, metadata map[string]interface{}) error {
-	signal := map[string]interface{}{
-		"version":    "1.0",
-		"job_id":     token.ID,
-		"run_id":     token.RunID,
-		"node_id":    token.ToNode,
-		"status":     status,
-		"result_ref": resultRef,
-		"metadata":   metadata,
-	}
-
-	signalJSON, err := json.Marshal(signal)
-	if err != nil {
-		return fmt.Errorf("failed to marshal signal: %w", err)
-	}
-
-	if err := w.redis.RPush(ctx, "completion_signals", signalJSON).Err(); err != nil {
-		return fmt.Errorf("failed to push completion signal: %w", err)
-	}
-
-	w.logger.Info("signaled completion",
-		"run_id", token.RunID,
-		"node_id", token.ToNode,
-		"status", status)
 
 	return nil
 }

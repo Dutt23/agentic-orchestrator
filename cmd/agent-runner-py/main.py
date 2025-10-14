@@ -11,6 +11,9 @@ import logging
 import json
 import yaml
 import time
+import psutil
+import threading
+from datetime import datetime, timezone
 from threading import Thread
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Any, Optional
@@ -135,6 +138,15 @@ class AgentService:
         Args:
             job: Job dictionary from Redis queue
         """
+        # Track execution metrics
+        sent_at = job.get('sent_at')  # From coordinator
+        start_time = datetime.now(timezone.utc)
+
+        # Track initial resources
+        process = psutil.Process()
+        memory_start = process.memory_info().rss / (1024 * 1024)  # Convert to MB
+        memory_peak = memory_start
+
         # Log the received job for debugging
         logger.info(f"Received job data: {json.dumps(job, indent=2)}")
 
@@ -186,6 +198,10 @@ class AgentService:
             logger.info(f"Calling LLM for job {job_id}")
             llm_result = self.llm.chat(task, enhanced_context)
 
+            # Track peak memory during LLM execution
+            current_memory = process.memory_info().rss / (1024 * 1024)
+            memory_peak = max(memory_peak, current_memory)
+
             tool_calls = llm_result.get('tool_calls', [])
             logger.info(f"LLM returned {len(tool_calls)} tool calls")
 
@@ -215,6 +231,51 @@ class AgentService:
                 tool_call = tool_calls[0]
                 result_data = self._execute_tool(job, tool_call)
 
+                # Track peak memory after tool execution
+                current_memory = process.memory_info().rss / (1024 * 1024)
+                memory_peak = max(memory_peak, current_memory)
+
+            # Calculate execution metrics
+            end_time = datetime.now(timezone.utc)
+            memory_end = process.memory_info().rss / (1024 * 1024)
+            cpu_percent = process.cpu_percent(interval=0.1)  # 100ms sample
+            thread_count = threading.active_count()
+
+            # Calculate timing metrics
+            execution_time_ms = int((end_time - start_time).total_seconds() * 1000)
+            if sent_at:
+                try:
+                    sent_dt = datetime.fromisoformat(sent_at.replace('Z', '+00:00'))
+                    queue_time_ms = int((start_time - sent_dt).total_seconds() * 1000)
+                    total_duration_ms = int((end_time - sent_dt).total_seconds() * 1000)
+                except (ValueError, AttributeError):
+                    logger.warning(f"Failed to parse sent_at timestamp: {sent_at}")
+                    queue_time_ms = 0
+                    total_duration_ms = execution_time_ms
+            else:
+                queue_time_ms = 0
+                total_duration_ms = execution_time_ms
+
+            # Embed metrics in result_data
+            result_data["metrics"] = {
+                "sent_at": sent_at,
+                "start_time": start_time.isoformat(),
+                "end_time": end_time.isoformat(),
+                "queue_time_ms": queue_time_ms,
+                "execution_time_ms": execution_time_ms,
+                "total_duration_ms": total_duration_ms,
+                "memory_start_mb": round(memory_start, 2),
+                "memory_peak_mb": round(memory_peak, 2),
+                "memory_end_mb": round(memory_end, 2),
+                "cpu_percent": round(cpu_percent, 2),
+                "thread_count": thread_count
+            }
+
+            logger.info(f"Job {job_id} execution metrics: "
+                       f"queue={queue_time_ms}ms, exec={execution_time_ms}ms, "
+                       f"mem={memory_start:.1f}->{memory_peak:.1f}->{memory_end:.1f}MB, "
+                       f"cpu={cpu_percent:.1f}%, threads={thread_count}")
+
             # Store result in database
             result_ref = self._store_result(
                 job_id=job_id,
@@ -226,13 +287,14 @@ class AgentService:
             )
 
             # Signal completion to coordinator (new architecture)
+            # Send the full result_data so coordinator can store it in CAS
             completion_signal = {
                 "version": "1.0",
                 "job_id": job_id,
                 "run_id": run_id,
                 "node_id": node_id,
                 "status": "completed",
-                "result_ref": result_ref,
+                "result_data": result_data,  # Send full data, not just ref
                 "metadata": {
                     "tool_calls": [tc.get('function', {}).get('name') for tc in tool_calls],
                     "tokens_used": llm_result.get('tokens_used'),
@@ -268,6 +330,25 @@ class AgentService:
         except Exception as e:
             logger.error(f"Job {job_id} failed: {e}", exc_info=True)
 
+            # Calculate failure metrics
+            end_time = datetime.now(timezone.utc)
+            memory_end = process.memory_info().rss / (1024 * 1024)
+            cpu_percent = process.cpu_percent(interval=0.1)
+            thread_count = threading.active_count()
+
+            execution_time_ms = int((end_time - start_time).total_seconds() * 1000)
+            if sent_at:
+                try:
+                    sent_dt = datetime.fromisoformat(sent_at.replace('Z', '+00:00'))
+                    queue_time_ms = int((start_time - sent_dt).total_seconds() * 1000)
+                    total_duration_ms = int((end_time - sent_dt).total_seconds() * 1000)
+                except (ValueError, AttributeError):
+                    queue_time_ms = 0
+                    total_duration_ms = execution_time_ms
+            else:
+                queue_time_ms = 0
+                total_duration_ms = execution_time_ms
+
             # ACK message even on failure to remove from pending
             if job.get('message_id'):
                 self.redis.ack_message(job['message_id'])
@@ -283,7 +364,20 @@ class AgentService:
                 "metadata": {
                     "error_type": type(e).__name__,
                     "error_message": str(e),
-                    "retryable": self._is_retryable(e)
+                    "retryable": self._is_retryable(e),
+                    "metrics": {
+                        "sent_at": sent_at,
+                        "start_time": start_time.isoformat(),
+                        "end_time": end_time.isoformat(),
+                        "queue_time_ms": queue_time_ms,
+                        "execution_time_ms": execution_time_ms,
+                        "total_duration_ms": total_duration_ms,
+                        "memory_start_mb": round(memory_start, 2),
+                        "memory_peak_mb": round(memory_peak, 2),
+                        "memory_end_mb": round(memory_end, 2),
+                        "cpu_percent": round(cpu_percent, 2),
+                        "thread_count": thread_count
+                    }
                 }
             }
             self.redis.signal_completion(failure_signal)
@@ -333,8 +427,13 @@ class AgentService:
             # Add workflow info from job if not in arguments
             if 'workflow_owner' not in arguments and job.get('workflow_owner'):
                 arguments['workflow_owner'] = job['workflow_owner']
-            # Pass run_id for run-specific patches
-            return patch_workflow_tool(arguments, self.orchestrator_url, run_id=job.get('run_id'))
+            # Pass run_id and node_id for run-specific patches
+            return patch_workflow_tool(
+                arguments,
+                self.orchestrator_url,
+                run_id=job.get('run_id'),
+                node_id=job.get('node_id')
+            )
 
         else:
             raise ValueError(f"Unknown tool: {tool_name}")
@@ -348,7 +447,7 @@ class AgentService:
         tool_calls: list,
         llm_metadata: Dict[str, Any]
     ) -> str:
-        """Store result in database.
+        """Store result in memory storage.
 
         Args:
             job_id: Job identifier
@@ -360,8 +459,10 @@ class AgentService:
 
         Returns:
             result_ref: Reference to stored result (artifact://uuid)
+
+        Note: Actual result_data is sent to coordinator in completion signal.
+        Coordinator stores it in Redis CAS. This memory storage is for backward compatibility.
         """
-        # Store in memory for now
         result_id = self.storage.store_result(
             job_id=job_id,
             run_id=run_id,

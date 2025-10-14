@@ -232,6 +232,42 @@ func (c *OrchestratorClient) applyReplace(workflow map[string]interface{}, path 
 	return nil, fmt.Errorf("replace operation not yet implemented")
 }
 
+// RunResponse represents the response from GET /api/v1/runs/:id
+type RunResponse struct {
+	RunID       string `json:"run_id"`
+	BaseKind    string `json:"base_kind"`
+	BaseRef     string `json:"base_ref"`
+	Status      string `json:"status"`
+	SubmittedBy string `json:"submitted_by"`
+}
+
+// GetRun fetches a run by ID from the orchestrator
+// Requires: ctx with UserID set via WithUserID()
+func (c *OrchestratorClient) GetRun(ctx context.Context, runID string) (*RunResponse, error) {
+	url := fmt.Sprintf("%s/api/v1/runs/%s", c.baseURL, runID)
+	resp, err := c.http.DoRequest(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch run: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("run request failed: status=%d, body=%s", resp.StatusCode, string(body))
+	}
+
+	var run RunResponse
+	if err := json.NewDecoder(resp.Body).Decode(&run); err != nil {
+		return nil, fmt.Errorf("failed to decode run response: %w", err)
+	}
+
+	c.logger.Info("fetched run from orchestrator",
+		"run_id", run.RunID,
+		"base_ref", run.BaseRef)
+
+	return &run, nil
+}
+
 // ArtifactResponse represents the response from GET /api/v1/artifacts/:id
 type ArtifactResponse struct {
 	ArtifactID string                 `json:"artifact_id"`
