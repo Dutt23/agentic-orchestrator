@@ -7,9 +7,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	redisWrapper "github.com/lyzr/orchestrator/common/redis"
 	"github.com/lyzr/orchestrator/common/metrics"
+	redisWrapper "github.com/lyzr/orchestrator/common/redis"
 	"github.com/lyzr/orchestrator/common/sdk"
+	"github.com/lyzr/orchestrator/common/worker"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -432,9 +433,9 @@ func (w *HITLWorker) handleApprovalResponse(ctx context.Context, message redis.X
 	// Reconstruct token (we need full token for SignalCompletion)
 	// For now, we'll create a minimal token - in production might need to store full token
 	token := sdk.Token{
-		ID:      tokenID,
-		RunID:   runID,
-		ToNode:  nodeID,
+		ID:       tokenID,
+		RunID:    runID,
+		ToNode:   nodeID,
 		FromNode: "", // Not available, but OK for completion signal
 	}
 
@@ -498,7 +499,7 @@ func (w *HITLWorker) handleApprovalResponse(ctx context.Context, message redis.X
 		"node_id", nodeID,
 		"approved", approved)
 
-	err = SignalCompletion(ctx, w.redis.GetUnderlying(), w.logger, &CompletionOpts{
+	err = worker.SignalCompletion(ctx, w.redis.GetUnderlying(), w.logger, &worker.CompletionOpts{
 		Token:      &token,
 		Status:     "completed",
 		ResultData: result,

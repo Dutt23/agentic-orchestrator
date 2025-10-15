@@ -12,15 +12,16 @@ import (
 	"github.com/google/uuid"
 	"github.com/lyzr/orchestrator/common/metrics"
 	"github.com/lyzr/orchestrator/common/sdk"
+	"github.com/lyzr/orchestrator/common/worker"
 	"github.com/redis/go-redis/v9"
 )
 
 // HTTPWorker processes HTTP tasks from Redis stream
 type HTTPWorker struct {
-	redis       *redis.Client
-	sdk         *sdk.SDK
-	logger      sdk.Logger
-	stream      string
+	redis         *redis.Client
+	sdk           *sdk.SDK
+	logger        sdk.Logger
+	stream        string
 	consumerGroup string
 	consumerName  string
 	httpClient    *http.Client
@@ -226,7 +227,7 @@ func (w *HTTPWorker) handleMessage(ctx context.Context, message redis.XMessage) 
 			"error":   err.Error(),
 			"metrics": metricsMap,
 		}
-		return SignalCompletion(ctx, w.redis, w.logger, &CompletionOpts{
+		return worker.SignalCompletion(ctx, w.redis, w.logger, &worker.CompletionOpts{
 			Token:      &token,
 			Status:     "failed",
 			ResultData: failureResult, // Send result data even on failure
@@ -241,7 +242,7 @@ func (w *HTTPWorker) handleMessage(ctx context.Context, message redis.XMessage) 
 	result["metrics"] = metricsMap
 
 	// Signal completion with result data (Option B: coordinator stores in CAS)
-	return SignalCompletion(ctx, w.redis, w.logger, &CompletionOpts{
+	return worker.SignalCompletion(ctx, w.redis, w.logger, &worker.CompletionOpts{
 		Token:      &token,
 		Status:     "completed",
 		ResultData: result,

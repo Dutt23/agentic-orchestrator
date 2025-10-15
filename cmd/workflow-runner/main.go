@@ -13,7 +13,6 @@ import (
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/executor"
 	"github.com/lyzr/orchestrator/common/sdk"
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/supervisor"
-	"github.com/lyzr/orchestrator/cmd/workflow-runner/worker"
 	"github.com/lyzr/orchestrator/common/bootstrap"
 	"github.com/lyzr/orchestrator/common/clients"
 	"github.com/redis/go-redis/v9"
@@ -47,7 +46,8 @@ func main() {
 	errChan := startComponents(ctx, workflowComponents, components)
 
 	components.Logger.Info("workflow-runner started successfully",
-		"components", []string{"coordinator", "http_worker", "hitl_worker", "run_request_consumer", "status_update_consumer"})
+		"components", []string{"coordinator", "run_request_consumer", "status_update_consumer"},
+		"note", "workers (http, hitl) now run as separate services")
 
 	// Wait for shutdown signal or error
 	waitForShutdown(ctx, cancel, errChan, components)
@@ -65,11 +65,9 @@ type dependencies struct {
 
 // workflowComponents holds all workflow-runner components
 type workflowComponents struct {
-	coordinator     *coordinator.Coordinator
-	httpWorker      *worker.HTTPWorker
-	hitlWorker      *worker.HITLWorker
-	runConsumer     *executor.RunRequestConsumer
-	statusConsumer  *consumer.StatusUpdateConsumer
+	coordinator    *coordinator.Coordinator
+	runConsumer    *executor.RunRequestConsumer
+	statusConsumer *consumer.StatusUpdateConsumer
 }
 
 // initializeDependencies sets up Redis, CAS client, and SDK
@@ -127,8 +125,6 @@ func createWorkflowComponents(deps *dependencies, components *bootstrap.Componen
 			OrchestratorBaseURL: deps.orchestratorURL,
 			CASClient:           deps.casClient,
 		}),
-		httpWorker:     worker.NewHTTPWorker(deps.redisClient, deps.workflowSDK, components.Logger),
-		hitlWorker:     worker.NewHITLWorker(deps.redisClient, deps.workflowSDK, components.Logger),
 		runConsumer:    executor.NewRunRequestConsumer(deps.redisClient, deps.workflowSDK, components.Logger, deps.orchestratorURL),
 		statusConsumer: consumer.NewStatusUpdateConsumer(deps.redisClient, runRepo, components.Logger),
 	}
@@ -136,7 +132,7 @@ func createWorkflowComponents(deps *dependencies, components *bootstrap.Componen
 
 // startComponents starts all workflow components in goroutines
 func startComponents(ctx context.Context, wc *workflowComponents, components *bootstrap.Components) chan error {
-	errChan := make(chan error, 5) // Increased to 5 for status consumer
+	errChan := make(chan error, 3) // Reduced to 3 (coordinator, run consumer, status consumer)
 
 	// Start coordinator
 	go func() {
@@ -146,21 +142,11 @@ func startComponents(ctx context.Context, wc *workflowComponents, components *bo
 		}
 	}()
 
-	// Start HTTP worker
-	go func() {
-		components.Logger.Info("starting HTTP worker")
-		if err := wc.httpWorker.Start(ctx); err != nil && err != context.Canceled {
-			errChan <- fmt.Errorf("HTTP worker error: %w", err)
-		}
-	}()
+	// HTTP worker now runs as separate service (cmd/http-worker)
+	// Start with: make start-http-worker
 
-	// Start HITL worker
-	go func() {
-		components.Logger.Info("starting HITL worker")
-		if err := wc.hitlWorker.Start(ctx); err != nil && err != context.Canceled {
-			errChan <- fmt.Errorf("HITL worker error: %w", err)
-		}
-	}()
+	// HITL worker now runs as separate service (cmd/hitl-worker)
+	// Start with: make start-hitl-worker
 
 	// Start run request consumer
 	go func() {
