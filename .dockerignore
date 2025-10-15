@@ -1,0 +1,68 @@
+# Build artifacts
+bin/
+target/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test and development
+*_test.go
+*_test.py
+tests/
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+
+# Dependencies
+node_modules/
+vendor/
+
+# Documentation (exclude from build)
+submission_doc/
+delete/
+docs/
+**/docs/
+*.md
+*.MD
+*.txt
+!README.md
+!requirements.txt
+!go.mod
+!go.sum
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment and config
+.env
+.env.local
+*.log
+logs/
+dump.rdb
+.pids/
+pids/
+
+# Git
+.git/
+.gitignore
+
+# Data
+data/
+test_data/
+ui_pictures/
+
+# Scripts
+dev_scripts/
+*.sh
+!migrations/*.sql
+
+# Frontend
+frontend/
+examples/

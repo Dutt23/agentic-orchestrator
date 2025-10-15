@@ -212,7 +212,3 @@ See `config.yaml` for:
 - [ ] Metrics and monitoring
 - [ ] Rate limiting and backoff
 - [ ] Tool usage auto-promotion
-
-## License
-
-Internal use only.

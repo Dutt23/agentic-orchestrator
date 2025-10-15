@@ -1,0 +1,389 @@
+🧠 Agentic Orchestration Builder — System Overview
+
+1. Vision & Philosophy
+
+Build an agentic, event-driven orchestration engine that merges deterministic workflows (like n8n/Temporal) with adaptive, reasoning-driven systems (like multi-agent AI setups).
+
+Instead of static DAGs, the system allows agents and optimizers to propose patches to the running graph — safely, observably, and without breaking determinism.
+
+At its core:
+
+• Deterministic event sourcing for reproducibility
+• Agentic overlay patches for adaptability
+• Event-driven execution via Kafka/Redis
+• SSE/WebSockets for real-time observability
+• WASM optimization for runtime graph fusion
+• OS-level tuning for high-throughput execution
+
+
+2. Core Architectural Layers
+
+Control Plane
+Service              Role
+─────────────────────────────────────────────────────────────
+Edge Proxy           TLS termination, rate-limiting, SSE/WS upgrade
+API Service          Entry for CLI/UI requests (Start/Cancel/Replay)
+Orchestrator         Workflow resolution: base + patches → materialized
+Validator            Validates agent patches, enforces limits
+Optimizer (WASM)     Rewrites subgraphs (fusion, pruning, caching)
+
+
+Data Plane
+Service              Role
+─────────────────────────────────────────────────────────────
+Runner               Executes deterministic nodes (function/map/join)
+Agent Runner         K8s/Lambda/customer env for LLM execution
+Fanout               Real-time SSE/WS streaming to UI/CLI
+HITL Service         Human approval gates with pause/resume
+
+
+Infrastructure
+Component            Role
+─────────────────────────────────────────────────────────────
+Kafka / Redpanda     Main event bus and work queues
+Postgres             Run metadata, patches, event log
+S3 / MinIO (CAS)     Content-addressed artifact storage
+Dragonfly / Redis    Cache for memoized node results
+
+
+3. Data Flow (Start to Finish)
+
+User Submits Run
+├─ CLI or UI sends workflow submission
+├─ API validates inputs
+└─ API resolves workflow tag → artifact_id
+
+Orchestrator Resolution
+├─ Load base workflow from database
+├─ Fetch existing patches for this workflow
+├─ Materialize: base + patch₁ + patch₂ → executable workflow
+├─ Compile to IR (Intermediate Representation)
+└─ Store IR in cache (Redis: ir:{run_id})
+
+Initialize Execution
+├─ Create run record in Postgres
+├─ Publish first tokens to entry nodes
+└─ Coordinator begins listening for completions
+
+Execution Loop (Choreography)
+├─ Worker consumes token from queue
+├─ Worker loads config from CAS
+├─ Worker executes business logic
+├─ Worker stores output in CAS
+├─ Worker publishes completion signal
+├─ Coordinator loads IR (may be patched!)
+├─ Coordinator determines next nodes
+└─ Coordinator publishes tokens to next workers
+
+Agent Patch Flow
+├─ Agent worker calls LLM with context
+├─ LLM decides to modify workflow
+├─ LLM generates JSON Patch operations
+├─ Agent submits: POST /runs/{run_id}/patch
+├─ Validator checks syntax + agent limits
+├─ Orchestrator applies patch → new artifact
+├─ Orchestrator recompiles IR
+├─ Orchestrator updates cache: ir:{run_id}
+├─ Agent publishes completion signal
+├─ Coordinator loads NEW IR
+└─ Coordinator routes to NEW nodes!
+
+HITL Approval Flow
+├─ HITL node triggered
+├─ Worker creates approval record
+├─ Workflow pauses (counter=0, pending approval)
+├─ Human reviews in UI or CLI: aob approve ticket_id
+├─ Decision submitted → workflow resumes
+└─ Tokens published to approve/reject paths
+
+Optimizer Flow
+├─ Optimizer (WASM) analyzes IR
+├─ Finds optimization opportunities (HTTP fusion, etc.)
+├─ Generates OptimizedPatch
+├─ Submits as patch (same validation as agent patches)
+├─ Applied to workflow
+└─ Future runs use optimized topology
+
+Completion Detection
+├─ Coordinator checks counter == 0
+├─ Coordinator checks no pending HITL
+├─ Mark run as COMPLETED
+└─ Cleanup ephemeral state
+
+
+4. Communication Model
+
+Work Dispatch: Kafka topics (partitioned by run_id)
+├─ node.jobs.high (high-priority work)
+├─ node.jobs.medium (medium-priority work)
+├─ node.jobs.low (low-priority work)
+└─ node.results (execution outputs)
+
+Real-time: SSE/WebSocket (Fanout service)
+├─ Timeline updates
+├─ Log streaming
+├─ Approval notifications
+└─ Patch diffs
+
+Service-to-Service: HTTP REST (MVP) → gRPC (production)
+
+
+5. Caching & Memoization
+
+Each node has a caching policy:
+├─ off: No caching
+├─ read_only: Check cache, never write
+├─ read_through: Check cache, write on miss
+└─ write_only: Always write to cache
+
+Cache stored in Dragonfly with metadata + CAS pointers.
+
+Safe to reuse only for deterministic, side-effect-free nodes.
+
+WASM optimizer identifies cacheable subgraphs automatically.
+
+
+6. Error Handling & Retry
+
+Runner Failures
+├─ Transient error → exponential backoff retry
+├─ Deterministic failure → emit NodeFailed event
+└─ Orchestrator decides: retry / skip / HITL review
+
+Agent Failures
+├─ Patch validation error → return to LLM with examples
+├─ LLM retry (self-correction)
+└─ If retry fails → store invalid patch for manual review
+
+Agent Spawn Protection
+├─ Layer 1 (Python): Check before LLM call
+├─ Layer 2 (Go): Validate patch operations
+├─ Layer 3 (Coordinator): Security check during routing
+└─ Max 5 agents per workflow (configurable)
+
+Queue Backpressure
+├─ Kafka partitions scale horizontally
+├─ Workers bounded concurrency
+└─ Rate limiting (workflow-aware tiers)
+
+Timeouts
+├─ Durable timers in Postgres
+├─ RunTimeout events trigger cleanup
+└─ HITL timeouts → auto-approve or escalate
+
+
+7. OS & Network Optimizations
+
+CPU Pinning
+├─ Control Plane (API, Orchestrator, Validator): Cores 0-7
+├─ Runner Plane (Runners, Agents): Cores 8-15
+└─ Fanout Plane (Streaming): Cores 16-19
+
+GOMAXPROCS set per service for controlled concurrency.
+
+Network Stack
+├─ SO_REUSEPORT: Distribute accepts across threads
+├─ HTTP/2 multiplexing for SSE/WS
+├─ GRO/GSO enabled (packet batching, 20-30% CPU reduction)
+└─ sysctl tuning: backlog, port ranges, TCP timeouts
+
+Kafka Tuning
+├─ 64–256 partitions per topic
+├─ Idempotent producers (exactly-once)
+├─ linger.ms batching (5ms)
+└─ Compression (snappy)
+
+Postgres Tuning
+├─ WAL compression
+├─ Skip-locked outbox reads (FOR UPDATE SKIP LOCKED)
+└─ Connection pooling (100 max conns)
+
+Deployment Modes
+├─ Fast Path: minimal tracing, max throughput
+└─ Full Fidelity: full audit, overlays, HITL, replays
+
+
+8. Agent Orchestration (Core Innovation)
+
+How Agents Resolve Workflow Changes:
+
+Step 1: Materialization
+─────────────────────
+Base Workflow (v1.0)
+  + Agent Patch 1 (adds email node)
+  + Agent Patch 2 (adds validation)
+  + Optimizer Patch (fuses HTTP nodes)
+  = Materialized Workflow (v1.3)
+
+Step 2: Compilation
+─────────────────────
+Materialized Workflow → IR Compiler → Intermediate Representation
+→ Stores in cache: Redis SET ir:{run_id} {json_ir}
+
+Step 3: Execution
+─────────────────────
+Coordinator loads IR on every completion signal
+→ IR may have changed (patched by agent!)
+→ Determines next nodes from NEW topology
+→ Routes to workers
+→ Workflow continues with modified graph!
+
+This is the key: Coordinator ALWAYS loads latest IR, so patches apply immediately.
+
+
+9. Developer CLI (aob)
+
+Fast, lightweight Rust CLI for workflow management:
+
+aob run start workflow.json
+  → Start workflow execution
+
+aob logs stream <run_id>
+  → Real-time SSE log streaming
+
+aob logs stream <run_id> --node enrich
+  → Filter by specific node
+
+aob approve <ticket> approve --reason "LGTM"
+  → HITL approval from terminal
+
+aob patch list <run_id>
+  → List agent-proposed patches
+
+aob patch show <patch_id>
+  → Show patch diff
+
+aob replay <run_id> --from parse
+  → Replay from checkpoint
+
+Features:
+├─ 2.4MB binary (Rust, optimized)
+├─ <10ms startup time
+├─ Real-time SSE streaming (not polling)
+├─ JSON output for scripting
+└─ Complete workflow lifecycle management
+
+
+10. Innovation Summary
+
+Area                          Innovation
+────────────────────────────────────────────────────────────────────
+Graph Patching                Agentic overlays (not mutations!)
+Agent Resolution              Materialization → Recompilation → Execution
+Hybrid Model                  Deterministic backbone + agent adaptability
+Agent Safety                  Triple-layer validation (Python, Go, Coordinator)
+WASM Optimizer                Dynamic graph fusion without redeploy
+Rate Limiting                 Workflow-aware tiers (complexity-based)
+Coordinator                   Stateless (crash-resume without data loss)
+Execution Environments        K8s, Lambda, or customer infrastructure
+OS-Level Efficiency           CPU pinning, SO_REUSEPORT, GRO/GSO, systemd
+CLI-first                     Fast Rust tool with SSE streaming
+
+
+11. System Behavior Summary
+
+✅ Everything append-only: no mutation, full observability
+✅ Every operation idempotent and replay-safe
+✅ System scales horizontally by partition (run_id)
+✅ Agents modify DAG safely via validated overlays
+✅ Optimizer continuously improves runtime efficiency
+✅ Human approvals provide checkpoints for irreversible steps
+✅ Every artifact content-addressed for reproducibility
+✅ Full audit trail and replay capability
+
+
+12. Agent Execution Environments
+
+Flexible deployment — customer chooses:
+
+Kubernetes Jobs (default)
+├─ Isolated pods per agent
+├─ Resource limits (CPU/memory)
+├─ Secrets via K8s secrets
+└─ Autoscaling via HPA
+
+AWS Lambda (serverless)
+├─ Instant cold start
+├─ Pay-per-invocation
+├─ Auto-scaling
+└─ No infrastructure management
+
+Customer Infrastructure (BYOE - Bring Your Own Environment)
+├─ On-prem K8s
+├─ Cloud Run / ECS / Fargate
+├─ Custom Docker deployments
+└─ Requirements:
+    • Consume from Kafka/Redis queue
+    • Publish results back
+    • Network access to LLM APIs
+
+
+13. What Makes This Unique
+
+vs. Temporal/Airflow (Static Workflows)
+❌ They: Static DAGs, restart required
+✅ Us: Runtime patching, no restart
+
+vs. AutoGPT/LangChain (Pure Agents)
+❌ They: No deterministic backbone, runaway costs
+✅ Us: Deterministic + agent overlays + spawn limits
+
+vs. n8n (Low-Code)
+❌ They: UI-only, no agent patching, no CLI
+✅ Us: Agent patches + developer CLI + OS tuning
+
+Unique Combination:
+• Runtime workflow patching (safe, validated)
+• Workflow-aware rate limiting (cost protection)
+• Stateless coordinator (crash-resume)
+• Customer execution environments (flexible)
+• Fast CLI with SSE streaming (2.4MB Rust binary)
+• OS-level optimization configs (production-ready)
+
+
+14. MVP vs. Production
+
+MVP (Phase 1 - Working)
+├─ Redis Streams (queues)
+├─ HTTP REST (communication)
+├─ JSON (serialization)
+├─ Local processes (agents)
+├─ Direct Postgres (metadata)
+└─ ~1,000 workflows/sec
+
+Production (Phase 2+ - Designed)
+├─ Kafka/Redpanda (64-256 partitions)
+├─ gRPC (low-latency communication)
+├─ Protobuf (efficient serialization)
+├─ K8s/Lambda/customer env (agents)
+├─ Event sourcing + optional read models
+└─ ~10,000+ workflows/sec
+
+All MVP decisions support migration — no throwaway code!
+
+
+15. Demo Script (5–7 minutes)
+
+1. Start run; watch timeline in UI
+2. Agent analyzes data, proposes patch (add S3 upload + notifications)
+3. Show overlay diff in UI (base + new nodes)
+4. HITL approval before email (aob approve from CLI)
+5. Optimizer detects sequential HTTP nodes → fuses them
+6. Success path: email sent; Fail path: Slack notification
+7. Show CAS artifacts + cache hits
+8. Replay from checkpoint: aob replay run_id --from parse
+
+
+Appendix: Key Metrics
+
+Current (MVP)
+├─ Throughput: 1,000 workflows/sec
+├─ Latency: 5-10ms per hop
+├─ Services: 6 microservices + CLI
+└─ Infrastructure: Redis + Postgres
+
+Target (Production)
+├─ Throughput: 10,000+ workflows/sec
+├─ Latency: <2ms per hop
+├─ Services: Horizontally scaled
+└─ Infrastructure: Kafka + Postgres sharding + Dragonfly

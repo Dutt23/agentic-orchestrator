@@ -1,0 +1,268 @@
+version: '3.8'
+
+services:
+  # ═══════════════════════════════════════════════════════════
+  # INFRASTRUCTURE
+  # ═══════════════════════════════════════════════════════════
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: orchestrator-postgres
+    environment:
+      POSTGRES_USER: ${DB_USER:-orchestrator}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-orchestrator}
+      POSTGRES_DB: ${DB_NAME:-orchestrator}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-orchestrator}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - orchestrator-net
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '1'
+          memory: 512M
+
+  redis:
+    image: redis:7-alpine
+    container_name: orchestrator-redis
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory 1gb
+      --maxmemory-policy allkeys-lru
+      --tcp-backlog 511
+      --timeout 300
+      --tcp-keepalive 60
+    volumes:
+      - redis_data:/data
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - orchestrator-net
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '1'
+          memory: 512M
+
+  # ═══════════════════════════════════════════════════════════
+  # CONTROL PLANE
+  # ═══════════════════════════════════════════════════════════
+
+  orchestrator:
+    build:
+      context: .
+      dockerfile: cmd/orchestrator/Dockerfile
+    container_name: orchestrator-api
+    environment:
+      # Database
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: ${DB_USER:-orchestrator}
+      DB_PASSWORD: ${DB_PASSWORD:-orchestrator}
+      DB_NAME: ${DB_NAME:-orchestrator}
+
+      # Redis
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+
+      # Service config
+      PORT: 8081
+      GOMAXPROCS: 4
+      GOMEMLIMIT: 1GiB
+
+      # Optional
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - orchestrator-net
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 1G
+        reservations:
+          cpus: '1'
+          memory: 256M
+
+  workflow-runner:
+    build:
+      context: .
+      dockerfile: cmd/workflow-runner/Dockerfile
+    container_name: orchestrator-workflow-runner
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      PORT: 8082
+      GOMAXPROCS: 4
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      redis:
+        condition: service_healthy
+      orchestrator:
+        condition: service_started
+    networks:
+      - orchestrator-net
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 1G
+        reservations:
+          cpus: '1'
+          memory: 256M
+
+  # ═══════════════════════════════════════════════════════════
+  # WORKER PLANE
+  # ═══════════════════════════════════════════════════════════
+
+  http-worker:
+    build:
+      context: .
+      dockerfile: cmd/http-worker/Dockerfile
+    container_name: orchestrator-http-worker
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      PORT: 8083
+      GOMAXPROCS: 2
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - orchestrator-net
+    restart: unless-stopped
+    deploy:
+      replicas: ${HTTP_WORKER_REPLICAS:-2}
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 128M
+
+  hitl-worker:
+    build:
+      context: .
+      dockerfile: cmd/hitl-worker/Dockerfile
+    container_name: orchestrator-hitl-worker
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      PORT: 8084
+      GOMAXPROCS: 2
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - orchestrator-net
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 128M
+
+  agent-runner:
+    build:
+      context: .
+      dockerfile: cmd/agent-runner-py/Dockerfile
+    container_name: orchestrator-agent-runner
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      PORT: 8086
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - orchestrator-net
+    restart: unless-stopped
+    deploy:
+      replicas: ${AGENT_WORKER_REPLICAS:-2}
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+  # ═══════════════════════════════════════════════════════════
+  # STREAMING PLANE
+  # ═══════════════════════════════════════════════════════════
+
+  fanout:
+    build:
+      context: .
+      dockerfile: cmd/fanout/Dockerfile
+    container_name: orchestrator-fanout
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      PORT: 8085
+      GOMAXPROCS: 4
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "8085:8085"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - orchestrator-net
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 1G
+        reservations:
+          cpus: '1'
+          memory: 256M
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  orchestrator-net:
+    driver: bridge

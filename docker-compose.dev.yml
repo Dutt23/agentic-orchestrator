@@ -1,0 +1,37 @@
+# Development docker-compose with hot reload
+
+version: '3.8'
+
+services:
+  postgres:
+    extends:
+      file: docker-compose.yml
+      service: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_dev_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d
+
+  redis:
+    extends:
+      file: docker-compose.yml
+      service: redis
+    ports:
+      - "6379:6379"
+    command: >
+      redis-server
+      --appendonly no
+      --save ""
+      --maxmemory 512mb
+
+  # For development, run services locally (not in containers)
+  # This allows hot reload and easier debugging
+
+volumes:
+  postgres_dev_data:
+  redis_dev_data:
+
+networks:
+  orchestrator-net:
+    driver: bridge
