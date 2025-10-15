@@ -537,7 +537,7 @@ class AgentService:
                 raise HTTPException(status_code=500, detail=str(e))
 
         # Run server
-        port = self.config['service'].get('port', 8082)
+        port = int(self.config['service'].get('port', 8086))
         uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
 
     def shutdown(self):

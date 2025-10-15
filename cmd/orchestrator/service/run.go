@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/lyzr/orchestrator/cmd/orchestrator/models"
-	"github.com/lyzr/orchestrator/cmd/orchestrator/repository"
+	"github.com/lyzr/orchestrator/common/models"
+	"github.com/lyzr/orchestrator/common/repository"
 	"github.com/lyzr/orchestrator/common/bootstrap"
 	"github.com/lyzr/orchestrator/common/ratelimit"
 	rediscommon "github.com/lyzr/orchestrator/common/redis"

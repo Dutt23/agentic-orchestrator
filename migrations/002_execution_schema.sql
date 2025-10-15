@@ -312,10 +312,10 @@ CREATE INDEX IF NOT EXISTS idx_worker_registry_active
     ON worker_registry(status, worker_type)
     WHERE status = 'ACTIVE';
 
--- Index for stale workers (no heartbeat)
+-- Index for stale workers (no heartbeat) - can't use now() in predicate, query without predicate instead
 CREATE INDEX IF NOT EXISTS idx_worker_registry_stale
-    ON worker_registry(last_heartbeat_at)
-    WHERE status = 'ACTIVE' AND last_heartbeat_at < now() - interval '5 minutes';
+    ON worker_registry(status, last_heartbeat_at)
+    WHERE status = 'ACTIVE';
 
 COMMENT ON TABLE worker_registry IS 'Track active workers for monitoring and load balancing';
 COMMENT ON COLUMN worker_registry.last_heartbeat_at IS 'Workers send heartbeat every 30s';

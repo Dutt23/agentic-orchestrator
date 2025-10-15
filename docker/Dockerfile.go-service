@@ -1,0 +1,78 @@
+# Common Dockerfile for all Go services
+# Usage: docker build --build-arg SERVICE_NAME=orchestrator -f Dockerfile.go-service .
+
+ARG SERVICE_NAME
+ARG NEEDS_SCRIPTS=false
+
+# Build stage
+FROM golang:1.23-alpine AS builder
+
+WORKDIR /build
+
+# Configure reliable Alpine mirrors and install build dependencies with retry
+RUN echo "http://dl-cdn.alpinelinux.org/alpine/v3.19/main" > /etc/apk/repositories && \
+    echo "http://dl-cdn.alpinelinux.org/alpine/v3.19/community" >> /etc/apk/repositories && \
+    apk update --no-cache && \
+    apk add --no-cache git make musl-dev || \
+    (echo "Retrying package install..." && sleep 3 && apk add --no-cache git make musl-dev) || \
+    (echo "Final retry..." && sleep 5 && apk add --no-cache git make musl-dev)
+
+# Cache dependencies
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source code
+# Copy common (all services need it)
+COPY common ./common
+
+# Copy only the specific service directory
+ARG SERVICE_NAME
+COPY cmd/${SERVICE_NAME} ./cmd/${SERVICE_NAME}
+
+# Build the service
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build \
+    -ldflags="-s -w -extldflags '-static'" \
+    -trimpath \
+    -tags netgo \
+    -o service-binary \
+    ./cmd/${SERVICE_NAME}
+
+# Runtime stage
+FROM alpine:3.19
+
+WORKDIR /app
+
+# Configure reliable Alpine mirrors and install runtime dependencies with retry
+RUN echo "http://dl-cdn.alpinelinux.org/alpine/v3.19/main" > /etc/apk/repositories && \
+    echo "http://dl-cdn.alpinelinux.org/alpine/v3.19/community" >> /etc/apk/repositories && \
+    apk update --no-cache && \
+    apk add --no-cache ca-certificates tzdata || \
+    (echo "Retrying package install..." && sleep 3 && apk add --no-cache ca-certificates tzdata) || \
+    (echo "Final retry..." && sleep 5 && apk add --no-cache ca-certificates tzdata)
+
+# Copy binary from builder
+COPY --from=builder /build/service-binary ./app
+
+# Copy scripts conditionally (only for services that need them)
+# We use a trick: copy to a temp location, then move only if needed
+ARG NEEDS_SCRIPTS=false
+RUN mkdir -p /tmp/scripts
+COPY scripts/ /tmp/scripts/
+RUN if [ "$NEEDS_SCRIPTS" = "true" ]; then \
+      cp -r /tmp/scripts ./scripts; \
+    fi && \
+    rm -rf /tmp/scripts
+
+# Create non-root user
+RUN addgroup -S -g 1000 app && \
+    adduser -S -u 1000 -G app app && \
+    chown -R app:app /app
+
+USER app
+
+# Default health check (can be overridden in docker-compose)
+HEALTHCHECK --interval=30s --timeout=3s --retries=3 \
+  CMD pgrep -f app || exit 1
+
+CMD ["./app"]

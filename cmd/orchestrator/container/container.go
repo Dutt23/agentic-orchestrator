@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/lyzr/orchestrator/cmd/orchestrator/repository"
+	"github.com/lyzr/orchestrator/common/repository"
 	"github.com/lyzr/orchestrator/cmd/orchestrator/service"
 	"github.com/lyzr/orchestrator/common/bootstrap"
 	"github.com/lyzr/orchestrator/common/ratelimit"

@@ -6,7 +6,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/lyzr/orchestrator/cmd/orchestrator/container"
 	"github.com/lyzr/orchestrator/cmd/orchestrator/middleware"
-	"github.com/lyzr/orchestrator/cmd/orchestrator/repository"
+	"github.com/lyzr/orchestrator/common/repository"
 	"github.com/lyzr/orchestrator/cmd/orchestrator/service"
 	"github.com/lyzr/orchestrator/common/bootstrap"
 )

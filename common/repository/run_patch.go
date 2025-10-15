@@ -6,7 +6,7 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
-	"github.com/lyzr/orchestrator/cmd/orchestrator/models"
+	"github.com/lyzr/orchestrator/common/models"
 	"github.com/lyzr/orchestrator/common/db"
 )
 

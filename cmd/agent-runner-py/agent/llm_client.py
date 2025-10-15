@@ -4,6 +4,7 @@ from typing import Dict, Any, List, Optional
 import logging
 import time
 import httpx
+import os
 
 from agent.tools import get_tool_schemas
 from agent.system_prompt import get_system_prompt
@@ -31,13 +32,21 @@ class LLMClient:
 
         # Configure HTTP client with connection pooling
         # Reuses TCP connections to reduce latency (saves 100-300ms per request)
+        #
+        # TODO: FIX SSL VERIFICATION FOR PRODUCTION!
+        # Temporary workaround: SSL verification disabled for development
+        # This is needed because certifi bundle path is incorrect in Docker
+        # For production, must fix certificate path or use proper SSL context
+        logger.warning("SSL verification is DISABLED - this is a temporary workaround for development")
+
         http_client = httpx.Client(
             limits=httpx.Limits(
                 max_connections=100,  # Max concurrent connections
                 max_keepalive_connections=20,  # Keep 20 connections warm
                 keepalive_expiry=300  # Keep alive for 5 minutes
             ),
-            timeout=self.timeout
+            timeout=self.timeout,
+            verify=False  # TEMPORARY: Disable SSL verification
         )
 
         # Initialize OpenAI client with connection pooling

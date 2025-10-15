@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/lyzr/orchestrator/cmd/orchestrator/models"
-	"github.com/lyzr/orchestrator/cmd/orchestrator/repository"
+	"github.com/lyzr/orchestrator/common/models"
+	"github.com/lyzr/orchestrator/common/repository"
 	"github.com/lyzr/orchestrator/common/logger"
 )
 
