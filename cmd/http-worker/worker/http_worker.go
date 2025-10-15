@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lyzr/orchestrator/cmd/http-worker/security"
 	"github.com/lyzr/orchestrator/common/metrics"
 	"github.com/lyzr/orchestrator/common/sdk"
 	"github.com/lyzr/orchestrator/common/worker"
@@ -25,6 +26,7 @@ type HTTPWorker struct {
 	consumerGroup string
 	consumerName  string
 	httpClient    *http.Client
+	urlValidator  *security.URLValidator
 }
 
 // NewHTTPWorker creates a new HTTP worker
@@ -39,6 +41,7 @@ func NewHTTPWorker(redisClient *redis.Client, workflowSDK *sdk.SDK, logger sdk.L
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
+		urlValidator: security.NewURLValidator(),
 	}
 }
 
@@ -275,9 +278,17 @@ func (w *HTTPWorker) loadConfig(ctx context.Context, configRef string) (map[stri
 // executeHTTPRequest executes an HTTP request based on config
 func (w *HTTPWorker) executeHTTPRequest(ctx context.Context, config map[string]interface{}) (map[string]interface{}, error) {
 	// Extract config fields
-	url, ok := config["url"].(string)
-	if !ok || url == "" {
+	urlStr, ok := config["url"].(string)
+	if !ok || urlStr == "" {
 		return nil, fmt.Errorf("missing or invalid url in config")
+	}
+
+	// Validate URL for security (SSRF, file access, protocol injection)
+	if err := w.urlValidator.Validate(urlStr); err != nil {
+		w.logger.Warn("URL validation failed (security protection)",
+			"url", urlStr,
+			"error", err)
+		return nil, fmt.Errorf("URL blocked for security: %w", err)
 	}
 
 	method, ok := config["method"].(string)
@@ -291,7 +302,7 @@ func (w *HTTPWorker) executeHTTPRequest(ctx context.Context, config map[string]i
 	}
 
 	// Create request
-	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, method, urlStr, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -329,12 +340,12 @@ func (w *HTTPWorker) executeHTTPRequest(ctx context.Context, config map[string]i
 		"headers":     resp.Header,
 		"body":        responseData,
 		"duration_ms": duration.Milliseconds(),
-		"url":         url,
+		"url":         urlStr,
 		"method":      method,
 	}
 
 	w.logger.Info("HTTP request completed",
-		"url", url,
+		"url", urlStr,
 		"method", method,
 		"status_code", resp.StatusCode,
 		"duration_ms", duration.Milliseconds())

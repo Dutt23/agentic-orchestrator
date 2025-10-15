@@ -11,10 +11,10 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/lyzr/orchestrator/cmd/orchestrator/service"
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/compiler"
-	"github.com/lyzr/orchestrator/cmd/workflow-runner/sdk"
 	"github.com/lyzr/orchestrator/common/bootstrap"
 	"github.com/lyzr/orchestrator/common/clients"
 	rediscommon "github.com/lyzr/orchestrator/common/redis"
+	"github.com/lyzr/orchestrator/common/sdk"
 )
 
 // RunHandler handles run-related operations including patching
