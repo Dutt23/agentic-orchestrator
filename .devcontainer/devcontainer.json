@@ -1,0 +1,137 @@
+{
+  "name": "Orchestrator Development",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+
+  "features": {
+    // Language runtimes
+    "ghcr.io/devcontainers/features/go:1": {
+      "version": "1.23"
+    },
+    "ghcr.io/devcontainers/features/python:1": {
+      "version": "3.11"
+    },
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "18"
+    },
+    "ghcr.io/devcontainers/features/rust:1": {
+      "version": "latest"
+    },
+
+    // Docker support (Docker-in-Docker for running docker-compose)
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "version": "latest",
+      "dockerDashComposeVersion": "v2"
+    },
+
+    // Tools
+    "ghcr.io/devcontainers/features/git:1": {},
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+
+  // VS Code extensions
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        // Go
+        "golang.go",
+
+        // Python
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+
+        // Rust
+        "rust-lang.rust-analyzer",
+
+        // JavaScript/TypeScript
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode",
+
+        // Docker
+        "ms-azuretools.vscode-docker",
+
+        // YAML/JSON
+        "redhat.vscode-yaml",
+        "esbenp.prettier-vscode",
+
+        // Git
+        "eamodio.gitlens",
+
+        // Markdown
+        "yzhang.markdown-all-in-one",
+
+        // REST Client for testing APIs
+        "humao.rest-client"
+      ],
+
+      "settings": {
+        "go.toolsManagement.autoUpdate": true,
+        "go.useLanguageServer": true,
+        "python.defaultInterpreterPath": "/usr/local/bin/python",
+        "python.linting.enabled": true,
+        "python.linting.pylintEnabled": false,
+        "python.formatting.provider": "black",
+        "editor.formatOnSave": true,
+        "files.eol": "\n"
+      }
+    }
+  },
+
+  // Port forwarding - expose all service ports
+  "forwardPorts": [
+    3000,   // Frontend
+    5432,   // PostgreSQL
+    6060,   // pprof
+    6379,   // Redis
+    8081,   // Orchestrator
+    8082,   // Workflow Runner
+    8083,   // HTTP Worker
+    8084,   // HITL Worker
+    8085,   // Fanout
+    8086,   // Agent Runner
+    9090    // Metrics (Prometheus)
+  ],
+
+  "portsAttributes": {
+    "3000": {
+      "label": "Frontend UI",
+      "onAutoForward": "notify"
+    },
+    "8081": {
+      "label": "Orchestrator API",
+      "onAutoForward": "notify"
+    },
+    "8085": {
+      "label": "Fanout WebSocket",
+      "onAutoForward": "silent"
+    },
+    "5432": {
+      "label": "PostgreSQL",
+      "onAutoForward": "silent"
+    },
+    "6379": {
+      "label": "Redis",
+      "onAutoForward": "silent"
+    }
+  },
+
+  // Post-create command - set up the development environment
+  "postCreateCommand": "bash .devcontainer/setup.sh",
+
+  // Environment variables
+  "containerEnv": {
+    "DOCKER_BUILDKIT": "1",
+    "COMPOSE_DOCKER_CLI_BUILD": "1"
+  },
+
+  // Git configuration
+  "postAttachCommand": "git config --global --add safe.directory ${containerWorkspaceFolder}",
+
+  // Run as non-root user
+  "remoteUser": "vscode",
+
+  // Mounts (if you need to persist data between rebuilds)
+  "mounts": [
+    "source=orchestrator-go-cache,target=/go/pkg,type=volume",
+    "source=orchestrator-cargo-cache,target=/usr/local/cargo/registry,type=volume"
+  ]
+}

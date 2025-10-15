@@ -31,6 +31,7 @@ cmd/*/[^/]*
 !cmd/*/*.md
 !cmd/*/*.sh
 !cmd/*/Makefile
+!cmd/*/Dockerfile
 !cmd/*/Cargo.toml
 # Allow all subdirectories under cmd/*/ (like cmd/*/worker/, cmd/*/models/, etc.)
 !cmd/*/*/
