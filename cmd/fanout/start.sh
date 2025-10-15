@@ -16,11 +16,9 @@ echo "Starting Fanout Service..."
 echo "Redis: $REDIS_HOST:$REDIS_PORT"
 echo "Port: $PORT"
 
-# Build if binary doesn't exist
-if [ ! -f "fanout" ]; then
-    echo "Building fanout service..."
-    go build -o fanout .
-fi
+# Build the service every time
+echo "Building fanout service..."
+go build -o fanout .
 
 # Run the service
 exec ./fanout

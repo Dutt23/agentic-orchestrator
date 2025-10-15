@@ -1,10 +1,4 @@
-# Cargo configuration for workflow-optimiser WASM builds
-
-[build]
-# Default target for WASM builds
-target = "wasm32-unknown-unknown"
-
-[target.wasm32-unknown-unknown]
+# Cargo configuration for workflow-optimiser WASM builds[target.wasm32-unknown-unknown]
 # Use lld linker for faster builds
 rustflags = ["-C", "link-arg=-s"]
 

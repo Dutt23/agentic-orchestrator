@@ -221,6 +221,12 @@ func convertWorkflowNode(wfNode *WorkflowNode, conditionalEdges map[string][]Wor
 		}
 		node.Branch = branchConfig
 
+		// Populate Dependents from branch config (for UI and validation)
+		for _, rule := range branchConfig.Rules {
+			node.Dependents = append(node.Dependents, rule.NextNodes...)
+		}
+		node.Dependents = append(node.Dependents, branchConfig.Default...)
+
 	case NodeTypeHITL:
 		// HITL node - preserve type for specialized routing
 		node.Type = NodeTypeHITL
@@ -233,6 +239,12 @@ func convertWorkflowNode(wfNode *WorkflowNode, conditionalEdges map[string][]Wor
 				return nil, fmt.Errorf("failed to create branch config for HITL: %w", err)
 			}
 			node.Branch = branchConfig
+
+			// Populate Dependents from branch config (for UI and validation)
+			for _, rule := range branchConfig.Rules {
+				node.Dependents = append(node.Dependents, rule.NextNodes...)
+			}
+			node.Dependents = append(node.Dependents, branchConfig.Default...)
 		}
 
 	case NodeTypeLoop:

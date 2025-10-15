@@ -60,18 +60,30 @@ enum Commands {
     #[command(subcommand)]
     Logs(LogsCommands),
 
-    /// Approve or reject HITL requests
+    /// Approve a HITL request
     Approve {
-        /// Approval ticket ID
-        ticket_id: String,
+        /// Run ID
+        run_id: String,
 
-        /// Decision (approve or reject)
-        #[arg(value_enum)]
-        decision: Decision,
+        /// Node ID requiring approval
+        node_id: String,
 
-        /// Reason for decision
+        /// Optional approval comment
         #[arg(long)]
-        reason: Option<String>,
+        comment: Option<String>,
+    },
+
+    /// Reject a HITL request
+    Reject {
+        /// Run ID
+        run_id: String,
+
+        /// Node ID requiring approval
+        node_id: String,
+
+        /// Rejection reason (required)
+        #[arg(long)]
+        comment: String,
     },
 
     /// Manage patches
@@ -159,18 +171,18 @@ async fn main() -> Result<()> {
         Commands::Run(cmd) => run::handle(client, cmd, &cli.output).await?,
         Commands::Logs(cmd) => logs::handle(client, cmd, &cli.output).await?,
         Commands::Approve {
-            ticket_id,
-            decision,
-            reason,
+            run_id,
+            node_id,
+            comment,
         } => {
-            approve::handle(
-                client,
-                ticket_id,
-                matches!(decision, Decision::Approve),
-                reason,
-                &cli.output,
-            )
-            .await?
+            approve::approve(&run_id, &node_id, comment.as_deref(), &cli.api_url).await?
+        }
+        Commands::Reject {
+            run_id,
+            node_id,
+            comment,
+        } => {
+            approve::reject(&run_id, &node_id, &comment, &cli.api_url).await?
         }
         Commands::Patch(cmd) => patch::handle(client, cmd, &cli.output).await?,
         Commands::Workflow(cmd) => workflow::handle(client, cmd, &cli.output).await?,
@@ -189,6 +201,10 @@ async fn main() -> Result<()> {
         Commands::Login { .. } | Commands::Logout | Commands::Whoami => {
             // Already handled above
             unreachable!()
+        }
+        _ => {
+            eprintln!("Command not yet implemented");
+            std::process::exit(1);
         }
     }
 
