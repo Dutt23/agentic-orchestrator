@@ -90,7 +90,7 @@
       "id": "loop",
       "label": "Loop",
       "category": "logic",
-      "status": "active",
+      "status": "coming_soon",
       "icon": "FiRepeat",
       "color": "red",
       "description": "Repeat execution until condition is met",
@@ -106,7 +106,8 @@
           "description": "Break condition (CEL expression)"
         }
       },
-      "outputs": ["loop", "break"]
+      "outputs": ["loop", "break"],
+      "note": "Loop implementation in progress"
     },
     "transform": {
       "id": "transform",
@@ -160,13 +161,13 @@
       "id": "file-search",
       "label": "File Search",
       "category": "integration",
-      "status": "experimental",
+      "status": "coming_soon",
       "icon": "FiSearch",
       "color": "blue",
       "description": "Search through files and documents",
       "config_schema": {},
       "outputs": ["default"],
-      "note": "Experimental feature, API may change"
+      "note": "Worker implementation in progress"
     }
   },
   "categories": {

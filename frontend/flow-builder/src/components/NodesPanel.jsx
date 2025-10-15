@@ -48,7 +48,8 @@ export default function NodesPanel({
         label: node.label,
         description: node.description,
         status: node.status,
-        defaultData: { type: node.id }
+        defaultData: { type: node.id },
+        disabled: node.status === 'coming_soon' // Disable coming_soon nodes
       });
     });
 

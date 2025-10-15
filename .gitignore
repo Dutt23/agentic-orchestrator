@@ -102,7 +102,6 @@ log/
 *.pid.lock
 
 # === Data / Database ===
-data/
 *.db
 *.sqlite
 *.sqlite3

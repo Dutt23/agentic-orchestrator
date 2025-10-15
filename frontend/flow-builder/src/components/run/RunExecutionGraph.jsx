@@ -23,7 +23,7 @@ const getNodeColors = (status) => STATUS_COLORS[status] || STATUS_COLORS.default
 export default function RunExecutionGraph({ workflowIR, nodeExecutions, onNodeClick }) {
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges] = useEdgesState([]);
-  const [showLegend, setShowLegend] = useState(true);
+  const [showLegend, setShowLegend] = useState(false); // Closed by default to not block graph
 
   useEffect(() => {
     if (!workflowIR || !workflowIR.nodes) {
