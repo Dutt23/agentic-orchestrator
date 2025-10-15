@@ -96,15 +96,55 @@ def get_tool_schemas() -> List[Dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "patch_workflow",
-                "description": """Create persistent workflow modifications during runtime. Use this when the workflow needs to modify itself.
+                "description": """Create persistent workflow modifications during runtime.
 
-IMPORTANT: When adding nodes, you MUST also add edges to connect them to the current node.
-- Use context.current_workflow to get the workflow structure
-- Use context.current_node_id to get the ID of the node making this patch
-- Add edges from current_node_id to your new nodes to ensure they execute next
+CRITICAL: Config MUST be an object with key-value pairs, NEVER an array!
 
-Example: If current_node_id is 'agent_1' and you add 'branch_1', you must add:
-  {"op": "add", "path": "/edges/-", "value": {"from": "agent_1", "to": "branch_1"}}
+✅ CORRECT config format:
+{
+  "id": "my_agent",
+  "type": "agent",
+  "config": {
+    "task": "Process data",
+    "timeout_ms": 30000
+  }
+}
+
+❌ WRONG config format (will fail):
+{
+  "id": "my_agent",
+  "type": "agent",
+  "config": ["task"]  ← NEVER use array for config!
+}
+
+Example operations for adding an agent node:
+[
+  {
+    "op": "add",
+    "path": "/nodes/-",
+    "value": {
+      "id": "processor_agent",
+      "type": "agent",
+      "config": {
+        "task": "Process incoming data"
+      }
+    }
+  },
+  {
+    "op": "add",
+    "path": "/edges/-",
+    "value": {
+      "from": "agent_start",
+      "to": "processor_agent"
+    }
+  }
+]
+
+Node types and their config:
+- agent: {"task": "description"}
+- http: {"url": "https://...", "method": "GET", "payload": "..."}
+- hitl: {"message": "Please approve", "timeout_ms": 86400000}
+- conditional: {"condition": "$.value > 100"}
 """,
                 "parameters": {
                     "type": "object",

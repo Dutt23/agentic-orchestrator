@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/compiler"
+	"github.com/lyzr/orchestrator/common/ratelimit"
 	"github.com/lyzr/orchestrator/common/sdk"
 	"github.com/lyzr/orchestrator/common/clients"
 )
@@ -129,6 +130,46 @@ func (c *Coordinator) reloadIRIfPatched(ctx context.Context, runID string, curre
 	c.logger.Info("compilation successful",
 		"run_id", runID,
 		"compiled_nodes", len(patchedIR.Nodes))
+
+	// SECURITY: Check if too many agents were added (prevent runaway workflows)
+	c.logger.Info("=== SECURITY CHECK START ===",
+		"run_id", runID,
+		"rate_limiter_exists", c.rateLimiter != nil)
+
+	if c.rateLimiter == nil {
+		c.logger.Error("CRITICAL: rate limiter is nil, cannot enforce agent limits!",
+			"run_id", runID)
+	} else {
+		workflowMap := map[string]interface{}{
+			"nodes": patchedIR.Nodes,
+		}
+		profile := ratelimit.InspectWorkflow(workflowMap)
+
+		c.logger.Info("workflow re-inspected after patch",
+			"run_id", runID,
+			"agent_count", profile.AgentCount,
+			"tier", profile.Tier,
+			"total_nodes", profile.TotalNodes,
+			"max_allowed", 5)
+
+		// Block if too many agents (5 or more)
+		// Allow up to 4 spawned (1 original + 4 spawned = 5 total)
+		if profile.AgentCount > 5 {
+			c.logger.Error("!!! BLOCKING WORKFLOW !!!",
+				"run_id", runID,
+				"agent_count", profile.AgentCount,
+				"max_allowed", 5,
+				"reason", "excessive_agents")
+			return fmt.Errorf("SECURITY: workflow has %d agent nodes (max 5 allowed). Blocking to protect OpenAI quota.", profile.AgentCount)
+		} else {
+			c.logger.Info("security check passed",
+				"run_id", runID,
+				"agent_count", profile.AgentCount,
+				"status", "allowed")
+		}
+	}
+
+	c.logger.Info("=== SECURITY CHECK END ===")
 
 	// Preserve runtime metadata (username, tag) from current IR
 	// The compiler preserves workflow metadata, but we need to ensure runtime metadata is kept

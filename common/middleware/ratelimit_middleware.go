@@ -2,16 +2,41 @@ package middleware
 
 import (
 	"net/http"
+	"os"
 
 	"github.com/labstack/echo/v4"
 	"github.com/lyzr/orchestrator/common/ratelimit"
 )
 
+// isInternalRequest checks if the request is from an internal service
+// Internal services set X-Internal-Service header to bypass rate limits
+func isInternalRequest(c echo.Context) bool {
+	internalHeader := c.Request().Header.Get("X-Internal-Service")
+	if internalHeader == "" {
+		return false
+	}
+
+	// Verify against shared secret (prevents spoofing)
+	// In production, use a proper secret management system
+	expectedSecret := os.Getenv("INTERNAL_SERVICE_SECRET")
+	if expectedSecret == "" {
+		expectedSecret = "default-internal-secret-change-in-prod" // Fallback for dev
+	}
+
+	return internalHeader == expectedSecret
+}
+
 // GlobalRateLimitMiddleware checks the global service-wide rate limit
 // Protects the entire service from being overwhelmed
+// Skips rate limiting for internal service-to-service calls
 func GlobalRateLimitMiddleware(rateLimiter *ratelimit.RateLimiter, limit int64) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
+			// Skip rate limiting for internal service calls
+			if isInternalRequest(c) {
+				return next(c)
+			}
+
 			result, err := rateLimiter.CheckGlobalLimit(c.Request().Context(), limit)
 			if err != nil {
 				// On error, allow request (fail open for availability)
@@ -37,9 +62,16 @@ func GlobalRateLimitMiddleware(rateLimiter *ratelimit.RateLimiter, limit int64) 
 
 // UserRateLimitMiddleware checks per-user rate limits
 // Requires username to be set in context by ExtractUsername middleware
+// Skips rate limiting for internal service-to-service calls
 func UserRateLimitMiddleware(rateLimiter *ratelimit.RateLimiter, limit int64) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
+			// Skip rate limiting for internal service calls
+			// Internal services set X-Internal-Service header to bypass rate limits
+			if isInternalRequest(c) {
+				return next(c)
+			}
+
 			// Get username from context (set by ExtractUsername middleware)
 			username, ok := c.Get("username").(string)
 			if !ok || username == "" {

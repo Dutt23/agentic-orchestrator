@@ -31,6 +31,7 @@ from storage.memory import MemoryStorage
 from storage.redis_client import RedisClient
 from pipeline.executor import execute_pipeline_tool
 from workflow.patch_client import patch_workflow_tool
+from patch_validator import validate_patch_operations
 from metrics import RuntimeMetrics, SystemInfo, create_metrics
 
 # Load environment variables
@@ -365,6 +366,23 @@ class AgentService:
             return execute_pipeline_tool(arguments)
 
         elif tool_name == 'patch_workflow':
+            # Validate patch operations before forwarding
+            patch_spec = arguments.get('patch_spec', {})
+            operations = patch_spec.get('operations', [])
+
+            try:
+                validate_patch_operations(operations)
+                logger.info(f"Patch validation passed: {len(operations)} operations")
+            except ValueError as e:
+                logger.error(f"Patch validation failed: {e}")
+                # Return error instead of forwarding bad patch
+                return {
+                    'status': 'error',
+                    'error': str(e),
+                    'error_type': 'PatchValidationError',
+                    'message': f"Patch rejected: {e}"
+                }
+
             # Add workflow info from job if not in arguments
             if 'workflow_owner' not in arguments and job.get('workflow_owner'):
                 arguments['workflow_owner'] = job['workflow_owner']

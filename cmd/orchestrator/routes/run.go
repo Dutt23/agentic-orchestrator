@@ -28,10 +28,14 @@ func RegisterRunRoutes(e *echo.Echo, c *container.Container) {
 	// Workflow execution routes
 	workflows := e.Group("/api/v1/workflows")
 	workflows.Use(middleware.ExtractUsername()) // Extract X-User-ID into context
-	workflows.Use(commonmiddleware.UserRateLimitMiddleware(c.RateLimiter, 50)) // Per-user rate limit: 50 req/min
 	{
-		workflows.POST("/:tag/execute", runHandler.ExecuteWorkflow) // POST /api/v1/workflows/:tag/execute
-		workflows.GET("/:tag/runs", runHandler.ListWorkflowRuns)    // GET /api/v1/workflows/:tag/runs
+		// Write operation - apply rate limiting
+		workflows.POST("/:tag/execute",
+			runHandler.ExecuteWorkflow,
+			commonmiddleware.UserRateLimitMiddleware(c.RateLimiter, 50)) // 50 executions/min per user
+
+		// Read operation - NO rate limiting (allow polling/refresh)
+		workflows.GET("/:tag/runs", runHandler.ListWorkflowRuns)
 	}
 
 	// Run routes

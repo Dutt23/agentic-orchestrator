@@ -15,6 +15,7 @@ import (
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/supervisor"
 	"github.com/lyzr/orchestrator/common/bootstrap"
 	"github.com/lyzr/orchestrator/common/clients"
+	"github.com/lyzr/orchestrator/common/ratelimit"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -61,6 +62,7 @@ type dependencies struct {
 	casClient       clients.CASClient
 	workflowSDK     *sdk.SDK
 	orchestratorURL string
+	rateLimiter     *ratelimit.RateLimiter
 }
 
 // workflowComponents holds all workflow-runner components
@@ -96,6 +98,9 @@ func initializeDependencies(ctx context.Context, components *bootstrap.Component
 	// Create SDK
 	workflowSDK := sdk.NewSDK(redisClient, casClient, components.Logger, string(luaScript))
 
+	// Create rate limiter for dynamic agent checks
+	rateLimiter := ratelimit.NewRateLimiter(redisClient, components.Logger)
+
 	// Get orchestrator URL
 	orchestratorURL := getEnv("ORCHESTRATOR_URL", "http://localhost:8081")
 
@@ -104,6 +109,7 @@ func initializeDependencies(ctx context.Context, components *bootstrap.Component
 		casClient:       casClient,
 		workflowSDK:     workflowSDK,
 		orchestratorURL: orchestratorURL,
+		rateLimiter:     rateLimiter,
 	}, nil
 }
 
@@ -124,6 +130,7 @@ func createWorkflowComponents(deps *dependencies, components *bootstrap.Componen
 			Logger:              components.Logger,
 			OrchestratorBaseURL: deps.orchestratorURL,
 			CASClient:           deps.casClient,
+			RateLimiter:         deps.rateLimiter,
 		}),
 		runConsumer:    executor.NewRunRequestConsumer(deps.redisClient, deps.workflowSDK, components.Logger, deps.orchestratorURL),
 		statusConsumer: consumer.NewStatusUpdateConsumer(deps.redisClient, runRepo, components.Logger),

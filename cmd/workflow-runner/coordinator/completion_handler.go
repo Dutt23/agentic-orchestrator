@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/operators"
@@ -55,7 +56,35 @@ func (c *Coordinator) handleCompletion(ctx context.Context, signal *CompletionSi
 				"node_id", signal.NodeID,
 				"error", err,
 				"error_type", fmt.Sprintf("%T", err))
-			// Continue execution even if patch reload fails
+
+			// Check if it's a security/rate limit error (agent limit exceeded)
+			if strings.Contains(err.Error(), "SECURITY") || strings.Contains(err.Error(), "BLOCKED") {
+				c.logger.Error("SECURITY ERROR: workflow blocked due to excessive agents",
+					"run_id", signal.RunID,
+					"node_id", signal.NodeID)
+
+				// Fail the workflow with security error
+				failSignal := &CompletionSignal{
+					Version:    signal.Version,
+					JobID:      signal.JobID,
+					RunID:      signal.RunID,
+					NodeID:     signal.NodeID,
+					Status:     "failed",
+					ResultData: nil,
+					Metadata: map[string]interface{}{
+						"error_type":    "SecurityError",
+						"error_message": err.Error(),
+						"reason":        "excessive_agent_nodes",
+					},
+				}
+				c.handleFailedNode(ctx, failSignal, ir)
+				return
+			}
+
+			// For other errors, continue execution (network issues, etc.)
+			c.logger.Warn("patch reload failed but continuing execution",
+				"run_id", signal.RunID,
+				"error", err)
 		} else {
 			// Reload successful, check if IR actually changed
 			newIR, _ := c.loadIR(ctx, signal.RunID)

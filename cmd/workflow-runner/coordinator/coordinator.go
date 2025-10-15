@@ -11,6 +11,7 @@ import (
 	"github.com/lyzr/orchestrator/common/sdk"
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/workflow_lifecycle"
 	"github.com/lyzr/orchestrator/common/clients"
+	"github.com/lyzr/orchestrator/common/ratelimit"
 	redisWrapper "github.com/lyzr/orchestrator/common/redis"
 	"github.com/redis/go-redis/v9"
 )
@@ -39,6 +40,7 @@ type Coordinator struct {
 	orchestratorClient  *clients.OrchestratorClient
 	orchestratorBaseURL string
 	casClient           clients.CASClient // CAS client for compiler
+	rateLimiter         *ratelimit.RateLimiter // Rate limiter for dynamic checks
 
 	// Extracted modules for clean separation of concerns
 	operators *OperatorOpts
@@ -72,6 +74,7 @@ type CoordinatorOpts struct {
 	Logger              Logger
 	OrchestratorBaseURL string
 	CASClient           clients.CASClient
+	RateLimiter         *ratelimit.RateLimiter
 }
 
 // NewCoordinator creates a new coordinator instance
@@ -101,6 +104,7 @@ func NewCoordinator(opts *CoordinatorOpts) *Coordinator {
 		orchestratorClient:  orchestratorClient,
 		orchestratorBaseURL: opts.OrchestratorBaseURL,
 		casClient:           opts.CASClient,
+		rateLimiter:         opts.RateLimiter,
 		operators: &OperatorOpts{
 			ControlFlowRouter: controlFlowRouter,
 		},
