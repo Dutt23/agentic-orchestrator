@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/lyzr/orchestrator/cmd/orchestrator/models"
+	"github.com/lyzr/orchestrator/common/models"
 	"github.com/lyzr/orchestrator/cmd/orchestrator/service"
 )
 

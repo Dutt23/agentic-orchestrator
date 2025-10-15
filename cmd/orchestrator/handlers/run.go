@@ -10,7 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"github.com/lyzr/orchestrator/cmd/orchestrator/service"
-	"github.com/lyzr/orchestrator/cmd/workflow-runner/compiler"
+	"github.com/lyzr/orchestrator/common/compiler"
 	"github.com/lyzr/orchestrator/common/bootstrap"
 	"github.com/lyzr/orchestrator/common/clients"
 	rediscommon "github.com/lyzr/orchestrator/common/redis"

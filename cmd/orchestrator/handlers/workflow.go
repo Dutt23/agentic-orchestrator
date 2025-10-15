@@ -8,7 +8,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/lyzr/orchestrator/cmd/orchestrator/container"
 	"github.com/lyzr/orchestrator/cmd/orchestrator/middleware"
-	"github.com/lyzr/orchestrator/cmd/orchestrator/models"
+	"github.com/lyzr/orchestrator/common/models"
 	"github.com/lyzr/orchestrator/cmd/orchestrator/service"
 	"github.com/lyzr/orchestrator/common/bootstrap"
 )

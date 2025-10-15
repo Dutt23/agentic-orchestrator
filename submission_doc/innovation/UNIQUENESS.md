@@ -606,15 +606,20 @@ Version control systems:
 
 ### Our Innovation
 
-**Git-like versioning with runtime application:**
+**Git-like versioning with runtime application and automatic compaction:**
 
 ```
 Base Workflow @ main (v1.0)
   ├─ Patch 1 (agent adds email)
   ├─ Patch 2 (agent adds validation)
-  └─ Patch 3 (optimizer fuses nodes)
+  ├─ ... 20+ patches ...
+  └─ Automatic compaction → New base (v2.0)
 
-Materialized @ main (v1.3) = base + patch1 + patch2 + patch3
+Features:
+• Undo/redo timeline (navigate history)
+• Automatic compaction after threshold
+• Prevents infinite patch chains
+• Full audit trail maintained
 ```
 
 ### Operations
@@ -647,11 +652,14 @@ POST /tags/main/redo  # Move tag to next artifact
 
 ### Benefits
 
-1. **Audit trail**: Every change recorded
-2. **Rollback**: Move tag to previous version
+1. **Audit trail**: Every change recorded with actor + timestamp
+2. **Rollback**: Move tag to previous version (undo/redo timeline)
 3. **A/B testing**: Different patch sets for different runs
 4. **Reproducibility**: Base + patches = deterministic
 5. **Runtime application**: No restart required
+6. **Automatic compaction**: After 20+ patches, system compacts to new base (prevents infinite chains)
+7. **Scalable**: Patch chain depth limited, old patches archived
+8. **Undo/Redo timeline**: Navigate through workflow evolution like Git history
 
 **Documentation:** [../../docs/schema/TAG_MOVE_EXPLAINED.md](../../docs/schema/TAG_MOVE_EXPLAINED.md), [../../docs/schema/UNDO_REDO_OPTIMIZATION.md](../../docs/schema/UNDO_REDO_OPTIMIZATION.md)
 

@@ -19,7 +19,7 @@ func main() {
 	defer cancel()
 
 	// Bootstrap service components
-	components, err := bootstrap.Setup(ctx, "hitl-worker")
+	components, err := bootstrap.Setup(ctx, "hitl-worker", bootstrap.WithoutDB())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to setup service: %v\n", err)
 		os.Exit(1)

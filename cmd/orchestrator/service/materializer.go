@@ -6,7 +6,7 @@ import (
 	"fmt"
 
 	jsonpatch "github.com/evanphx/json-patch/v5"
-	"github.com/lyzr/orchestrator/cmd/orchestrator/models"
+	"github.com/lyzr/orchestrator/common/models"
 	"github.com/lyzr/orchestrator/common/logger"
 )
 

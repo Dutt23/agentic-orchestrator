@@ -7,15 +7,15 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/lyzr/orchestrator/cmd/orchestrator/repository"
+	"github.com/lyzr/orchestrator/common/repository"
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/consumer"
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/coordinator"
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/executor"
-	"github.com/lyzr/orchestrator/common/sdk"
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/supervisor"
 	"github.com/lyzr/orchestrator/common/bootstrap"
 	"github.com/lyzr/orchestrator/common/clients"
 	"github.com/lyzr/orchestrator/common/ratelimit"
+	"github.com/lyzr/orchestrator/common/sdk"
 	"github.com/redis/go-redis/v9"
 )
 

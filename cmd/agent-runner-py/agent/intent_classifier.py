@@ -2,6 +2,8 @@
 import logging
 from typing import Dict, Any, List
 import json
+import os
+import httpx
 from openai import OpenAI
 
 logger = logging.getLogger(__name__)
@@ -12,7 +14,11 @@ class IntentClassifier:
 
     def __init__(self):
         """Initialize intent classifier with OpenAI client."""
-        self.client = OpenAI()  # Uses OPENAI_API_KEY env var
+        # TODO: FIX SSL VERIFICATION FOR PRODUCTION!
+        # Temporary workaround: SSL verification disabled for development
+        logger.warning("SSL verification is DISABLED - temporary workaround for development")
+        http_client = httpx.Client(verify=False)  # TEMPORARY: Disable SSL verification
+        self.client = OpenAI(http_client=http_client)  # Uses OPENAI_API_KEY env var
         self.model = "gpt-4o-mini"  # Fast and cheap model for classification
         logger.info("Intent classifier initialized with LLM")
 
