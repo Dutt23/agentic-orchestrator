@@ -21,14 +21,11 @@ import {
 import { ArrowBackIcon, ChevronDownIcon, ChevronUpIcon } from '@chakra-ui/icons';
 import { getRunDetails } from '../services/api';
 import { useWebSocketEvents } from '../contexts/WebSocketContext';
-import { ReactFlow, Background, Controls, useNodesState, useEdgesState } from '@xyflow/react';
-import '@xyflow/react/dist/style.css';
-import BranchDiffOverlay from '../components/BranchDiffOverlay';
-import PatchTimeline from '../components/PatchTimeline';
 import MetricsSidebar from '../components/MetricsSidebar';
 import StatusBadge from '../components/run/StatusBadge';
 import NodeSelectorBadges from '../components/run/NodeSelectorBadges';
 import NodeMetricsDisplay from '../components/run/NodeMetricsDisplay';
+import RunExecutionGraph from '../components/run/RunExecutionGraph';
 import {
   AlertMessage,
   Card,
@@ -37,10 +34,10 @@ import {
   KeyValueList,
   ToggleButtons,
 } from '../components/common';
-import { computeWorkflowDiff, applyDiffColorsToNodes, applyDiffColorsToEdges } from '../utils/workflowDiff';
-import { applyPatchesUpToSeq } from '../utils/workflowPatcher';
 import { formatDate } from '../utils/dateUtils';
-import { createExecutionEdge } from '../utils/workflowEdgeUtils';
+import { applyPatchesUpToSeq } from '../utils/workflowPatcher';
+import BranchDiffOverlay from '../components/BranchDiffOverlay';
+import PatchTimeline from '../components/PatchTimeline';
 
 // Event types that should trigger a refetch (defined outside to avoid recreating on every render)
 const RELEVANT_EVENT_TYPES = new Set([
@@ -76,7 +73,21 @@ export default function RunDetail() {
       setError(null);
     } catch (err) {
       console.error('Failed to fetch run details:', err);
-      setError(err.message);
+
+      // Check if it's a rate limit error
+      if (err.response?.status === 429 || err.message?.includes('rate limit')) {
+        setError({
+          type: 'rate_limit',
+          message: 'Rate limit exceeded. Please try again in a moment.',
+          details: err.response?.data?.details,
+          retryAfter: err.response?.data?.details?.retry_after_seconds || 60
+        });
+      } else {
+        setError({
+          type: 'error',
+          message: err.message || 'Failed to load run details'
+        });
+      }
     } finally {
       if (showLoading) {
         setLoading(false);
@@ -112,12 +123,39 @@ export default function RunDetail() {
   }
 
   if (error) {
+    // Handle different error types
+    const isRateLimit = error.type === 'rate_limit';
+
     return (
       <Container maxW="container.2xl" py={8} px={8}>
-        <AlertMessage status="error" message={`Failed to load run details: ${error}`} mb={4} />
-        <Button leftIcon={<ArrowBackIcon />} onClick={() => navigate(-1)}>
-          Go Back
-        </Button>
+        <VStack spacing={4} align="stretch">
+          <AlertMessage
+            status={isRateLimit ? 'warning' : 'error'}
+            message={error.message || 'Failed to load run details'}
+          />
+
+          {isRateLimit && error.details && (
+            <Card>
+              <VStack align="stretch" spacing={2}>
+                <Text fontSize="sm" fontWeight="bold">Rate Limit Details:</Text>
+                <Text fontSize="sm">Limit: {error.details.limit} requests per {error.details.window}</Text>
+                <Text fontSize="sm">Current: {error.details.current_count} requests</Text>
+                <Text fontSize="sm">Retry after: {error.retryAfter} seconds</Text>
+              </VStack>
+            </Card>
+          )}
+
+          <HStack>
+            <Button leftIcon={<ArrowBackIcon />} onClick={() => navigate(-1)}>
+              Go Back
+            </Button>
+            {isRateLimit && (
+              <Button colorScheme="blue" onClick={() => fetchDetails(true)}>
+                Retry Now
+              </Button>
+            )}
+          </HStack>
+        </VStack>
       </Container>
     );
   }
@@ -348,278 +386,6 @@ function RunPatchOverlay({ baseWorkflowIR, workflowIR, patches, nodeExecutions }
 /**
  * RunExecutionGraph visualizes the workflow execution path
  */
-function RunExecutionGraph({ workflowIR, nodeExecutions, onNodeClick }) {
-  const [nodes, setNodes, onNodesChange] = useNodesState([]);
-  const [edges, setEdges] = useEdgesState([]);
-  const [showLegend, setShowLegend] = useState(true);
-
-  useEffect(() => {
-    if (!workflowIR || !workflowIR.nodes) {
-      console.log('No workflow IR or nodes available');
-      return;
-    }
-
-    console.log('WorkflowIR:', workflowIR);
-    console.log('NodeExecutions:', nodeExecutions);
-    console.log('workflowIR.nodes type:', Array.isArray(workflowIR.nodes) ? 'Array' : 'Object');
-
-    // Convert IR nodes to ReactFlow nodes
-    // Handle both array and object formats
-    let nodesArray;
-    if (Array.isArray(workflowIR.nodes)) {
-      // If nodes is an array, use it directly
-      nodesArray = workflowIR.nodes;
-      console.log('Nodes is an array, using directly');
-    } else {
-      // If nodes is an object, convert to array of [id, node] pairs
-      nodesArray = Object.entries(workflowIR.nodes).map(([id, node]) => ({ ...node, id }));
-      console.log('Nodes is an object, converted to array');
-    }
-
-    const flowNodes = nodesArray.map((node, index) => {
-      const nodeId = node.id;  // Get ID from node object
-      const execution = nodeExecutions?.[nodeId];
-      const status = execution?.status || 'pending';
-
-      console.log(`Node ${nodeId}: status=${status}, execution=`, execution);
-
-      // Color based on status
-      let bgColor = '#f0f0f0'; // default
-      let borderColor = '#333';
-      if (status === 'completed') {
-        bgColor = '#90EE90'; // light green
-        borderColor = '#38a169'; // darker green
-      }
-      if (status === 'failed') {
-        bgColor = '#FFB6C1'; // light red
-        borderColor = '#e53e3e'; // darker red
-      }
-      if (status === 'running') {
-        bgColor = '#ADD8E6'; // light blue
-        borderColor = '#3182ce'; // darker blue
-      }
-      if (status === 'waiting_for_approval') {
-        bgColor = '#FFF9C4'; // light yellow
-        borderColor = '#F59E0B'; // amber/orange
-      }
-      if (status === 'skipped') {
-        bgColor = '#E2E8F0'; // light grey
-        borderColor = '#718096'; // dark grey
-      }
-      if (status === 'not_executed') {
-        bgColor = '#e2e8f0'; // lighter grey
-        borderColor = '#a0aec0'; // grey
-      }
-
-      return {
-        id: nodeId, // Use the actual node ID, not the index
-        data: {
-          label: (
-            <div>
-              <div style={{ fontWeight: 'bold' }}>{nodeId}</div>
-              <div style={{ fontSize: '10px' }}>{node.type || 'unknown'}</div>
-            </div>
-          ),
-        },
-        position: { x: (index % 3) * 250, y: Math.floor(index / 3) * 150 },
-        style: {
-          background: bgColor,
-          padding: 10,
-          borderRadius: 5,
-          border: `2px solid ${borderColor}`,
-          cursor: 'pointer',
-        },
-      };
-    });
-
-    // Convert IR edges to ReactFlow edges with execution path highlighting
-    const flowEdges = [];
-
-    // Method 1: Check for edges array at the top level
-    if (workflowIR.edges && Array.isArray(workflowIR.edges) && workflowIR.edges.length > 0) {
-      console.log('Found edges array in workflowIR:', workflowIR.edges);
-      workflowIR.edges.forEach((edge) => {
-        const sourceId = edge.from || edge.source;
-        const targetId = edge.to || edge.target;
-
-        if (sourceId && targetId) {
-          flowEdges.push(createExecutionEdge(sourceId, targetId, nodeExecutions));
-        }
-      });
-    }
-
-    // Method 2: Check node.dependents (if edges array was empty or missing)
-    if (flowEdges.length === 0) {
-      console.log('No edges array found, checking node.dependents and branch rules');
-      nodesArray.forEach((node) => {
-        const id = node.id;
-        console.log(`Node ${id}:`, { dependents: node.dependents, dependencies: node.dependencies, branch: node.branch });
-
-        // Check regular dependents
-        if (node.dependents && node.dependents.length > 0) {
-          node.dependents.forEach((target) => {
-            flowEdges.push(createExecutionEdge(id, target, nodeExecutions));
-          });
-        }
-
-        // Check branch rules for conditional nodes
-        if (node.branch && node.branch.enabled && node.branch.rules) {
-          node.branch.rules.forEach((rule) => {
-            if (rule.next_nodes && Array.isArray(rule.next_nodes)) {
-              rule.next_nodes.forEach((target) => {
-                flowEdges.push(createExecutionEdge(id, target, nodeExecutions));
-              });
-            }
-          });
-        }
-      });
-
-      // Method 3: If still no edges, create them from dependencies (reverse direction)
-      if (flowEdges.length === 0) {
-        console.log('Still no edges, trying to create from dependencies');
-        nodesArray.forEach((node) => {
-          const targetId = node.id;
-          if (node.dependencies && Array.isArray(node.dependencies) && node.dependencies.length > 0) {
-            console.log(`Node ${targetId} has dependencies:`, node.dependencies);
-            node.dependencies.forEach((sourceId) => {
-              flowEdges.push(createExecutionEdge(sourceId, targetId, nodeExecutions));
-            });
-          }
-        });
-      }
-    }
-
-    console.log('Generated flowNodes:', flowNodes.length, flowNodes);
-    console.log('Generated flowEdges:', flowEdges.length, flowEdges);
-
-    // Debug: Check if node IDs match edge source/targets
-    const nodeIds = new Set(flowNodes.map(n => n.id));
-    console.log('Node IDs:', Array.from(nodeIds));
-
-    flowEdges.forEach(edge => {
-      const sourceExists = nodeIds.has(edge.source);
-      const targetExists = nodeIds.has(edge.target);
-      console.log(`Edge ${edge.id}: source="${edge.source}" (exists: ${sourceExists}), target="${edge.target}" (exists: ${targetExists})`);
-    });
-
-    setNodes(flowNodes);
-    setEdges(flowEdges);
-  }, [workflowIR, nodeExecutions]);
-
-  const handleNodeClick = (event, node) => {
-    onNodeClick?.(node.id);
-  };
-
-  if (nodes.length === 0) {
-    return (
-      <AlertMessage
-        status="info"
-        message="No workflow graph available (IR may have expired after 24 hours)"
-      />
-    );
-  }
-
-  return (
-    <>
-      {/* Debug info */}
-      {edges.length === 0 && nodes.length > 0 && (
-        <AlertMessage
-          status="warning"
-          message={`Warning: ${nodes.length} nodes found but 0 edges. Check console for details.`}
-          mb={4}
-        />
-      )}
-
-      <Box position="relative">
-      {/* Legend */}
-      <Box
-        position="absolute"
-        top={2}
-        left={2}
-        zIndex={10}
-        bg="white"
-        borderRadius="md"
-        boxShadow="md"
-        border="1px solid"
-        borderColor="gray.200"
-      >
-        <HStack
-          justify="space-between"
-          p={2}
-          cursor="pointer"
-          onClick={() => setShowLegend(!showLegend)}
-          _hover={{ bg: 'gray.50' }}
-        >
-          <Text fontSize="sm" fontWeight="bold">Legend</Text>
-          <IconButton
-            icon={showLegend ? <ChevronUpIcon /> : <ChevronDownIcon />}
-            size="xs"
-            variant="ghost"
-            aria-label={showLegend ? 'Collapse legend' : 'Expand legend'}
-          />
-        </HStack>
-        <Collapse in={showLegend} animateOpacity>
-          <VStack align="stretch" spacing={2} p={3} pt={0}>
-            <HStack spacing={2}>
-              <Box w="30px" h="4px" bg="#48bb78" />
-              <Text fontSize="xs">Execution Path</Text>
-            </HStack>
-            <HStack spacing={2}>
-              <Box w="30px" h="3px" bg="#a0aec0" style={{ borderTop: '3px dashed #a0aec0' }} />
-              <Text fontSize="xs">Path Not Taken</Text>
-            </HStack>
-            <HStack spacing={2}>
-              <Box w="30px" h="3px" bg="#718096" />
-              <Text fontSize="xs">Default Edge</Text>
-            </HStack>
-            <HStack spacing={2}>
-              <Box w="20px" h="20px" bg="#90EE90" border="2px solid #38a169" borderRadius="md" />
-              <Text fontSize="xs">Completed</Text>
-            </HStack>
-            <HStack spacing={2}>
-              <Box w="20px" h="20px" bg="#FFB6C1" border="2px solid #e53e3e" borderRadius="md" />
-              <Text fontSize="xs">Failed</Text>
-            </HStack>
-            <HStack spacing={2}>
-              <Box w="20px" h="20px" bg="#ADD8E6" border="2px solid #3182ce" borderRadius="md" />
-              <Text fontSize="xs">Running</Text>
-            </HStack>
-            <HStack spacing={2}>
-              <Box w="20px" h="20px" bg="#FFF9C4" border="2px solid #F59E0B" borderRadius="md" />
-              <Text fontSize="xs">Waiting for Approval</Text>
-            </HStack>
-            <HStack spacing={2}>
-              <Box w="20px" h="20px" bg="#E2E8F0" border="2px solid #718096" borderRadius="md" />
-              <Text fontSize="xs">Skipped (No Worker)</Text>
-            </HStack>
-            <HStack spacing={2}>
-              <Box w="20px" h="20px" bg="#f0f0f0" border="2px solid #333" borderRadius="md" />
-              <Text fontSize="xs">Pending</Text>
-            </HStack>
-          </VStack>
-        </Collapse>
-      </Box>
-
-      <Box height="600px" border="1px solid" borderColor="gray.200" borderRadius="md" bg="white">
-        <ReactFlow
-          nodes={nodes}
-          edges={edges}
-          onNodesChange={onNodesChange}
-          onNodeClick={handleNodeClick}
-          nodesDraggable={true}
-          nodesConnectable={false}
-          elementsSelectable={true}
-          fitView
-          attributionPosition="bottom-left"
-        >
-          <Background />
-          <Controls />
-        </ReactFlow>
-      </Box>
-      </Box>
-    </>
-  );
-}
 
 /**
  * NodeExecutionDetails displays input/output for each node

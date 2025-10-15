@@ -12,6 +12,10 @@ export const STATUS_CONFIG = {
     colorScheme: 'red',
     label: 'Failed',
   },
+  error: {
+    colorScheme: 'red',
+    label: 'Error',
+  },
   running: {
     colorScheme: 'blue',
     label: 'Running',
