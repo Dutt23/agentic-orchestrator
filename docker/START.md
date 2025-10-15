@@ -212,12 +212,14 @@ HTTP_WORKER_REPLICAS=5
 
 ## Next Steps
 
+- **Monitoring & Debugging**: See `OBSERVABILITY.md` for metrics, logging, and debugging
 - **Architecture**: See `DOCKER_BUILD.md` for technical details
-- **Development**: See `../BUILD_GUIDE.md` for advanced usage
+- **Development**: See `BUILD_GUIDE.md` for advanced usage
 - **API Documentation**: Check orchestrator service README
 
 ## Need Help?
 
+- **Observability**: See `OBSERVABILITY.md` for comprehensive debugging guide
 - Check logs: `docker-compose logs -f`
 - Verify services: `docker-compose ps`
 - Read troubleshooting section above

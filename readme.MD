@@ -1,5 +1,12 @@
 # Agentic Orchestration Builder
 
+> **🚀 Quick Start with Docker:**
+> 1. Copy `.env.example` to `.env` in this directory and add your `OPENAI_API_KEY`
+> 2. Run: `cd docker && ./setup.sh`
+> 3. Open: http://localhost:3000
+>
+> **Full guide:** [docker/START.md](docker/START.md)
+
 > **Event-driven orchestration with runtime workflow patching**
 
 ## 📖 Overview
