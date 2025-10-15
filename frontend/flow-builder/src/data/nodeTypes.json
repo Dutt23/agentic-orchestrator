@@ -1,0 +1,172 @@
+{
+  "categories": [
+    {
+      "name": "Core",
+      "id": "core",
+      "description": "Core execution nodes",
+      "nodes": [
+        {
+          "type": "agent",
+          "label": "Agent",
+          "description": "Execute AI agent tasks",
+          "icon": "MdSmartToy",
+          "defaultData": {
+            "type": "agent",
+            "label": "Agent",
+            "config": {
+              "name": "New Agent",
+              "prompt": "",
+              "goal": "",
+              "agent_id": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Tools",
+      "id": "tools",
+      "description": "Tool and integration nodes",
+      "nodes": [
+        {
+          "type": "http",
+          "label": "HTTP Request",
+          "description": "Make HTTP API calls",
+          "icon": "MdHttp",
+          "defaultData": {
+            "type": "http",
+            "label": "HTTP Request",
+            "config": {
+              "name": "HTTP Request",
+              "url": "",
+              "method": "POST",
+              "payload": ""
+            }
+          }
+        },
+        {
+          "type": "file-search",
+          "label": "File Search",
+          "description": "Search and retrieve files",
+          "icon": "MdSearch",
+          "defaultData": {
+            "type": "file-search",
+            "label": "File Search",
+            "config": {
+              "name": "Search Files",
+              "file_path": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Data",
+      "id": "data",
+      "description": "Data processing and manipulation",
+      "nodes": [
+        {
+          "type": "transform",
+          "label": "Transform",
+          "description": "Transform and modify data",
+          "icon": "MdTransform",
+          "defaultData": {
+            "type": "transform",
+            "label": "Transform",
+            "config": {
+              "name": "Transform Data",
+              "operation": "map",
+              "field": ""
+            }
+          }
+        },
+        {
+          "type": "aggregate",
+          "label": "Aggregate",
+          "description": "Combine and merge data",
+          "icon": "MdCallMerge",
+          "defaultData": {
+            "type": "aggregate",
+            "label": "Aggregate",
+            "config": {
+              "name": "Aggregate Data",
+              "operation": "merge"
+            }
+          }
+        },
+        {
+          "type": "filter",
+          "label": "Filter",
+          "description": "Filter and select data",
+          "icon": "MdFilterList",
+          "defaultData": {
+            "type": "filter",
+            "label": "Filter",
+            "config": {
+              "name": "Filter Data",
+              "condition": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Logic",
+      "id": "logic",
+      "description": "Control flow and logic nodes",
+      "nodes": [
+        {
+          "type": "conditional",
+          "label": "If/Else",
+          "description": "If/else branching logic",
+          "icon": "MdCallSplit",
+          "defaultData": {
+            "type": "conditional",
+            "label": "If/Else",
+            "config": {
+              "name": "If/Else Branch",
+              "conditions": [
+                {
+                  "label": "",
+                  "condition": ""
+                }
+              ]
+            },
+            "outputs": ["if", "else"]
+          }
+        },
+        {
+          "type": "loop",
+          "label": "Loop",
+          "description": "Iterate over data",
+          "icon": "MdLoop",
+          "defaultData": {
+            "type": "loop",
+            "label": "Loop",
+            "config": {
+              "name": "Loop Over Items",
+              "iterations": 0,
+              "condition": ""
+            }
+          }
+        },
+        {
+          "type": "hitl",
+          "label": "Human Review",
+          "description": "Human-in-the-loop approval",
+          "icon": "MdPerson",
+          "defaultData": {
+            "type": "hitl",
+            "label": "Human Review",
+            "config": {
+              "name": "Human Review",
+              "message": "Please review and approve",
+              "timeout_ms": 86400000
+            },
+            "outputs": ["approve", "reject"]
+          }
+        }
+      ]
+    }
+  ]
+}
