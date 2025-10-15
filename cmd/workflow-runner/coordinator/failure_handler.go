@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/lyzr/orchestrator/cmd/workflow-runner/sdk"
+	"github.com/lyzr/orchestrator/common/sdk"
 )
 
 // getMapKeys returns the keys of a map as a slice (for logging)

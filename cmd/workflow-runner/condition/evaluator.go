@@ -6,7 +6,7 @@ import (
 	"sync"
 
 	"github.com/google/cel-go/cel"
-	"github.com/lyzr/orchestrator/cmd/workflow-runner/sdk"
+	"github.com/lyzr/orchestrator/common/sdk"
 )
 
 // Evaluator evaluates conditions using CEL (Common Expression Language)

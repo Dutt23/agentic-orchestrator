@@ -11,7 +11,7 @@ import (
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/consumer"
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/coordinator"
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/executor"
-	"github.com/lyzr/orchestrator/cmd/workflow-runner/sdk"
+	"github.com/lyzr/orchestrator/common/sdk"
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/supervisor"
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/worker"
 	"github.com/lyzr/orchestrator/common/bootstrap"

@@ -7,7 +7,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/lyzr/orchestrator/cmd/workflow-runner/sdk"
+	"github.com/lyzr/orchestrator/common/sdk"
 	"github.com/tidwall/gjson"
 )
 

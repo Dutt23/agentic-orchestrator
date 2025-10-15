@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/lyzr/orchestrator/cmd/workflow-runner/metrics"
-	"github.com/lyzr/orchestrator/cmd/workflow-runner/sdk"
+	"github.com/lyzr/orchestrator/common/metrics"
+	"github.com/lyzr/orchestrator/common/sdk"
 	"github.com/redis/go-redis/v9"
 )
 

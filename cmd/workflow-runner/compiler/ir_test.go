@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	_ "github.com/lyzr/orchestrator/cmd/workflow-runner/sdk"
+	_ "github.com/lyzr/orchestrator/common/sdk"
 )
 
 // MockCASClient for testing

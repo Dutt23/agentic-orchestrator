@@ -8,7 +8,7 @@ import (
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/condition"
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/operators"
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/resolver"
-	"github.com/lyzr/orchestrator/cmd/workflow-runner/sdk"
+	"github.com/lyzr/orchestrator/common/sdk"
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/workflow_lifecycle"
 	"github.com/lyzr/orchestrator/common/clients"
 	redisWrapper "github.com/lyzr/orchestrator/common/redis"

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/lyzr/orchestrator/cmd/workflow-runner/sdk"
+	"github.com/lyzr/orchestrator/common/sdk"
 )
 
 // loadAndResolveConfig loads node config (inline or from CAS) and resolves variables

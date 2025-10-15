@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/condition"
-	"github.com/lyzr/orchestrator/cmd/workflow-runner/sdk"
+	"github.com/lyzr/orchestrator/common/sdk"
 	redisWrapper "github.com/lyzr/orchestrator/common/redis"
 	"github.com/redis/go-redis/v9"
 )

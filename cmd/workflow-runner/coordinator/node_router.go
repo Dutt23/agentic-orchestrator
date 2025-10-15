@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/operators"
-	"github.com/lyzr/orchestrator/cmd/workflow-runner/sdk"
+	"github.com/lyzr/orchestrator/common/sdk"
 )
 
 // routeToNextNodes processes and routes execution to next nodes

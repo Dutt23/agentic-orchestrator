@@ -8,7 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/compiler"
-	"github.com/lyzr/orchestrator/cmd/workflow-runner/sdk"
+	"github.com/lyzr/orchestrator/common/sdk"
 	"github.com/lyzr/orchestrator/common/clients"
 	"github.com/redis/go-redis/v9"
 )
