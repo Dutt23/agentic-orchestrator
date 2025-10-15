@@ -723,7 +723,7 @@ func (s *RunService) GetRunDetails(ctx context.Context, runID uuid.UUID) (*RunDe
 		switch execution.Status {
 		case "waiting_for_approval":
 			hasWaitingNode = true
-		case "failed":
+		case "failed", "error": // Treat error same as failed
 			hasFailedNode = true
 		case "completed":
 			hasCompletedNode = true
