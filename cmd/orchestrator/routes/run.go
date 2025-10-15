@@ -8,7 +8,8 @@ import (
 	"github.com/lyzr/orchestrator/cmd/orchestrator/container"
 	"github.com/lyzr/orchestrator/cmd/orchestrator/handlers"
 	"github.com/lyzr/orchestrator/cmd/orchestrator/middleware"
-	_ "github.com/lyzr/orchestrator/cmd/workflow-runner/sdk"
+	commonmiddleware "github.com/lyzr/orchestrator/common/middleware"
+	_ "github.com/lyzr/orchestrator/common/sdk"
 	"github.com/lyzr/orchestrator/common/logger"
 )
 
@@ -27,6 +28,7 @@ func RegisterRunRoutes(e *echo.Echo, c *container.Container) {
 	// Workflow execution routes
 	workflows := e.Group("/api/v1/workflows")
 	workflows.Use(middleware.ExtractUsername()) // Extract X-User-ID into context
+	workflows.Use(commonmiddleware.UserRateLimitMiddleware(c.RateLimiter, 50)) // Per-user rate limit: 50 req/min
 	{
 		workflows.POST("/:tag/execute", runHandler.ExecuteWorkflow) // POST /api/v1/workflows/:tag/execute
 		workflows.GET("/:tag/runs", runHandler.ListWorkflowRuns)    // GET /api/v1/workflows/:tag/runs

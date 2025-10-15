@@ -1,0 +1,221 @@
+{
+  "version": "1.0.0",
+  "last_updated": "2025-10-15",
+  "nodes": {
+    "agent": {
+      "id": "agent",
+      "label": "Agent",
+      "category": "core",
+      "status": "active",
+      "icon": "MdSmartToy",
+      "color": "purple",
+      "description": "AI agent that can execute tasks and make decisions",
+      "config_schema": {
+        "task": {
+          "type": "string",
+          "required": true,
+          "description": "Task for the agent to execute"
+        }
+      },
+      "outputs": ["default"]
+    },
+    "http": {
+      "id": "http",
+      "label": "HTTP Request",
+      "category": "integration",
+      "status": "active",
+      "icon": "MdHttp",
+      "color": "teal",
+      "description": "Make HTTP requests to external APIs",
+      "config_schema": {
+        "url": {
+          "type": "string",
+          "required": true,
+          "description": "URL to request"
+        },
+        "method": {
+          "type": "select",
+          "options": ["GET", "POST", "PUT", "DELETE"],
+          "default": "GET",
+          "description": "HTTP method"
+        },
+        "payload": {
+          "type": "json",
+          "required": false,
+          "description": "Request body (JSON)"
+        }
+      },
+      "outputs": ["default"]
+    },
+    "hitl": {
+      "id": "hitl",
+      "label": "Human Review",
+      "category": "workflow",
+      "status": "active",
+      "icon": "FiUser",
+      "color": "green",
+      "description": "Pause workflow and wait for human approval",
+      "config_schema": {
+        "message": {
+          "type": "string",
+          "required": true,
+          "description": "Message to show for approval"
+        },
+        "timeout_ms": {
+          "type": "number",
+          "default": 86400000,
+          "description": "Timeout in milliseconds (default: 24 hours)"
+        }
+      },
+      "outputs": ["approve", "reject"]
+    },
+    "conditional": {
+      "id": "conditional",
+      "label": "Conditional",
+      "category": "logic",
+      "status": "active",
+      "icon": "FiGitBranch",
+      "color": "orange",
+      "description": "Branch execution based on conditions",
+      "config_schema": {
+        "condition": {
+          "type": "string",
+          "required": true,
+          "description": "CEL expression to evaluate"
+        }
+      },
+      "outputs": ["if", "else"]
+    },
+    "loop": {
+      "id": "loop",
+      "label": "Loop",
+      "category": "logic",
+      "status": "active",
+      "icon": "FiRepeat",
+      "color": "red",
+      "description": "Repeat execution until condition is met",
+      "config_schema": {
+        "max_iterations": {
+          "type": "number",
+          "required": true,
+          "description": "Maximum number of iterations"
+        },
+        "condition": {
+          "type": "string",
+          "required": false,
+          "description": "Break condition (CEL expression)"
+        }
+      },
+      "outputs": ["loop", "break"]
+    },
+    "transform": {
+      "id": "transform",
+      "label": "Transform",
+      "category": "data",
+      "status": "coming_soon",
+      "icon": "FiZap",
+      "color": "yellow",
+      "description": "Transform data using expressions",
+      "config_schema": {
+        "expression": {
+          "type": "string",
+          "required": true,
+          "description": "Transformation expression"
+        }
+      },
+      "outputs": ["default"],
+      "note": "Worker implementation in progress"
+    },
+    "aggregate": {
+      "id": "aggregate",
+      "label": "Aggregate",
+      "category": "data",
+      "status": "coming_soon",
+      "icon": "FiPackage",
+      "color": "pink",
+      "description": "Aggregate data from multiple sources",
+      "config_schema": {},
+      "outputs": ["default"],
+      "note": "Worker implementation in progress"
+    },
+    "filter": {
+      "id": "filter",
+      "label": "Filter",
+      "category": "data",
+      "status": "coming_soon",
+      "icon": "FiFilter",
+      "color": "cyan",
+      "description": "Filter data based on conditions",
+      "config_schema": {
+        "condition": {
+          "type": "string",
+          "required": true,
+          "description": "Filter condition (CEL expression)"
+        }
+      },
+      "outputs": ["default"],
+      "note": "Worker implementation in progress"
+    },
+    "file-search": {
+      "id": "file-search",
+      "label": "File Search",
+      "category": "integration",
+      "status": "experimental",
+      "icon": "FiSearch",
+      "color": "blue",
+      "description": "Search through files and documents",
+      "config_schema": {},
+      "outputs": ["default"],
+      "note": "Experimental feature, API may change"
+    }
+  },
+  "categories": {
+    "core": {
+      "label": "Core",
+      "description": "Essential workflow nodes",
+      "order": 1
+    },
+    "integration": {
+      "label": "Integration",
+      "description": "Connect to external services",
+      "order": 2
+    },
+    "workflow": {
+      "label": "Workflow",
+      "description": "Workflow control nodes",
+      "order": 3
+    },
+    "logic": {
+      "label": "Logic",
+      "description": "Conditional logic and loops",
+      "order": 4
+    },
+    "data": {
+      "label": "Data",
+      "description": "Data transformation and processing",
+      "order": 5
+    }
+  },
+  "node_statuses": {
+    "active": {
+      "label": "Active",
+      "description": "Fully implemented and tested",
+      "badge_color": "green"
+    },
+    "coming_soon": {
+      "label": "Coming Soon",
+      "description": "Worker implementation in progress",
+      "badge_color": "yellow"
+    },
+    "experimental": {
+      "label": "Experimental",
+      "description": "Available but API may change",
+      "badge_color": "orange"
+    },
+    "deprecated": {
+      "label": "Deprecated",
+      "description": "Will be removed in future versions",
+      "badge_color": "red"
+    }
+  }
+}

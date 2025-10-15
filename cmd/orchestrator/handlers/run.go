@@ -313,6 +313,26 @@ func (h *RunHandler) ExecuteWorkflow(c echo.Context) error {
 
 	response, err := h.runService.CreateRun(ctx, createReq)
 	if err != nil {
+		// Check if it's a rate limit error
+		if rateLimitErr, ok := err.(*service.RateLimitError); ok {
+			h.components.Logger.Warn("rate limit exceeded",
+				"username", username,
+				"tier", rateLimitErr.Tier,
+				"limit", rateLimitErr.Limit)
+
+			return c.JSON(http.StatusTooManyRequests, map[string]interface{}{
+				"error":   "rate_limit_exceeded",
+				"message": rateLimitErr.Error(),
+				"details": map[string]interface{}{
+					"tier":                rateLimitErr.Tier.String(),
+					"limit":               rateLimitErr.Limit,
+					"window":              "60 seconds",
+					"current_count":       rateLimitErr.CurrentCount,
+					"retry_after_seconds": rateLimitErr.RetryAfterSeconds,
+				},
+			})
+		}
+
 		h.components.Logger.Error("failed to create run", "error", err)
 		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("failed to create run: %v", err))
 	}

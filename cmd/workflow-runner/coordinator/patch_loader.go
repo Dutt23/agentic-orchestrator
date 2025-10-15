@@ -28,7 +28,9 @@ func (c *Coordinator) loadIR(ctx context.Context, runID string) (*sdk.IR, error)
 
 // reloadIRIfPatched checks if patches exist and reloads the IR with patches applied
 func (c *Coordinator) reloadIRIfPatched(ctx context.Context, runID string, currentIR *sdk.IR) error {
-	c.logger.Info("checking for run patches", "run_id", runID)
+	c.logger.Info("=== PATCH RELOAD START ===",
+		"run_id", runID,
+		"current_nodes", len(currentIR.Nodes))
 
 	// Extract username from IR metadata and add to context
 	// This will automatically be used for authentication headers in HTTP requests
@@ -40,10 +42,18 @@ func (c *Coordinator) reloadIRIfPatched(ctx context.Context, runID string, curre
 	}
 
 	// Fetch patches from orchestrator (context automatically includes auth)
+	c.logger.Info("fetching patches from orchestrator API", "run_id", runID)
 	patches, err := c.orchestratorClient.GetRunPatchesWithOperations(ctx, runID)
 	if err != nil {
+		c.logger.Error("ERROR: failed to fetch patches from orchestrator",
+			"run_id", runID,
+			"error", err)
 		return fmt.Errorf("failed to get run patches: %w", err)
 	}
+
+	c.logger.Info("patches fetched successfully",
+		"run_id", runID,
+		"patch_count", len(patches))
 
 	if len(patches) == 0 {
 		c.logger.Debug("no run patches found, IR unchanged")
@@ -51,7 +61,8 @@ func (c *Coordinator) reloadIRIfPatched(ctx context.Context, runID string, curre
 	}
 
 	c.logger.Info("run patches found, fetching base workflow from DB",
-		"patch_count", len(patches))
+		"patch_count", len(patches),
+		"first_patch_ops", len(patches[0].Operations))
 
 	// Fetch base workflow from DB (via orchestrator API)
 	// This ensures we always apply ALL patches to the original base workflow
@@ -101,10 +112,23 @@ func (c *Coordinator) reloadIRIfPatched(ctx context.Context, runID string, curre
 	}
 
 	// Recompile the patched workflow to IR format
+	c.logger.Info("compiling patched workflow to IR...",
+		"run_id", runID,
+		"nodes_in_schema", len(workflowSchema.Nodes),
+		"edges_in_schema", len(workflowSchema.Edges))
+
 	patchedIR, err := compiler.CompileWorkflowSchema(workflowSchema, c.casClient)
 	if err != nil {
+		c.logger.Error("ERROR: failed to compile patched workflow",
+			"run_id", runID,
+			"error", err,
+			"nodes_attempted", len(workflowSchema.Nodes))
 		return fmt.Errorf("failed to compile patched workflow: %w", err)
 	}
+
+	c.logger.Info("compilation successful",
+		"run_id", runID,
+		"compiled_nodes", len(patchedIR.Nodes))
 
 	// Preserve runtime metadata (username, tag) from current IR
 	// The compiler preserves workflow metadata, but we need to ensure runtime metadata is kept
@@ -127,20 +151,32 @@ func (c *Coordinator) reloadIRIfPatched(ctx context.Context, runID string, curre
 		"metadata_preserved", patchedIR.Metadata)
 
 	// Store the recompiled IR in Redis (replacing the old IR)
+	c.logger.Info("marshaling IR for storage...", "run_id", runID)
 	patchedIRJSON, err := json.Marshal(patchedIR)
 	if err != nil {
+		c.logger.Error("ERROR: failed to marshal patched IR",
+			"run_id", runID,
+			"error", err)
 		return fmt.Errorf("failed to marshal patched IR: %w", err)
 	}
 
+	c.logger.Info("storing IR in Redis...",
+		"run_id", runID,
+		"ir_size_bytes", len(patchedIRJSON))
+
 	irKey := fmt.Sprintf("ir:%s", runID)
 	if err := c.redisWrapper.Set(ctx, irKey, string(patchedIRJSON), 0); err != nil {
+		c.logger.Error("ERROR: failed to store patched IR in Redis",
+			"run_id", runID,
+			"error", err)
 		return fmt.Errorf("failed to store patched IR: %w", err)
 	}
 
-	c.logger.Info("patched IR stored successfully",
+	c.logger.Info("=== PATCH RELOAD SUCCESS ===",
 		"run_id", runID,
 		"ir_key", irKey,
-		"patches_applied", len(patches))
+		"patches_applied", len(patches),
+		"final_node_count", len(patchedIR.Nodes))
 
 	return nil
 }

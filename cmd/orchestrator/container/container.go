@@ -7,6 +7,7 @@ import (
 	"github.com/lyzr/orchestrator/cmd/orchestrator/repository"
 	"github.com/lyzr/orchestrator/cmd/orchestrator/service"
 	"github.com/lyzr/orchestrator/common/bootstrap"
+	"github.com/lyzr/orchestrator/common/ratelimit"
 	rediscommon "github.com/lyzr/orchestrator/common/redis"
 	"github.com/redis/go-redis/v9"
 )
@@ -17,6 +18,7 @@ type Container struct {
 	Components *bootstrap.Components
 	Redis      *rediscommon.Client
 	RedisRaw   *redis.Client // Keep for backward compatibility if needed
+	RateLimiter *ratelimit.RateLimiter
 
 	// Repositories
 	RunRepo      *repository.RunRepository
@@ -44,6 +46,9 @@ func NewContainer(components *bootstrap.Components) (*Container, error) {
 
 	// Wrap with common redis client for instrumentation and common operations
 	redisClient := rediscommon.NewClient(redisRaw, components.Logger)
+
+	// Initialize rate limiter for workflow-aware rate limiting
+	rateLimiter := ratelimit.NewRateLimiter(redisRaw, components.Logger)
 
 	// Initialize repositories
 	runRepo := repository.NewRunRepository(components.DB)
@@ -73,21 +78,23 @@ func NewContainer(components *bootstrap.Components) (*Container, error) {
 		components,
 	)
 
-	runService := service.NewRunService(
-		runRepo,
-		artifactRepo,
-		casService,
-		workflowService,
-		materializerService,
-		runPatchService,
-		components,
-		redisClient,
-	)
+	runService := service.NewRunService(&service.RunServiceOpts{
+		RunRepo:         runRepo,
+		ArtifactRepo:    artifactRepo,
+		CASService:      casService,
+		WorkflowSvc:     workflowService,
+		MaterializerSvc: materializerService,
+		RunPatchService: runPatchService,
+		Components:      components,
+		Redis:           redisClient,
+		RateLimiter:     rateLimiter,
+	})
 
 	return &Container{
 		Components:          components,
 		Redis:               redisClient,
 		RedisRaw:            redisRaw,
+		RateLimiter:         rateLimiter,
 		RunRepo:             runRepo,
 		ArtifactRepo:        artifactRepo,
 		CASBlobRepo:         casBlobRepo,

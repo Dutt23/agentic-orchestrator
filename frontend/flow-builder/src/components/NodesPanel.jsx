@@ -6,7 +6,7 @@ import CodeView from './CodeView';
 import VersionDiff from './VersionDiff';
 import DiffDetailsPanel from './DiffDetailsPanel';
 import VersionHistory from './VersionHistory';
-import nodeTypesData from '../data/nodeTypes.json';
+import { useNodeRegistry } from '../hooks/useNodeRegistry';
 
 export default function NodesPanel({
   selectedNode,
@@ -22,18 +22,42 @@ export default function NodesPanel({
   workflowMetadata = null,
   onCompareVersions
 }) {
+  const { registry, loading } = useNodeRegistry();
   const [nodeTypes, setNodeTypes] = useState([]);
 
   useEffect(() => {
-    // In a real app, you might fetch this from an API
-    // Handle both old format (flat nodes array) and new format (categorized)
-    if (nodeTypesData.categories) {
-      setNodeTypes(nodeTypesData.categories);
-    } else if (nodeTypesData.nodes) {
-      // Legacy format - wrap in a single category
-      setNodeTypes([{ name: 'Nodes', id: 'all', nodes: nodeTypesData.nodes }]);
-    }
-  }, []);
+    if (!registry) return;
+
+    // Organize nodes by category from registry
+    const categories = {};
+
+    Object.values(registry.nodes).forEach(node => {
+      if (!categories[node.category]) {
+        const categoryInfo = registry.categories[node.category];
+        categories[node.category] = {
+          id: node.category,
+          name: categoryInfo?.label || node.category,
+          description: categoryInfo?.description || '',
+          order: categoryInfo?.order || 999,
+          nodes: []
+        };
+      }
+
+      categories[node.category].nodes.push({
+        type: node.id,
+        label: node.label,
+        description: node.description,
+        status: node.status,
+        defaultData: { type: node.id }
+      });
+    });
+
+    // Sort by order and convert to array
+    const sortedCategories = Object.values(categories)
+      .sort((a, b) => a.order - b.order);
+
+    setNodeTypes(sortedCategories);
+  }, [registry]);
 
   const handleDragStart = (event, nodeType) => {
     event.dataTransfer.setData('application/reactflow', JSON.stringify({

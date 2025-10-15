@@ -11,6 +11,7 @@ import (
 	"github.com/lyzr/orchestrator/cmd/orchestrator/models"
 	"github.com/lyzr/orchestrator/cmd/orchestrator/repository"
 	"github.com/lyzr/orchestrator/common/bootstrap"
+	"github.com/lyzr/orchestrator/common/ratelimit"
 	rediscommon "github.com/lyzr/orchestrator/common/redis"
 )
 
@@ -24,28 +25,34 @@ type RunService struct {
 	runPatchService *RunPatchService
 	components      *bootstrap.Components
 	redis           *rediscommon.Client
+	rateLimiter     *ratelimit.RateLimiter
 }
 
-// NewRunService creates a new run service
-func NewRunService(
-	runRepo *repository.RunRepository,
-	artifactRepo *repository.ArtifactRepository,
-	casService *CASService,
-	workflowSvc *WorkflowServiceV2,
-	materializerSvc *MaterializerService,
-	runPatchService *RunPatchService,
-	components *bootstrap.Components,
-	redis *rediscommon.Client,
-) *RunService {
+// RunServiceOpts contains options for creating a RunService
+type RunServiceOpts struct {
+	RunRepo         *repository.RunRepository
+	ArtifactRepo    *repository.ArtifactRepository
+	CASService      *CASService
+	WorkflowSvc     *WorkflowServiceV2
+	MaterializerSvc *MaterializerService
+	RunPatchService *RunPatchService
+	Components      *bootstrap.Components
+	Redis           *rediscommon.Client
+	RateLimiter     *ratelimit.RateLimiter
+}
+
+// NewRunService creates a new run service with options pattern
+func NewRunService(opts *RunServiceOpts) *RunService {
 	return &RunService{
-		runRepo:         runRepo,
-		artifactRepo:    artifactRepo,
-		casService:      casService,
-		workflowSvc:     workflowSvc,
-		materializerSvc: materializerSvc,
-		runPatchService: runPatchService,
-		components:      components,
-		redis:           redis,
+		runRepo:         opts.RunRepo,
+		artifactRepo:    opts.ArtifactRepo,
+		casService:      opts.CASService,
+		workflowSvc:     opts.WorkflowSvc,
+		materializerSvc: opts.MaterializerSvc,
+		runPatchService: opts.RunPatchService,
+		components:      opts.Components,
+		redis:           opts.Redis,
+		rateLimiter:     opts.RateLimiter,
 	}
 }
 
@@ -62,6 +69,19 @@ type CreateRunResponse struct {
 	ArtifactID uuid.UUID `json:"artifact_id"`
 	Status     string    `json:"status"`
 	Tag        string    `json:"tag"`
+}
+
+// RateLimitError represents a rate limit exceeded error
+type RateLimitError struct {
+	Tier              ratelimit.WorkflowTier
+	Limit             int64
+	CurrentCount      int64
+	RetryAfterSeconds int64
+}
+
+func (e *RateLimitError) Error() string {
+	return fmt.Sprintf("rate limit exceeded: %s tier allows %d runs/minute, retry after %d seconds",
+		e.Tier, e.Limit, e.RetryAfterSeconds)
 }
 
 // CreateRun creates a new workflow run with materialized workflow
@@ -85,6 +105,34 @@ func (s *RunService) CreateRun(ctx context.Context, req *CreateRunRequest) (*Cre
 	materializedWorkflow, err := s.materializerSvc.Materialize(ctx, components)
 	if err != nil {
 		return nil, fmt.Errorf("failed to materialize workflow: %w", err)
+	}
+
+	// 2.5. Check rate limit based on workflow complexity (agent-aware)
+	profile := ratelimit.InspectWorkflow(materializedWorkflow)
+	s.components.Logger.Info("workflow inspected for rate limiting",
+		"tier", profile.Tier,
+		"agent_count", profile.AgentCount,
+		"total_nodes", profile.TotalNodes)
+
+	// Check tiered rate limit (separate counters per tier)
+	result, err := s.rateLimiter.CheckTieredLimit(ctx, req.Username, profile.Tier)
+	if err != nil {
+		s.components.Logger.Error("rate limit check failed", "error", err)
+		// On error, allow request (fail open for availability)
+	} else if !result.Allowed {
+		s.components.Logger.Warn("rate limit exceeded",
+			"username", req.Username,
+			"tier", profile.Tier,
+			"limit", result.Limit,
+			"current", result.CurrentCount,
+			"retry_after", result.RetryAfterSeconds)
+
+		return nil, &RateLimitError{
+			Tier:              profile.Tier,
+			Limit:             result.Limit,
+			CurrentCount:      result.CurrentCount,
+			RetryAfterSeconds: result.RetryAfterSeconds,
+		}
 	}
 
 	// 3. Store materialized workflow as artifact

@@ -45,13 +45,35 @@ func (c *Coordinator) handleCompletion(ctx context.Context, signal *CompletionSi
 			"run_id", signal.RunID,
 			"node_id", signal.NodeID)
 
+		// Store initial node count before patch
+		initialNodeCount := len(ir.Nodes)
+
 		// Check if patches were created during this run
 		if err := c.reloadIRIfPatched(ctx, signal.RunID, ir); err != nil {
-			c.logger.Error("failed to reload IR after patch",
+			c.logger.Error("CRITICAL: failed to reload IR after patch",
 				"run_id", signal.RunID,
 				"node_id", signal.NodeID,
-				"error", err)
+				"error", err,
+				"error_type", fmt.Sprintf("%T", err))
 			// Continue execution even if patch reload fails
+		} else {
+			// Reload successful, check if IR actually changed
+			newIR, _ := c.loadIR(ctx, signal.RunID)
+			if newIR != nil {
+				newNodeCount := len(newIR.Nodes)
+				if newNodeCount != initialNodeCount {
+					c.logger.Info("IR updated successfully after patch",
+						"run_id", signal.RunID,
+						"node_id", signal.NodeID,
+						"initial_nodes", initialNodeCount,
+						"new_nodes", newNodeCount,
+						"nodes_added", newNodeCount-initialNodeCount)
+				} else {
+					c.logger.Warn("IR reload completed but node count unchanged",
+						"run_id", signal.RunID,
+						"node_count", newNodeCount)
+				}
+			}
 		}
 	}
 

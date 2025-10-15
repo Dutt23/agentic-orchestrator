@@ -143,15 +143,37 @@ Example: If current_node_id is 'agent_1' and you add 'branch_1', you must add:
                                                 "description": "JSON Pointer path (e.g., '/nodes/-' for nodes, '/edges/-' for edges)"
                                             },
                                             "value": {
-                                                "description": "Value for add/replace operations. For nodes: {id, type, config}. For edges: {from, to, condition?}",
-                                                "anyOf": [
-                                                    {"type": "object", "additionalProperties": True},
-                                                    {"type": "array", "items": {}},
-                                                    {"type": "string"},
-                                                    {"type": "number"},
-                                                    {"type": "boolean"},
-                                                    {"type": "null"}
-                                                ]
+                                                "description": "MUST be an object. For nodes: {id: string, type: string, config: object}. For edges: {from: string, to: string, condition?: string}",
+                                                "type": "object",
+                                                "properties": {
+                                                    "id": {
+                                                        "type": "string",
+                                                        "description": "Unique node ID (for nodes)"
+                                                    },
+                                                    "type": {
+                                                        "type": "string",
+                                                        "enum": ["agent", "http", "hitl", "conditional", "loop"],
+                                                        "description": "Node type (for nodes)"
+                                                    },
+                                                    "config": {
+                                                        "type": "object",
+                                                        "description": "Node configuration as key-value object (NOT array). Example: {\"task\": \"do something\"}",
+                                                        "additionalProperties": True
+                                                    },
+                                                    "from": {
+                                                        "type": "string",
+                                                        "description": "Source node ID (for edges)"
+                                                    },
+                                                    "to": {
+                                                        "type": "string",
+                                                        "description": "Target node ID (for edges)"
+                                                    },
+                                                    "condition": {
+                                                        "type": "string",
+                                                        "description": "Conditional expression (for edges, optional)"
+                                                    }
+                                                },
+                                                "additionalProperties": False
                                             }
                                         }
                                     }

@@ -2,11 +2,14 @@
  * Determine edge style based on execution status
  */
 export function getEdgeStyle(sourceExec, targetExec) {
-  const sourceCompleted = sourceExec?.status === 'completed';
+  const sourceCompleted =
+    sourceExec?.status === 'completed' ||
+    sourceExec?.status === 'skipped';
   const targetExecuted =
     targetExec?.status === 'completed' ||
     targetExec?.status === 'failed' ||
-    targetExec?.status === 'running';
+    targetExec?.status === 'running' ||
+    targetExec?.status === 'skipped';
   const isExecutionPath = sourceCompleted && targetExecuted;
 
   let edgeStyle = {};

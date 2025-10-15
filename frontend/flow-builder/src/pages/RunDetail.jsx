@@ -21,7 +21,7 @@ import {
 import { ArrowBackIcon, ChevronDownIcon, ChevronUpIcon } from '@chakra-ui/icons';
 import { getRunDetails } from '../services/api';
 import { useWebSocketEvents } from '../contexts/WebSocketContext';
-import { ReactFlow, Background, Controls } from '@xyflow/react';
+import { ReactFlow, Background, Controls, useNodesState, useEdgesState } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import BranchDiffOverlay from '../components/BranchDiffOverlay';
 import PatchTimeline from '../components/PatchTimeline';
@@ -349,8 +349,8 @@ function RunPatchOverlay({ baseWorkflowIR, workflowIR, patches, nodeExecutions }
  * RunExecutionGraph visualizes the workflow execution path
  */
 function RunExecutionGraph({ workflowIR, nodeExecutions, onNodeClick }) {
-  const [nodes, setNodes] = useState([]);
-  const [edges, setEdges] = useState([]);
+  const [nodes, setNodes, onNodesChange] = useNodesState([]);
+  const [edges, setEdges] = useEdgesState([]);
   const [showLegend, setShowLegend] = useState(true);
 
   useEffect(() => {
@@ -401,6 +401,10 @@ function RunExecutionGraph({ workflowIR, nodeExecutions, onNodeClick }) {
       if (status === 'waiting_for_approval') {
         bgColor = '#FFF9C4'; // light yellow
         borderColor = '#F59E0B'; // amber/orange
+      }
+      if (status === 'skipped') {
+        bgColor = '#E2E8F0'; // light grey
+        borderColor = '#718096'; // dark grey
       }
       if (status === 'not_executed') {
         bgColor = '#e2e8f0'; // lighter grey
@@ -585,6 +589,10 @@ function RunExecutionGraph({ workflowIR, nodeExecutions, onNodeClick }) {
               <Text fontSize="xs">Waiting for Approval</Text>
             </HStack>
             <HStack spacing={2}>
+              <Box w="20px" h="20px" bg="#E2E8F0" border="2px solid #718096" borderRadius="md" />
+              <Text fontSize="xs">Skipped (No Worker)</Text>
+            </HStack>
+            <HStack spacing={2}>
               <Box w="20px" h="20px" bg="#f0f0f0" border="2px solid #333" borderRadius="md" />
               <Text fontSize="xs">Pending</Text>
             </HStack>
@@ -596,7 +604,11 @@ function RunExecutionGraph({ workflowIR, nodeExecutions, onNodeClick }) {
         <ReactFlow
           nodes={nodes}
           edges={edges}
+          onNodesChange={onNodesChange}
           onNodeClick={handleNodeClick}
+          nodesDraggable={true}
+          nodesConnectable={false}
+          elementsSelectable={true}
           fitView
           attributionPosition="bottom-left"
         >

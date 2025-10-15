@@ -10,6 +10,7 @@ import (
 	"github.com/lyzr/orchestrator/cmd/orchestrator/container"
 	"github.com/lyzr/orchestrator/cmd/orchestrator/routes"
 	"github.com/lyzr/orchestrator/common/bootstrap"
+	commonmiddleware "github.com/lyzr/orchestrator/common/middleware"
 )
 
 func main() {
@@ -33,8 +34,8 @@ func main() {
 	// Initialize Echo server
 	e := setupEcho()
 
-	// Setup middleware
-	setupMiddleware(e)
+	// Setup middleware (with rate limiting)
+	setupMiddleware(e, serviceContainer)
 
 	// Setup health check
 	setupHealthCheck(e)
@@ -54,11 +55,19 @@ func setupEcho() *echo.Echo {
 }
 
 // setupMiddleware configures all middleware for the Echo server
-func setupMiddleware(e *echo.Echo) {
+func setupMiddleware(e *echo.Echo, c *container.Container) {
+	// Standard Echo middleware
 	e.Use(middleware.Logger())
 	e.Use(middleware.Recover())
 	e.Use(middleware.CORS())
 	e.Use(middleware.RequestID())
+
+	// Rate limiting middleware (defense in depth)
+	// 1. Global limit - protects entire service from overload
+	e.Use(commonmiddleware.GlobalRateLimitMiddleware(c.RateLimiter, 100))
+
+	// 2. Per-user limit - fairness between users (requires ExtractUsername first)
+	// Note: Applied in route groups where ExtractUsername is used
 }
 
 // setupHealthCheck registers the health check endpoint
