@@ -1039,6 +1039,9 @@ compression.type=snappy
 
 # Partitions (per topic)
 num.partitions=64
+
+# Consistent hashing partitioner
+partitioner.class=org.apache.kafka.clients.producer.ConsistentAssignmentPartitioner
 ```
 
 **Consumer:**
@@ -1058,6 +1061,139 @@ isolation.level=read_committed
 - **10x throughput** vs. Redis Streams
 - Durable, replicated
 - Exactly-once semantics
+
+#### Pre-emptive Materialization via Kafka
+
+**Current Bottleneck:**
+Synchronous materialization blocks API requests:
+```
+POST /patch → Validate → Materialize (50ms) → Store → Return
+                          ↑ Blocks here
+```
+
+**Solution: Event-Driven Materialization**
+
+```
+POST /patch → Validate → Publish to Kafka → Return 202 Accepted
+                              ↓
+                    Kafka: patch.created (partitioned by workflow_id)
+                              ↓
+              Materialization Workers (consume in batches)
+                              ↓
+              Aggregate 100 patches OR 5s window
+                              ↓
+              Batch materialize → Bulk INSERT
+```
+
+**Kafka Topic Configuration:**
+
+```properties
+# Topic: patch.created
+num.partitions=32
+replication.factor=3
+compression.type=snappy
+retention.ms=604800000  # 7 days
+segment.ms=86400000     # 1 day segments
+
+# Consistent hashing ensures workflow patches go to same partition
+# Prevents split-brain materialization for same workflow
+```
+
+**Consumer Group (Materialization Workers):**
+
+```go
+package main
+
+import (
+    "context"
+    "github.com/segmentio/kafka-go"
+)
+
+func startMaterializationWorker(workerID int) {
+    reader := kafka.NewReader(kafka.ReaderConfig{
+        Brokers: []string{"kafka-1:9092", "kafka-2:9092", "kafka-3:9092"},
+        Topic:   "patch.created",
+        GroupID: "materialization-workers",
+
+        // Batch configuration
+        MinBytes: 1024,              // Wait for at least 1KB
+        MaxBytes: 10485760,          // Max 10MB per batch
+        MaxWait:  5 * time.Second,   // Or wait 5s max
+    })
+
+    for {
+        // Fetch batch of messages
+        ctx := context.Background()
+        messages := reader.FetchMessage(ctx)
+
+        // Group by workflow_id for efficient materialization
+        grouped := groupByWorkflow(messages)
+
+        // Process each workflow's patches in batch
+        for workflowID, patches := range grouped {
+            // Apply all patches at once
+            materializedWorkflow := applyPatchesBatch(baseWorkflow, patches)
+
+            // Single database transaction for all patches
+            err := bulkInsertMaterialized(workflowID, materializedWorkflow)
+            if err != nil {
+                log.Error("materialization failed", "workflow", workflowID, "error", err)
+                continue
+            }
+
+            log.Info("batch materialized",
+                "workflow", workflowID,
+                "patches", len(patches),
+                "duration_ms", time.Since(start).Milliseconds(),
+            )
+        }
+
+        // Commit offsets after successful processing
+        reader.CommitMessages(ctx, messages...)
+    }
+}
+```
+
+**Consistent Hashing Benefits:**
+
+```
+Without Consistent Hashing:
+  Workflow A patches: P0, P2, P5, P7  ← Spread across partitions
+  Problem: Different workers process, race conditions!
+
+With Consistent Hashing:
+  Workflow A: hash("workflow-A") % 32 → Always partition 7
+  All patches for Workflow A → Partition 7 → Same worker
+  Result: Sequential processing, no races! ✅
+```
+
+**Performance Improvement:**
+
+```
+Synchronous (Current):
+  1 patch = 50ms (materialize + store)
+  100 patches = 5000ms (5 seconds!)
+
+Event-Driven Batch:
+  100 patches → Kafka (5ms)
+  Consumer aggregates → Materialize once (60ms)
+  Bulk INSERT (40ms)
+  Total: 105ms for 100 patches (47x faster!)
+```
+
+**Monitoring:**
+
+```bash
+# Consumer lag (patches waiting)
+kafka-consumer-groups --describe --group materialization-workers
+
+# Should be near 0 under normal load
+# If lag > 1000, scale up workers
+
+# Partition distribution
+kafka-topics --describe --topic patch.created
+# Verify even distribution across brokers
+```
 
 ---
 
@@ -1141,7 +1277,283 @@ _, err := s3.PutObject(&s3.PutObjectInput{
 
 ---
 
-### 4. Dragonfly Cache (Future)
+### 4. Proximity-Based Intelligent Caching
+
+**Concept:** Cache node execution results across users in the same workspace/team
+
+**Problem:**
+```
+Team Data Engineering (5 users):
+  - User A: Runs "fetch_api_data" node at 9:00 AM
+  - User B: Runs same node with same inputs at 9:05 AM
+  - User C: Runs same node at 9:10 AM
+
+Without caching: 3 identical API calls (wasteful!)
+With proximity caching: 1 API call + 2 cache hits (efficient!) ✨
+```
+
+**Cache Key Algorithm:**
+
+```go
+type CacheKey struct {
+    WorkspaceID      string  // "acme-corp-data-team"
+    PermissionLevel  string  // "admin", "write", "read"
+    NodeType         string  // "http_request", "agent", "function"
+    NodeConfigHash   string  // Hash of node configuration
+    InputsHash       string  // Hash of input parameters
+}
+
+func computeCacheKey(token Token) string {
+    return sha256(fmt.Sprintf(
+        "%s:%s:%s:%s:%s",
+        token.WorkspaceID,
+        token.PermissionLevel,
+        token.NodeType,
+        hashConfig(token.NodeConfig),
+        hashInputs(token.Inputs),
+    ))
+}
+```
+
+**Permission-Aware Cache Lookup:**
+
+```go
+func (w *Worker) ExecuteWithCache(token Token) (Result, error) {
+    // 1. Compute cache key
+    cacheKey := computeCacheKey(token)
+
+    // 2. Check cache (includes permission verification)
+    cached, found := w.cache.Get(cacheKey, token.UserID, token.WorkspaceID)
+    if found {
+        // Verify user has permission to access this cached result
+        if !hasPermission(token.UserID, cached.WorkspaceID, cached.RequiredPermission) {
+            // Permission denied - cache miss
+            goto execute
+        }
+
+        // Cache hit! Increment hit counter
+        w.cache.IncrementHits(cacheKey)
+        w.metrics.RecordCacheHit(token.NodeType, token.WorkspaceID)
+
+        log.Info("proximity cache hit",
+            "workspace", token.WorkspaceID,
+            "node_type", token.NodeType,
+            "saved_ms", cached.OriginalExecutionTime,
+        )
+
+        return cached.Result, nil
+    }
+
+execute:
+    // 3. Cache miss - execute node
+    startTime := time.Now()
+    result := w.executeNode(token)
+    executionTime := time.Since(startTime)
+
+    // 4. Store in cache with workspace isolation
+    w.cache.Set(cacheKey, CacheEntry{
+        WorkspaceID:          token.WorkspaceID,
+        RequiredPermission:   token.PermissionLevel,
+        Result:               result,
+        OriginalExecutionTime: executionTime.Milliseconds(),
+        TTL:                  getTTL(token.NodeType),
+    })
+
+    return result, nil
+}
+```
+
+**Semantic Caching for Agent Nodes:**
+
+For LLM-based agent nodes, use embedding similarity instead of exact match:
+
+```python
+class AgentSemanticCache:
+    """
+    Semantic cache for agent node prompts.
+    Matches similar prompts across workspace users.
+    """
+
+    def __init__(self, db, workspace_id):
+        self.db = db
+        self.workspace = workspace_id
+        self.embedding_model = "text-embedding-3-small"  # 1536 dimensions
+        self.similarity_threshold = 0.92  # High confidence required
+
+    def check_cache(self, prompt: str, node_config: dict, user_id: str) -> Optional[dict]:
+        # 1. Compute embedding for the prompt
+        embedding = get_embedding(prompt, self.embedding_model)
+
+        # 2. Vector similarity search in workspace cache
+        query = """
+            SELECT cache_id, result_cas_ref,
+                   1 - (prompt_embedding <=> $1::vector) AS similarity
+            FROM agent_semantic_cache
+            WHERE workspace_id = $2
+              AND node_type = $3
+              AND expires_at > now()
+              AND 1 - (prompt_embedding <=> $1::vector) > $4
+            ORDER BY similarity DESC
+            LIMIT 1;
+        """
+
+        result = self.db.execute(query,
+            embedding,
+            self.workspace,
+            node_config['type'],
+            self.similarity_threshold
+        )
+
+        if result:
+            # Verify user has permission
+            if not has_permission(user_id, result.workspace_id, result.required_permission):
+                return None
+
+            # Cache hit!
+            log.info(f"Semantic cache hit (similarity: {result.similarity:.3f})")
+            self.db.execute("UPDATE agent_semantic_cache SET hit_count = hit_count + 1 WHERE cache_id = $1", result.cache_id)
+            return load_from_cas(result.result_cas_ref)
+
+        return None  # Cache miss
+
+    def store(self, prompt: str, result: dict, node_config: dict, execution_time_ms: int):
+        embedding = get_embedding(prompt, self.embedding_model)
+
+        self.db.execute("""
+            INSERT INTO agent_semantic_cache (
+                workspace_id, node_type, prompt_text, prompt_embedding,
+                result_cas_ref, required_permission, original_execution_time_ms, expires_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, now() + interval '24 hours')
+        """,
+            self.workspace,
+            node_config['type'],
+            prompt,
+            embedding,
+            store_in_cas(result),
+            get_user_permission_level(),
+            execution_time_ms
+        )
+```
+
+**Storage: pgvector Extension**
+
+```sql
+-- Enable vector extension
+CREATE EXTENSION vector;
+
+-- Cache table with vector embeddings
+CREATE TABLE agent_semantic_cache (
+    cache_id UUID PRIMARY KEY DEFAULT uuid_generate_v7(),
+    workspace_id UUID NOT NULL,
+    node_type TEXT NOT NULL,
+    prompt_text TEXT NOT NULL,
+    prompt_embedding vector(1536),  -- OpenAI text-embedding-3-small
+    result_cas_ref TEXT NOT NULL,
+    required_permission TEXT NOT NULL,  -- 'read', 'write', 'admin'
+    hit_count INT DEFAULT 0,
+    original_execution_time_ms INT,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_by_user_id UUID
+);
+
+-- Vector similarity index (IVFFlat for fast ANN search)
+CREATE INDEX agent_cache_embedding_idx ON agent_semantic_cache
+USING ivfflat (prompt_embedding vector_cosine_ops)
+WITH (lists = 100);
+
+-- Workspace + expiry index
+CREATE INDEX agent_cache_workspace_idx ON agent_semantic_cache
+(workspace_id, expires_at) WHERE expires_at > now();
+
+-- Permission check function
+CREATE FUNCTION can_access_cache(
+    p_user_id UUID,
+    p_workspace_id UUID,
+    p_required_permission TEXT
+) RETURNS BOOLEAN AS $$
+    SELECT EXISTS (
+        SELECT 1 FROM users
+        WHERE user_id = p_user_id
+          AND workspace_id = p_workspace_id
+          AND permission_level >= p_required_permission  -- 'admin' > 'write' > 'read'
+    );
+$$ LANGUAGE SQL STABLE;
+```
+
+**Performance Comparison:**
+
+```
+Scenario: 10 users in "acme-data" workspace run similar agent prompts
+
+Without Semantic Cache:
+  10 users × 500ms LLM call = 5000ms total
+  Cost: 10 × $0.0001 = $0.001 per batch
+
+With Semantic Cache (90% hit rate):
+  1st user: 500ms (cache miss, store)
+  9 users: 9 × 1ms (cache hits) = 9ms
+  Total: 509ms (10x faster!)
+  Cost: 1 × $0.0001 = $0.0001 (10x cheaper!)
+```
+
+**Cache Hit Metrics:**
+
+```go
+// Track cache effectiveness
+type CacheMetrics struct {
+    Hits         int64  // Number of cache hits
+    Misses       int64  // Number of cache misses
+    Savings      int64  // Total milliseconds saved
+    CostSavings  float64 // Estimated $ saved (for LLM calls)
+}
+
+// Report per workspace
+func (m *MetricsCollector) ReportCacheStats(workspaceID string) {
+    stats := m.getCacheStats(workspaceID)
+
+    log.Info("cache stats",
+        "workspace", workspaceID,
+        "hit_rate", float64(stats.Hits) / float64(stats.Hits + stats.Misses),
+        "time_saved_sec", stats.Savings / 1000,
+        "cost_saved_usd", stats.CostSavings,
+    )
+}
+```
+
+**TTL Strategy (by node type):**
+
+```
+Deterministic nodes (always same output):
+  - function: 7 days
+  - pure computation: 30 days
+
+External dependencies (may change):
+  - http_request: 1 hour
+  - database_query: 5 minutes
+
+LLM-based (semantic stability):
+  - agent (semantic cache): 24 hours
+  - agent (exact match): 7 days
+```
+
+**Security & Isolation:**
+
+1. **Workspace boundaries** - User A in workspace X cannot see cache from workspace Y
+2. **Permission levels** - "read" user cannot access cache from "admin" operation
+3. **Audit trail** - Log who used whose cache (for compliance)
+4. **PII detection** - Don't cache results containing sensitive patterns
+
+**Benefits:**
+- ✅ **10x speedup** for repeated operations in same team
+- ✅ **Cost savings** - Avoid redundant LLM/API calls
+- ✅ **Workspace collaboration** - Teams benefit from each other's work
+- ✅ **Intelligent** - Semantic matching for agents, not just exact match
+- ✅ **Secure** - Permission-aware, workspace-isolated
+
+---
+
+### 5. Dragonfly Cache (Future)
 
 **Configuration:**
 

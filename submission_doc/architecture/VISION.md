@@ -353,7 +353,321 @@ enable.auto.commit=false
 
 ---
 
-### 4. aob CLI Tool
+### 4. Pre-emptive Materialization (Event-Driven)
+
+**Purpose:** Decouple patch application from materialization for higher throughput
+
+**Current (MVP - Synchronous):**
+```
+POST /patch → Validate → Materialize immediately → Store → Return 201
+              ↑ Blocks until complete
+```
+
+**Vision (Event-Driven):**
+```
+POST /patch → Validate → Append to event log → Return 202 Accepted
+                             ↓
+                        Kafka: patch.created
+                             ↓
+                  Materialization Workers (consume in batches)
+                             ↓
+                  Aggregate 100 patches or 5s window
+                             ↓
+                  Batch materialize all at once
+                             ↓
+                  Bulk INSERT to Postgres + Update CAS index
+```
+
+**Kafka Configuration:**
+
+```properties
+# Topic: patch.created
+num.partitions=32
+replication.factor=3
+compression.type=snappy
+
+# Partition by workflow_id (consistent hashing)
+partitioner.class=org.apache.kafka.clients.producer.ConsistentAssignmentPartitioner
+
+# Consumer batching
+max.poll.records=100
+fetch.min.bytes=1024
+fetch.max.wait.ms=5000  # Wait up to 5s to accumulate batch
+```
+
+**Materialization Worker (Consumer):**
+
+```go
+// Consume patches in batches
+messages := consumer.Poll(5 * time.Second)
+
+// Group by workflow_id
+grouped := groupByWorkflow(messages)
+
+// Batch materialize
+for workflowID, patches := range grouped {
+    materializedWorkflow := applyPatches(baseWorkflow, patches)
+    bulkInsert(materializedWorkflow)  // Single DB transaction
+}
+
+// Commit offsets
+consumer.CommitSync()
+```
+
+**Benefits:**
+- ✅ **Non-blocking** - API returns immediately, doesn't wait for materialization
+- ✅ **10-100x faster** - Batch processing vs. one-by-one
+- ✅ **Distributed** - Scale materialization workers independently
+- ✅ **Consistent hashing** - Partition by workflow_id prevents hot partitions
+- ✅ **Resilient** - Kafka handles retries, ordering, delivery guarantees
+- ✅ **Decoupled** - Orchestrator doesn't need to know storage details
+
+**Consistent Hashing for Load Distribution:**
+
+```
+Kafka Cluster (6 brokers)
+├─ Partition 0-5:   Broker 1, 2
+├─ Partition 6-11:  Broker 2, 3
+├─ Partition 12-17: Broker 3, 4
+├─ Partition 18-23: Broker 4, 5
+├─ Partition 24-29: Broker 5, 6
+└─ Partition 30-31: Broker 6, 1
+
+workflow_123 → hash(workflow_123) % 32 → Partition 7
+workflow_456 → hash(workflow_456) % 32 → Partition 19
+workflow_789 → hash(workflow_789) % 32 → Partition 2
+
+Result: Even distribution, no single broker overloaded
+```
+
+**Monitoring:**
+```bash
+# Check consumer lag (patches waiting to be materialized)
+kafka-consumer-groups --describe --group materialization-workers
+
+# Should be near 0 under normal load
+```
+
+---
+
+### 5. Proximity-Based Intelligent Caching
+
+**Purpose:** Cache node results across users in the same workspace/team
+
+**Cache Key Structure:**
+
+```
+cache_key = hash(
+  workspace_id,      // Team/project isolation (e.g., "acme-corp-team-data")
+  permission_level,  // read/write/admin
+  node_type,         // "http_request", "agent", "function"
+  node_config,       // URL, method, function name, etc.
+  inputs             // Input parameters (deterministic)
+)
+
+Example:
+sha256("workspace:acme-data:admin:http_request:GET:https://api.com/users:v1")
+```
+
+**Permission Model:**
+
+```sql
+-- users table
+CREATE TABLE users (
+    user_id UUID,
+    workspace_id UUID,
+    permission_level TEXT  -- 'read', 'write', 'admin'
+);
+
+-- cache entries table
+CREATE TABLE proximity_cache (
+    cache_key TEXT PRIMARY KEY,
+    workspace_id UUID,
+    required_permission TEXT,
+    result_cas_ref TEXT,  -- Points to CAS blob
+    hit_count INT DEFAULT 0,
+    created_at TIMESTAMPTZ,
+    expires_at TIMESTAMPTZ,
+    INDEX (workspace_id, required_permission, expires_at)
+);
+```
+
+**Cache Lookup Logic:**
+
+```go
+func (w *Worker) Execute(token Token) (Result, error) {
+    // 1. Compute cache key
+    cacheKey := computeCacheKey(
+        token.WorkspaceID,
+        token.UserPermissionLevel,
+        token.NodeType,
+        token.NodeConfig,
+        token.Inputs,
+    )
+
+    // 2. Check if user can access cached results
+    cachedResult, found := checkCache(cacheKey, token.UserID, token.WorkspaceID)
+    if found {
+        log.Info("cache hit",
+            "workspace", token.WorkspaceID,
+            "node_type", token.NodeType,
+            "saved_time_ms", calculateSavings(token.NodeType),
+        )
+        return cachedResult, nil
+    }
+
+    // 3. Cache miss - execute node
+    result := executeNode(token)
+
+    // 4. Store in cache (with TTL based on node type)
+    storeInCache(cacheKey, result, token.WorkspaceID, token.PermissionLevel, getTTL(token.NodeType))
+
+    return result, nil
+}
+```
+
+**Semantic Caching for Agent Nodes:**
+
+Agent prompts are often semantically similar but textually different:
+- "Fetch user data from the API"
+- "Get the user information from API"
+- "Retrieve user details via API call"
+
+**Solution: Embedding-based similarity search**
+
+```python
+# agent_worker.py
+from openai import OpenAI
+import numpy as np
+
+class SemanticCache:
+    def __init__(self, redis_client, workspace_id):
+        self.redis = redis_client
+        self.workspace = workspace_id
+        self.embedding_model = "text-embedding-3-small"
+        self.similarity_threshold = 0.92  # High similarity required
+
+    def check_cache(self, prompt: str, context: dict) -> Optional[dict]:
+        # 1. Compute embedding for prompt
+        embedding = self._get_embedding(prompt)
+
+        # 2. Search for similar cached prompts in same workspace
+        # Using Redis with RediSearch vector similarity
+        similar = self.redis.ft("agent_cache").search(
+            Query(f"@workspace:{self.workspace}")
+            .sort_by("vector_score")
+            .dialect(2),
+            query_params={
+                "vec": np.array(embedding, dtype=np.float32).tobytes(),
+                "K": 5  # Top 5 similar
+            }
+        )
+
+        # 3. Check if any result exceeds similarity threshold
+        for result in similar.docs:
+            similarity = result.vector_score
+            if similarity >= self.similarity_threshold:
+                # Cache hit! Return cached result
+                return json.loads(result.cached_result)
+
+        return None  # Cache miss
+
+    def store(self, prompt: str, result: dict, ttl_seconds=3600):
+        embedding = self._get_embedding(prompt)
+
+        self.redis.hset(
+            f"agent_cache:{self.workspace}:{hash(prompt)}",
+            mapping={
+                "prompt": prompt,
+                "embedding": embedding,
+                "result": json.dumps(result),
+                "workspace": self.workspace,
+                "created_at": time.time()
+            }
+        )
+        self.redis.expire(key, ttl_seconds)
+```
+
+**Storage: Redis with RediSearch (vector similarity) or pgvector:**
+
+```sql
+-- Using pgvector for PostgreSQL
+CREATE EXTENSION vector;
+
+CREATE TABLE agent_semantic_cache (
+    cache_id UUID PRIMARY KEY,
+    workspace_id UUID NOT NULL,
+    prompt_text TEXT NOT NULL,
+    prompt_embedding vector(1536),  -- OpenAI embedding dimension
+    result_cas_ref TEXT NOT NULL,
+    hit_count INT DEFAULT 0,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    expires_at TIMESTAMPTZ,
+    INDEX (workspace_id, expires_at)
+);
+
+-- Vector similarity index
+CREATE INDEX ON agent_semantic_cache
+USING ivfflat (prompt_embedding vector_cosine_ops)
+WITH (lists = 100);
+
+-- Query for similar prompts
+SELECT cache_id, result_cas_ref,
+       1 - (prompt_embedding <=> $1::vector) AS similarity
+FROM agent_semantic_cache
+WHERE workspace_id = $2
+  AND expires_at > now()
+  AND 1 - (prompt_embedding <=> $1::vector) > 0.92
+ORDER BY similarity DESC
+LIMIT 1;
+```
+
+**Cache Performance:**
+
+```
+Traditional (no cache):
+  User A: "Fetch API data" → LLM call (500ms) → Execute (200ms) = 700ms
+  User B: "Get API info"   → LLM call (500ms) → Execute (200ms) = 700ms
+  Total: 1400ms
+
+With Semantic Cache:
+  User A: "Fetch API data" → LLM call (500ms) → Execute (200ms) → Cache = 700ms
+  User B: "Get API info"   → Check cache (1ms) → Return cached = 1ms ✨
+  Total: 701ms (50% savings!)
+```
+
+**Benefits:**
+- ✅ **Intent matching** - Understands semantic similarity, not just exact matches
+- ✅ **Massive speedup** - Cache lookup ~1ms vs LLM call ~500ms
+- ✅ **Cost savings** - Skip expensive LLM API calls
+- ✅ **Workspace isolation** - Teams don't see each other's cache
+- ✅ **Permission-aware** - Only users with right permissions can use cache
+- ✅ **Works for HTTP nodes too** - Deterministic caching by input hash
+
+**Cache Invalidation Strategy:**
+
+```
+TTL-based:
+  - HTTP nodes: 1 hour (external data may change)
+  - Agent nodes: 24 hours (LLM responses fairly stable)
+  - Function nodes: 7 days (deterministic code)
+
+Explicit invalidation:
+  - When user updates node config
+  - When workspace permissions change
+  - Manual purge via admin API
+```
+
+**Security Considerations:**
+
+1. **Permission checks** - Cache access requires same or higher permission level
+2. **Workspace isolation** - No cross-workspace cache sharing
+3. **Audit logging** - Track who used whose cached results
+4. **PII filtering** - Don't cache results containing sensitive data
+
+---
+
+### 6. aob CLI Tool
 
 **Purpose:** Developer-friendly command-line interface for workflow management
 
