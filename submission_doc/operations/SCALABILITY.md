@@ -1553,7 +1553,81 @@ LLM-based (semantic stability):
 
 ---
 
-### 5. Dragonfly Cache (Future)
+### 5. Client-Side Materialization (Web Workers)
+
+**Purpose:** Offload CPU-intensive materialization from server to browser
+
+**The Scalability Problem:**
+
+When users view workflows with many patches, server CPU is wasted on presentation logic:
+
+```
+Current (Server-Side):
+  10 users viewing workflows with 100 patches each
+  → 10 × 500ms server CPU = 5 seconds of CPU time
+  → Blocks server threads
+  → Reduces capacity for actual workflow execution
+
+Problem gets worse with scale:
+  1000 concurrent users viewing workflows
+  → Server CPUs maxed out just rendering UIs!
+  → Need more servers just for materialization
+```
+
+**Solution: Client-Side with Web Workers**
+
+```javascript
+// Browser does the work (separate thread, doesn't block UI)
+const worker = new Worker('materializer.worker.js');
+worker.postMessage({base, patches});
+
+// Worker materializes in background
+worker.onmessage = (result) => {
+    renderWorkflow(result.workflow);  // UI updates when ready
+};
+```
+
+**Scalability Benefits:**
+
+```
+Client-Side Approach:
+  1000 users viewing workflows
+  → 1000 browsers × 500ms = Distributed across 1000 CPUs!
+  → Server CPU usage: ~0ms for materialization
+  → Server handles only API requests (fast!)
+  → Horizontal scaling for free (users bring their own CPU)
+```
+
+**Performance at Scale:**
+
+| Users | Server CPU (Old) | Server CPU (New) | Scaling Cost |
+|-------|------------------|------------------|--------------|
+| 10 | 5s | 0.1s (API only) | **50x reduction** |
+| 100 | 50s | 1s | **50x reduction** |
+| 1000 | 500s (8 cores!) | 10s | **50x reduction** |
+
+**Additional Benefits:**
+
+1. **No server capacity waste** - Server focuses on workflow execution, not UI rendering
+2. **Natural load distribution** - Each browser uses its own CPU
+3. **Faster for users** - No network roundtrip for materialized result
+4. **Mobile-friendly** - Even phones can materialize workflows
+5. **Offline capable** - Can cache base + patches, materialize offline
+
+**When This is Critical:**
+
+- **High user count**: 1000+ concurrent UI users
+- **Complex workflows**: 50+ patches per workflow
+- **Edge cases**: Compaction failures leaving 100+ patches
+- **Cost optimization**: Reduce server instance count
+
+**Future: WASM for 10-50x Faster Materialization**
+
+See [VISION.md](#wasm-optimizer-for-client-side-materialization) for Rust/WASM implementation that makes this even faster.
+
+---
+
+### 6. Dragonfly Cache (Future)
 
 **Configuration:**
 

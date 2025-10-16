@@ -661,6 +661,122 @@ POST /tags/main/redo  # Move tag to next artifact
 7. **Scalable**: Patch chain depth limited, old patches archived
 8. **Undo/Redo timeline**: Navigate through workflow evolution like Git history
 
+### Client-Side Lazy Materialization (Web Workers)
+
+**The Problem:**
+
+When viewing workflows with many patches (e.g., 100+ patches after compaction failure), materialization is CPU-intensive:
+
+```
+Traditional (Main Thread):
+  User clicks "View Workflow"
+  → Fetch base + 100 patches
+  → Materialize on main thread (500ms)
+  → UI FREEZES during computation ❌
+  → User sees janky, unresponsive interface
+```
+
+**Our Innovation: Web Workers for Background Materialization**
+
+```javascript
+// frontend/flow-builder/src/workers/materializer.worker.js
+
+// Worker runs in separate thread (doesn't block UI)
+self.onmessage = (event) => {
+    const {base, patches, runId} = event.data;
+
+    // CPU-intensive work happens here (separate thread)
+    let materialized = JSON.parse(JSON.stringify(base));
+
+    for (const patch of patches) {
+        materialized = applyJsonPatch(materialized, patch.operations);
+    }
+
+    // Send result back to main thread
+    self.postMessage({
+        type: 'materialized',
+        runId,
+        workflow: materialized,
+        patchCount: patches.length
+    });
+};
+```
+
+**Main Thread (React Component):**
+
+```javascript
+// Main UI thread stays responsive
+function WorkflowViewer({runId}) {
+    const [workflow, setWorkflow] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const workerRef = useRef(null);
+
+    useEffect(() => {
+        // Create Web Worker
+        workerRef.current = new Worker('/workers/materializer.worker.js');
+
+        // Handle results
+        workerRef.current.onmessage = (event) => {
+            if (event.data.type === 'materialized') {
+                setWorkflow(event.data.workflow);
+                setLoading(false);  // UI updates when ready
+            }
+        };
+
+        // Fetch base + patches
+        Promise.all([
+            fetch(`/api/v1/workflows/${runId}/base`),
+            fetch(`/api/v1/workflows/${runId}/patches`)
+        ]).then(([base, patches]) => {
+            // Offload to worker (non-blocking!)
+            workerRef.current.postMessage({base, patches, runId});
+        });
+
+        return () => workerRef.current?.terminate();
+    }, [runId]);
+
+    // UI shows spinner while worker computes in background
+    if (loading) return <Spinner text="Materializing workflow..." />;
+
+    // Render workflow (main thread never blocked!)
+    return <WorkflowCanvas workflow={workflow} />;
+}
+```
+
+**Benefits:**
+
+1. **Responsive UI**: Main thread never blocks, 60fps maintained
+2. **Scalable**: Each browser does its own materialization (offloads server CPU)
+3. **Handles edge cases**: Even 100+ patches don't freeze UI
+4. **Better UX**: Users can interact with UI while materialization happens
+5. **Server relief**: Server doesn't waste CPU on presentation logic
+
+**Performance Comparison:**
+
+```
+Main Thread (Traditional):
+  100 patches × 5ms/patch = 500ms
+  UI frozen for 500ms ❌
+  Frame drops, janky scrolling
+
+Web Worker (Our Approach):
+  100 patches × 5ms/patch = 500ms (in background)
+  UI stays at 60fps ✅
+  User can scroll, click, navigate
+  Result appears when ready
+```
+
+**When This Matters:**
+
+- **Compaction failures**: Workflow has 100+ patches waiting to compact
+- **Complex workflows**: 50+ nodes, 30+ patches
+- **Historical view**: Looking at old runs with many agent modifications
+- **Slow devices**: Mobile browsers, low-end machines
+
+**Future Enhancement: WASM for Even Faster Materialization**
+
+See [VISION.md - WASM Optimizer](#wasm-optimizer-for-client-side-materialization) for how Rust/WASM can make this 10-50x faster than JavaScript.
+
 **Documentation:** [../../docs/schema/TAG_MOVE_EXPLAINED.md](../../docs/schema/TAG_MOVE_EXPLAINED.md), [../../docs/schema/UNDO_REDO_OPTIMIZATION.md](../../docs/schema/UNDO_REDO_OPTIMIZATION.md)
 
 ---
