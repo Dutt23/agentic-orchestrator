@@ -60,6 +60,8 @@ export default function RunDetail() {
   const [error, setError] = useState(null);
   const [selectedNode, setSelectedNode] = useState(null);
   const isInitialLoad = useRef(true);
+  const pollTimerRef = useRef(null);
+  const isTerminalRef = useRef(false);
 
   // Fetch run details
   const fetchDetails = useCallback(async (showLoading = false) => {
@@ -71,6 +73,7 @@ export default function RunDetail() {
       const data = await getRunDetails(runId);
       setDetails(data);
       setError(null);
+      return data; // Return data for terminal state checking
     } catch (err) {
       console.error('Failed to fetch run details:', err);
 
@@ -88,6 +91,7 @@ export default function RunDetail() {
           message: err.message || 'Failed to load run details'
         });
       }
+      return null;
     } finally {
       if (showLoading) {
         setLoading(false);
@@ -103,12 +107,55 @@ export default function RunDetail() {
     }
   }, [fetchDetails]);
 
+  // Check if workflow is in terminal state
+  const checkTerminalState = useCallback((runDetails) => {
+    if (!runDetails?.run) return false;
+    const status = runDetails.run.status;
+    const terminal = status === 'COMPLETED' || status === 'FAILED' || status === 'CANCELLED';
+    if (terminal && !isTerminalRef.current) {
+      isTerminalRef.current = true;
+      clearTimeout(pollTimerRef.current);
+      console.log('[RunDetail] Workflow terminal, stopping poll timer');
+    }
+    return terminal;
+  }, []);
+
+  // Polling function (fallback backup)
+  const pollDetails = useCallback(async () => {
+    if (isTerminalRef.current) return;
+
+    console.log('[RunDetail] Polling as fallback (no WebSocket message for 4s)');
+    try {
+      const data = await getRunDetails(runId);
+      setDetails(data);
+      checkTerminalState(data);
+    } catch (err) {
+      console.error('[RunDetail] Poll failed:', err);
+      // Continue polling despite error
+    }
+  }, [runId, checkTerminalState]);
+
+  // Reset poll timer (delay by 4 seconds)
+  const resetPollTimer = useCallback(() => {
+    clearTimeout(pollTimerRef.current);
+    if (!isTerminalRef.current) {
+      pollTimerRef.current = setTimeout(pollDetails, 4000);
+    }
+  }, [pollDetails]);
+
   // WebSocket event handler - refetch details when events for this run arrive
   const handleWebSocketEvent = useCallback((event) => {
     console.log('[RunDetail] WebSocket event received:', event);
+
     // Refetch details to show latest status
-    fetchDetails();
-  }, [fetchDetails]);
+    fetchDetails().then((data) => {
+      checkTerminalState(data);
+    });
+
+    // Reset poll timer - we got a WebSocket message!
+    // This delays polling, preferring WebSocket when it's working
+    resetPollTimer();
+  }, [fetchDetails, resetPollTimer, checkTerminalState]);
 
   // Subscribe to WebSocket events for this specific run
   // Filter uses constant Set defined outside to avoid array recreation on every render
@@ -116,6 +163,20 @@ export default function RunDetail() {
     handleWebSocketEvent,
     (event) => event.run_id === runId && RELEVANT_EVENT_TYPES.has(event.type)
   );
+
+  // Start poll timer after initial load
+  useEffect(() => {
+    if (!isInitialLoad.current && details) {
+      checkTerminalState(details);
+      if (!isTerminalRef.current) {
+        resetPollTimer();
+      }
+    }
+
+    return () => {
+      clearTimeout(pollTimerRef.current);
+    };
+  }, [details, resetPollTimer, checkTerminalState]);
 
 
   if (loading) {
