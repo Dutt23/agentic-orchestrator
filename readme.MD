@@ -6,6 +6,8 @@
 > 3. Open: http://localhost:3000
 >
 > **Full guide:** [docker/START.md](docker/START.md)
+>
+> **🎥 Video Demos:** [See video_examples/](./video_examples/) - Agent patching, HITL, rate limiting demos
 
 > **Event-driven orchestration with runtime workflow patching**
 
