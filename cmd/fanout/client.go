@@ -12,12 +12,12 @@ const (
 	writeWait = 10 * time.Second
 
 	// Time allowed to read the next pong message from the peer
-	pongWait = 60 * time.Second
+	pongWait = 30 * time.Second
 
 	// Send pings to peer with this period (must be less than pongWait)
-	pingPeriod = (pongWait * 9) / 10
+	pingPeriod = 25 * time.Second
 
-	// Maximum message size allowed from peer
+	// Maximum message size allowed from peer (clients only send pongs, not data)
 	maxMessageSize = 512
 )
 
@@ -35,7 +35,7 @@ func NewClient(hub *Hub, conn *websocket.Conn, username string) *Client {
 		hub:      hub,
 		conn:     conn,
 		username: username,
-		send:     make(chan []byte, 256),
+		send:     make(chan []byte, 512), // Increased buffer for bursts
 	}
 }
 

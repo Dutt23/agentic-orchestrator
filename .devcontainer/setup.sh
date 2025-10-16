@@ -9,83 +9,44 @@ echo "=========================================="
 
 # Install additional tools
 echo "Installing additional tools..."
-sudo apt-get update
-sudo apt-get install -y postgresql-client redis-tools jq curl
+sudo apt-get update -qq
+sudo apt-get install -y -qq postgresql-client redis-tools jq curl
 
 # Install Go tools
 echo "Installing Go tools..."
-go install golang.org/x/tools/gopls@latest
-go install github.com/go-delve/delve/cmd/dlv@latest
+go install golang.org/x/tools/gopls@latest 2>/dev/null
+go install github.com/go-delve/delve/cmd/dlv@latest 2>/dev/null
 
 # Install Python tools
 echo "Installing Python tools..."
-pip install --user black pylint pytest
+pip install --user black pylint pytest 2>/dev/null
 
-# Install Node tools (for frontend)
-echo "Installing Node tools..."
-npm install -g npm@latest
-
-# Create .env.example if it doesn't exist
-if [ ! -f ".env.example" ]; then
-    echo "Creating .env.example..."
-    cat > .env.example << 'EOF'
-# Required
-OPENAI_API_KEY=sk-your-api-key-here
-
-# Database
-DB_USER=orchestrator
-DB_PASSWORD=orchestrator
-DB_NAME=orchestrator
-DB_PORT=5432
-
-# Redis
-REDIS_HOST=localhost
-REDIS_PORT=6379
-
-# Logging
-LOG_LEVEL=info
-
-# Workers
-HTTP_WORKER_REPLICAS=2
-AGENT_WORKER_REPLICAS=2
-EOF
-fi
-
-# Check if .env exists, if not copy from example
+# Create .env from example if it doesn't exist
 if [ ! -f ".env" ]; then
-    echo "Creating .env from example..."
-    cp .env.example .env
-    echo ""
-    echo "⚠️  IMPORTANT: Edit .env and add your OPENAI_API_KEY"
-    echo ""
+    if [ -f ".env.example" ]; then
+        echo "Creating .env from example..."
+        cp .env.example .env
+    fi
 fi
 
-# Create symlink for docker directory
-if [ ! -L "docker/.env" ]; then
-    echo "Creating docker/.env symlink..."
-    ln -sf ../.env docker/.env
-fi
-
-# Install frontend dependencies (if frontend exists)
-if [ -d "frontend/flow-builder" ]; then
-    echo "Installing frontend dependencies..."
-    cd frontend/flow-builder
-    npm install
-    cd ../..
-fi
+# Create docker symlink
+ln -sf ../.env docker/.env 2>/dev/null || true
 
 echo ""
 echo "=========================================="
 echo "✅ Setup Complete!"
 echo "=========================================="
 echo ""
-echo "Next steps:"
-echo "  1. Edit .env and add your OPENAI_API_KEY"
-echo "  2. Run: cd docker && ./setup.sh"
-echo "  3. Open: http://localhost:3000"
+echo "IMPORTANT: This is GitHub Codespaces"
 echo ""
-echo "Useful commands:"
-echo "  - Start services: cd docker && docker-compose up -d"
-echo "  - View logs: docker-compose logs -f"
-echo "  - Check status: docker-compose ps"
+echo "Before starting services:"
+echo "  1. Edit .env and add OPENAI_API_KEY"
+echo "  2. The docker-compose.yml defaults work for local development"
+echo "  3. For Codespaces, you'll need to update frontend URLs after services start"
+echo ""
+echo "To start services:"
+echo "  cd docker && ./setup.sh"
+echo ""
+echo "Note: Codespaces may timeout after 4 hours of inactivity."
+echo "      Your work is saved, but you'll need to restart services."
 echo ""

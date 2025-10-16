@@ -56,10 +56,14 @@ func main() {
 	// Start HTTP server
 	addr := fmt.Sprintf(":%s", port)
 	httpServer := &http.Server{
-		Addr:         addr,
-		Handler:      http.DefaultServeMux,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
+		Addr:    addr,
+		Handler: http.DefaultServeMux,
+		// No timeouts - WebSocket connections are long-lived
+		// Timeouts would kill active connections
+		ReadTimeout:  0,
+		WriteTimeout: 0,
+		// Optional: Set IdleTimeout for non-WebSocket connections
+		IdleTimeout: 120 * time.Second,
 	}
 
 	// Start server in goroutine

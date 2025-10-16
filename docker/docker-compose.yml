@@ -292,8 +292,8 @@ services:
     ports:
       - "3000:80"
     environment:
-      VITE_ORCHESTRATOR_URL: http://localhost:8081
-      VITE_FANOUT_URL: http://localhost:8085
+      VITE_ORCHESTRATOR_URL: ${VITE_ORCHESTRATOR_URL:-http://localhost:8081}
+      VITE_FANOUT_URL: ${VITE_FANOUT_URL:-ws://localhost:8085}
       VITE_DEV_USERNAME: ${DEV_USERNAME:-test-user}
     depends_on:
       - orchestrator
