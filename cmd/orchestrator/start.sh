@@ -12,6 +12,13 @@ if [ -f "${PROJECT_ROOT}/.env" ]; then
     set +a
 fi
 
+# Start mover if USE_MOVER is enabled
+if [ "${USE_MOVER:-false}" = "true" ]; then
+    echo "[${SERVICE_NAME}] Starting mover..."
+    "${PROJECT_ROOT}/scripts/start-mover.sh" "${SERVICE_NAME}"
+    sleep 1  # Give mover time to initialize
+fi
+
 # Service-specific configuration
 export SERVICE_NAME="${SERVICE_NAME}"
 export PORT="${ORCHESTRATOR_PORT:-8081}"
