@@ -87,6 +87,10 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
 
+      # Mover (ultra-fast I/O layer)
+      USE_MOVER: ${USE_MOVER:-false}
+      MOVER_SOCKET: /tmp/mover-orchestrator.sock
+
       # Service config
       PORT: 8081
       GOMAXPROCS: 4
@@ -136,6 +140,10 @@ services:
       # Orchestrator API
       ORCHESTRATOR_URL: http://orchestrator:8081
 
+      # Mover (ultra-fast I/O layer)
+      USE_MOVER: ${USE_MOVER:-false}
+      MOVER_SOCKET: /tmp/mover-workflow.sock
+
       # Service config
       PORT: 8082
       GOMAXPROCS: 4
@@ -171,6 +179,11 @@ services:
     environment:
       REDIS_HOST: redis
       REDIS_PORT: 6379
+
+      # Mover
+      USE_MOVER: ${USE_MOVER:-false}
+      MOVER_SOCKET: /tmp/mover-http.sock
+
       PORT: 8083
       GOMAXPROCS: 2
       LOG_LEVEL: ${LOG_LEVEL:-info}
@@ -201,6 +214,11 @@ services:
     environment:
       REDIS_HOST: redis
       REDIS_PORT: 6379
+
+      # Mover
+      USE_MOVER: ${USE_MOVER:-false}
+      MOVER_SOCKET: /tmp/mover-hitl.sock
+
       PORT: 8084
       GOMAXPROCS: 2
       LOG_LEVEL: ${LOG_LEVEL:-info}
