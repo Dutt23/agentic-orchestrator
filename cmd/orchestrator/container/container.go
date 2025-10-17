@@ -4,20 +4,21 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/lyzr/orchestrator/common/repository"
 	"github.com/lyzr/orchestrator/cmd/orchestrator/service"
 	"github.com/lyzr/orchestrator/common/bootstrap"
 	"github.com/lyzr/orchestrator/common/ratelimit"
 	rediscommon "github.com/lyzr/orchestrator/common/redis"
+	"github.com/lyzr/orchestrator/common/repository"
+	"github.com/lyzr/orchestrator/common/validation"
 	"github.com/redis/go-redis/v9"
 )
 
 // Container holds all initialized services and repositories (singleton pattern)
 type Container struct {
 	// Components
-	Components *bootstrap.Components
-	Redis      *rediscommon.Client
-	RedisRaw   *redis.Client // Keep for backward compatibility if needed
+	Components  *bootstrap.Components
+	Redis       *rediscommon.Client
+	RedisRaw    *redis.Client // Keep for backward compatibility if needed
 	RateLimiter *ratelimit.RateLimiter
 
 	// Repositories
@@ -34,6 +35,8 @@ type Container struct {
 	WorkflowService     *service.WorkflowServiceV2
 	RunPatchService     *service.RunPatchService
 	RunService          *service.RunService
+
+	PatchValidator *validation.PatchValidator
 }
 
 // NewContainer initializes all services and repositories once

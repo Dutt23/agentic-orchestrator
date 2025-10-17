@@ -1,0 +1,37 @@
+[package]
+name = "mover"
+version = "0.1.0"
+edition = "2021"
+authors = ["Orchestrator Team"]
+description = "Ultra-fast data mover with io_uring and zero-copy"
+
+[dependencies]
+# Async runtime with io_uring
+tokio-uring = "0.5"
+
+# Memory mapping
+memmap2 = "0.9"
+
+# Serialization (for now, will add MessagePack later)
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# Shared types with dag-optimizer
+dag-optimizer = { path = "../../crates/dag-optimizer" }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true  # Small binary
+
+[profile.release.build-override]
+opt-level = 0  # Fast builds
