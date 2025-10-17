@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
 	"sync"
 )
 
@@ -51,13 +50,11 @@ const (
 	OpBatch  OpCode = 0x05
 )
 
-// NewMoverCASClient creates a new mover-based CAS client
-func NewMoverCASClient(socketPath string) (*MoverCASClient, error) {
+// NewMoverCASClient creates a new mover-based CAS client from config
+func NewMoverCASClient(config *ClientConfig) (*MoverCASClient, error) {
+	socketPath := config.MoverSocket
 	if socketPath == "" {
-		socketPath = os.Getenv("MOVER_SOCKET")
-		if socketPath == "" {
-			socketPath = "/tmp/mover.sock"
-		}
+		socketPath = "/tmp/mover.sock"
 	}
 
 	// Create connection pool (8 connections)

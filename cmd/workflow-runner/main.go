@@ -92,8 +92,11 @@ func initializeDependencies(ctx context.Context, components *bootstrap.Component
 		return nil, fmt.Errorf("failed to load Lua script: %w", err)
 	}
 
-	// Create Redis-based CAS client for storing execution results
-	casClient := clients.NewRedisCASClient(redisClient, components.Logger)
+	// Create CAS client (routes to mover or Redis based on USE_MOVER flag)
+	casClient, err := clients.NewCASClient(redisClient, components.Logger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create CAS client: %w", err)
+	}
 
 	// Create SDK
 	workflowSDK := sdk.NewSDK(redisClient, casClient, components.Logger, string(luaScript))
