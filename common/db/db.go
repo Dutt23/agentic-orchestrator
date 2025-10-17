@@ -5,15 +5,21 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lyzr/orchestrator/common/config"
 	"github.com/lyzr/orchestrator/common/logger"
 )
 
-// DB wraps pgxpool with common operations
+// DB wraps pgxpool with common operations and optional mover integration
+// All queries route through this wrapper, enabling transparent mover optimization
 type DB struct {
-	*pgxpool.Pool
-	log *logger.Logger
+	pool *pgxpool.Pool  // Don't embed - we'll wrap methods
+	log  *logger.Logger
+	// TODO: Add mover client here when implementing
+	// mover    *clients.MoverClient
+	// useMover bool
 }
 
 // New creates a new database connection pool
@@ -45,7 +51,7 @@ func New(ctx context.Context, cfg *config.Config, log *logger.Logger) (*DB, erro
 	log.Info("database connected", "host", cfg.Database.Host, "db", cfg.Database.Database)
 
 	return &DB{
-		Pool: pool,
+		pool: pool,
 		log:  log,
 	}, nil
 }
@@ -53,7 +59,7 @@ func New(ctx context.Context, cfg *config.Config, log *logger.Logger) (*DB, erro
 // Close closes the database connection pool
 func (db *DB) Close() {
 	db.log.Info("closing database connection pool")
-	db.Pool.Close()
+	db.pool.Close()
 }
 
 // Health checks database health
@@ -61,5 +67,37 @@ func (db *DB) Health(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
-	return db.Pool.Ping(ctx)
+	return db.pool.Ping(ctx)
+}
+
+// ============================================================================
+// Query Methods - Single interception point for all DB operations
+// All repositories call these methods, so mover integration happens here ONCE
+// ============================================================================
+
+// QueryRow wraps pool.QueryRow - single interception point
+func (db *DB) QueryRow(ctx context.Context, sql string, args ...interface{}) pgx.Row {
+	// TODO: Route through mover if enabled
+	// if db.useMover {
+	//     return db.queryRowViaMover(ctx, sql, args...)
+	// }
+	return db.pool.QueryRow(ctx, sql, args...)
+}
+
+// Query wraps pool.Query - single interception point
+func (db *DB) Query(ctx context.Context, sql string, args ...interface{}) (pgx.Rows, error) {
+	// TODO: Route through mover if enabled
+	return db.pool.Query(ctx, sql, args...)
+}
+
+// Exec wraps pool.Exec - single interception point
+func (db *DB) Exec(ctx context.Context, sql string, args ...interface{}) (pgconn.CommandTag, error) {
+	// TODO: Route through mover if enabled
+	return db.pool.Exec(ctx, sql, args...)
+}
+
+// Begin wraps pool.Begin - for transactions
+func (db *DB) Begin(ctx context.Context) (pgx.Tx, error) {
+	// TODO: Transactions need special handling with mover
+	return db.pool.Begin(ctx)
 }
