@@ -1,11 +1,8 @@
 package mover_test
 
 import (
-	"context"
 	"os"
 	"testing"
-
-	"github.com/lyzr/orchestrator/common/clients"
 )
 
 // BenchmarkCASRead_WithMover benchmarks CAS reads using mover service
