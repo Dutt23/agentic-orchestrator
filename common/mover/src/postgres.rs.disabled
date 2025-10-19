@@ -1,0 +1,83 @@
+/// Postgres client using io_uring for network I/O
+/// Queries CAS data from cas_blob table
+
+use anyhow::{Context, Result};
+use tokio_postgres::{Client, NoTls};
+use tracing::debug;
+
+/// Postgres manager for CAS queries
+pub struct PostgresManager {
+    client: Client,
+}
+
+impl PostgresManager {
+    /// Connect to Postgres
+    pub async fn new(db_url: &str) -> Result<Self> {
+        debug!("Connecting to Postgres: {}", db_url);
+
+        // Parse connection string and connect
+        let (client, connection) = tokio_postgres::connect(db_url, NoTls)
+            .await
+            .context("Failed to connect to Postgres")?;
+
+        // Spawn connection handler
+        tokio_uring::spawn(async move {
+            if let Err(e) = connection.await {
+                eprintln!("Postgres connection error: {}", e);
+            }
+        });
+
+        debug!("Connected to Postgres");
+
+        Ok(Self { client })
+    }
+
+    /// Read CAS blob by ID
+    ///
+    /// Executes: SELECT content FROM cas_blob WHERE cas_id = $1
+    /// This is the hot path - optimized with io_uring network I/O
+    pub async fn read_cas(&self, cas_id: &str) -> Result<Vec<u8>> {
+        // Query Postgres for CAS content
+        // io_uring handles the TCP operations
+        let row = self
+            .client
+            .query_one("SELECT content FROM cas_blob WHERE cas_id = $1", &[&cas_id])
+            .await
+            .context("CAS entry not found")?;
+
+        let content: Vec<u8> = row.get(0);
+
+        Ok(content)
+    }
+
+    /// Write CAS blob (write-through)
+    ///
+    /// Executes: INSERT INTO cas_blob (cas_id, content, ...) VALUES (...)
+    pub async fn write_cas(&self, cas_id: &str, content: &[u8], media_type: &str) -> Result<()> {
+        let size_bytes = content.len() as i64;
+
+        self.client
+            .execute(
+                "INSERT INTO cas_blob (cas_id, content, media_type, size_bytes, created_at) \
+                 VALUES ($1, $2, $3, $4, NOW()) \
+                 ON CONFLICT (cas_id) DO NOTHING",
+                &[&cas_id, &content, &media_type, &size_bytes],
+            )
+            .await
+            .context("Failed to write CAS entry")?;
+
+        Ok(())
+    }
+
+    /// Check if CAS entry exists
+    pub async fn exists(&self, cas_id: &str) -> Result<bool> {
+        let row = self
+            .client
+            .query_one("SELECT EXISTS(SELECT 1 FROM cas_blob WHERE cas_id = $1)", &[&cas_id])
+            .await
+            .context("Failed to check CAS existence")?;
+
+        let exists: bool = row.get(0);
+        Ok(exists)
+    }
+}

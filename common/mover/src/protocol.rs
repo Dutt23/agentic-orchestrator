@@ -17,6 +17,10 @@ pub enum OpCode {
     Recv = 0x04,
     /// Batch multiple operations
     Batch = 0x05,
+    /// HTTP proxy via io_uring (with JSON serialization)
+    Http = 0x06,
+    /// HTTP proxy via splice() - true zero-copy socket relay
+    HttpSplice = 0x07,
 }
 
 impl TryFrom<u8> for OpCode {
@@ -29,6 +33,8 @@ impl TryFrom<u8> for OpCode {
             0x03 => Ok(OpCode::SendZC),
             0x04 => Ok(OpCode::Recv),
             0x05 => Ok(OpCode::Batch),
+            0x06 => Ok(OpCode::Http),
+            0x07 => Ok(OpCode::HttpSplice),
             _ => Err(io::Error::new(io::ErrorKind::InvalidData, "unknown op code")),
         }
     }

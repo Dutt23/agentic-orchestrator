@@ -1,7 +1,7 @@
 /// Configuration for mover service
 /// Loads from environment variables with validation and defaults
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::env;
 
 // ============================================================================
@@ -77,6 +77,9 @@ pub struct MoverConfig {
     // Features
     pub enable_huge_pages: bool,
     pub enable_send_zc: bool,
+
+    // Optional connections
+    pub enable_postgres: bool,  // Disable for services that don't use CAS
 }
 
 impl MoverConfig {
@@ -93,6 +96,7 @@ impl MoverConfig {
             max_connections: get_env_usize("MOVER_MAX_CONNECTIONS", 32),
             enable_huge_pages: get_env_bool("MOVER_ENABLE_HUGE_PAGES", false),
             enable_send_zc: get_env_bool("MOVER_ENABLE_SEND_ZC", true),
+            enable_postgres: get_env_bool("MOVER_ENABLE_POSTGRES", true),  // Default true for backward compat
         })
     }
 
@@ -138,6 +142,7 @@ impl MoverConfig {
             max_connections: 32,
             enable_huge_pages: false,
             enable_send_zc: true,
+            enable_postgres: true,
         }
     }
 

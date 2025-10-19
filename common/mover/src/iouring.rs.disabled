@@ -2,8 +2,7 @@
 /// Provides high-level API for io_uring with SEND_ZC and registered buffers
 
 use anyhow::{Context, Result};
-use std::os::unix::io::RawFd;
-use tokio_uring::buf::IoBuf;
+use std::path::PathBuf;
 use tracing::{debug, info};
 
 /// Wrapper around tokio-uring for zero-copy operations
@@ -43,9 +42,9 @@ impl IoUringPool {
     /// # Returns
     /// Number of bytes sent
     pub async fn send_zerocopy(socket: &tokio_uring::net::TcpStream, data: &[u8]) -> Result<usize> {
-        // tokio-uring's write automatically uses most efficient method
-        // For zero-copy, data should come from mmap (page-aligned, persistent)
-        let (result, _) = socket.write(data).await;
+        // tokio-uring requires owned data
+        let data_owned = data.to_vec();
+        let (result, _buf) = socket.write(data_owned).submit().await;
         result.context("Zero-copy send failed")
     }
 
