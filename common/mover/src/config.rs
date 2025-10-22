@@ -100,7 +100,7 @@ impl MoverConfig {
             enable_huge_pages: get_env_bool("MOVER_ENABLE_HUGE_PAGES", false),
             enable_send_zc: get_env_bool("MOVER_ENABLE_SEND_ZC", true),
             enable_postgres: get_env_bool("MOVER_ENABLE_POSTGRES", true),  // Default true for backward compat
-            http_handler_mode: get_env_string("HTTP_HANDLER_MODE", "buffered"),
+            http_handler_mode: get_env_string("HTTP_HANDLER_MODE", "splice"),
         })
     }
 
