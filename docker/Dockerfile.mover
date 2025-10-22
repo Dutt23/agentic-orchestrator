@@ -23,9 +23,17 @@ RUN apt-get update && \
       git && \
     rm -rf /var/lib/apt/lists/*
 
-# Add Zscaler certificate (for corporate SSL inspection)
-COPY docker/zscaler.pem /usr/local/share/ca-certificates/zscaler.crt
-RUN update-ca-certificates
+# Add Zscaler certificate (for corporate SSL inspection) - optional for local dev
+# Copy placeholder and any .pem files (glob pattern won't fail if .pem doesn't exist)
+COPY docker/.cert-placeholder docker/zscaler.pe[m] /tmp/certs/
+RUN if [ -f /tmp/certs/zscaler.pem ]; then \
+      echo "Found Zscaler certificate, installing..."; \
+      cp /tmp/certs/zscaler.pem /usr/local/share/ca-certificates/zscaler.crt && \
+      update-ca-certificates; \
+    else \
+      echo "No Zscaler certificate found (OK for CI/CD), skipping..."; \
+    fi && \
+    rm -rf /tmp/certs
 
 # Configure cargo to use sparse index (more reliable)
 ENV CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse
