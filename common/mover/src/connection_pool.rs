@@ -7,7 +7,7 @@
 /// 3. Automatic cleanup of stale connections
 /// 4. Per-host connection tracking
 
-use glommio::net::TcpStream;
+use monoio::net::TcpStream;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};

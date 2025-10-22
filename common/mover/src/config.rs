@@ -80,6 +80,9 @@ pub struct MoverConfig {
 
     // Optional connections
     pub enable_postgres: bool,  // Disable for services that don't use CAS
+
+    // HTTP handler mode: "buffered" (default) or "splice" (zero-copy)
+    pub http_handler_mode: String,
 }
 
 impl MoverConfig {
@@ -97,6 +100,7 @@ impl MoverConfig {
             enable_huge_pages: get_env_bool("MOVER_ENABLE_HUGE_PAGES", false),
             enable_send_zc: get_env_bool("MOVER_ENABLE_SEND_ZC", true),
             enable_postgres: get_env_bool("MOVER_ENABLE_POSTGRES", true),  // Default true for backward compat
+            http_handler_mode: get_env_string("HTTP_HANDLER_MODE", "buffered"),
         })
     }
 
@@ -143,6 +147,7 @@ impl MoverConfig {
             enable_huge_pages: false,
             enable_send_zc: true,
             enable_postgres: true,
+            http_handler_mode: "buffered".to_string(),
         }
     }
 
@@ -172,6 +177,14 @@ impl MoverConfig {
 
         if !self.socket_path.starts_with('/') {
             anyhow::bail!("socket_path must be absolute, got {}", self.socket_path);
+        }
+
+        // Validate HTTP handler mode
+        if !matches!(self.http_handler_mode.as_str(), "buffered" | "splice") {
+            anyhow::bail!(
+                "http_handler_mode must be 'buffered' or 'splice', got '{}'",
+                self.http_handler_mode
+            );
         }
 
         Ok(self)

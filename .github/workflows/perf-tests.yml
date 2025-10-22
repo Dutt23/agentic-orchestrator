@@ -1,0 +1,443 @@
+name: Performance Tests
+
+on:
+  pull_request:
+    branches: ['**']
+  workflow_dispatch:
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  # ==================================================================
+  # Job 1: Baseline Performance Test (NO Mover)
+  # ==================================================================
+  test-baseline:
+    name: Baseline Performance (no mover)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Start Redis
+        run: |
+          docker run -d --name redis \
+            -p 6379:6379 \
+            redis:7-alpine
+
+          # Wait for Redis to be ready
+          echo "Waiting for Redis..."
+          timeout 30 bash -c 'until docker exec redis redis-cli ping | grep -q PONG; do sleep 1; done'
+          echo "✅ Redis is ready"
+
+      - name: Start Orchestrator (port 8081)
+        run: |
+          docker build -t orchestrator:test -f docker/Dockerfile.go-service \
+            --build-arg SERVICE_NAME=orchestrator .
+
+          docker run -d --name orchestrator \
+            --network host \
+            -e REDIS_HOST=localhost \
+            -e REDIS_PORT=6379 \
+            -e PORT=8081 \
+            -e USE_MOVER=false \
+            orchestrator:test
+
+          # Wait for orchestrator health check
+          echo "Waiting for orchestrator..."
+          timeout 60 bash -c 'until curl -sf http://localhost:8081/health > /dev/null; do sleep 2; done'
+          echo "✅ Orchestrator is ready"
+
+      - name: Start Workflow Runner (port 8082)
+        run: |
+          docker build -t workflow-runner:test -f docker/Dockerfile.go-service \
+            --build-arg SERVICE_NAME=workflow-runner \
+            --build-arg NEEDS_SCRIPTS=true .
+
+          docker run -d --name workflow-runner \
+            --network host \
+            -e REDIS_HOST=localhost \
+            -e REDIS_PORT=6379 \
+            -e ORCHESTRATOR_URL=http://localhost:8081 \
+            -e PORT=8082 \
+            -e USE_MOVER=false \
+            -e ENABLE_TEST_SERVER=true \
+            -e PERF_TEST_TOKEN=perf-test-unsafe-default-token \
+            workflow-runner:test
+
+          # Wait for workflow-runner health check
+          echo "Waiting for workflow-runner..."
+          timeout 60 bash -c 'until curl -sf http://localhost:8082/health > /dev/null; do sleep 2; done'
+          echo "✅ Workflow Runner is ready"
+
+      - name: Run Performance Tests (Baseline)
+        run: |
+          cd perf_tests/workflows
+          OUTPUT_RESULTS_JSON=true \
+          PERF_NUM_CALLS=100000 \
+          PERF_CONCURRENCY=10 \
+          USE_MOVER=false \
+          ORCHESTRATOR_URL=http://localhost:8081 \
+          WORKFLOW_RUNNER_URL=http://localhost:8082 \
+          PERF_TEST_TOKEN=perf-test-unsafe-default-token \
+          go test -v -run TestFetchWorkflowsConcurrent -timeout 25m
+
+      - name: Upload Baseline Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: baseline-results
+          path: perf_tests/workflows/perf_results.json
+          retention-days: 7
+
+      - name: Show Logs on Failure
+        if: failure()
+        run: |
+          echo "=== Orchestrator Logs ==="
+          docker logs orchestrator --tail 100 || true
+          echo "=== Workflow Runner Logs ==="
+          docker logs workflow-runner --tail 100 || true
+          echo "=== Redis Logs ==="
+          docker logs redis --tail 50 || true
+
+  # ==================================================================
+  # Job 2: Mover Performance Test (WITH Mover)
+  # ==================================================================
+  test-with-mover:
+    name: With Mover Performance
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            common/mover/target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Start Redis
+        run: |
+          docker run -d --name redis \
+            -p 6379:6379 \
+            redis:7-alpine
+
+          # Wait for Redis to be ready
+          echo "Waiting for Redis..."
+          timeout 30 bash -c 'until docker exec redis redis-cli ping | grep -q PONG; do sleep 1; done'
+          echo "✅ Redis is ready"
+
+      - name: Build and Start Mover for Orchestrator
+        run: |
+          # Build mover image
+          docker build -t mover:test -f docker/Dockerfile.mover .
+
+          # Start mover for orchestrator (port 9081)
+          docker run -d --name mover-orchestrator \
+            --network host \
+            --cap-add IPC_LOCK \
+            --cap-add SYS_RESOURCE \
+            --security-opt seccomp=unconfined \
+            -e MOVER_SOCKET=/tmp/mover-orchestrator.sock \
+            -e SERVICE_NAME=orchestrator \
+            -e MOVER_ENABLE_POSTGRES=false \
+            -v mover-orch-socket:/tmp \
+            mover:test
+
+          echo "✅ Mover for orchestrator started"
+
+      - name: Build and Start Mover for Workflow Runner
+        run: |
+          # Start mover for workflow-runner (port 9082)
+          docker run -d --name mover-workflow \
+            --network host \
+            --cap-add IPC_LOCK \
+            --cap-add SYS_RESOURCE \
+            --security-opt seccomp=unconfined \
+            -e MOVER_SOCKET=/tmp/mover-workflow.sock \
+            -e SERVICE_NAME=workflow-runner \
+            -e MOVER_ENABLE_POSTGRES=false \
+            -v mover-wf-socket:/tmp \
+            mover:test
+
+          echo "✅ Mover for workflow-runner started"
+          sleep 3  # Give movers time to initialize
+
+      - name: Start Orchestrator with Mover (port 9081)
+        run: |
+          docker build -t orchestrator:test -f docker/Dockerfile.go-service \
+            --build-arg SERVICE_NAME=orchestrator .
+
+          docker run -d --name orchestrator \
+            --network host \
+            --volumes-from mover-orchestrator \
+            -e REDIS_HOST=localhost \
+            -e REDIS_PORT=6379 \
+            -e PORT=9081 \
+            -e USE_MOVER=true \
+            -e MOVER_SOCKET=/tmp/mover-orchestrator.sock \
+            orchestrator:test
+
+          # Wait for orchestrator health check
+          echo "Waiting for orchestrator..."
+          timeout 60 bash -c 'until curl -sf http://localhost:9081/health > /dev/null; do sleep 2; done'
+          echo "✅ Orchestrator is ready"
+
+      - name: Start Workflow Runner with Mover (port 9082)
+        run: |
+          docker build -t workflow-runner:test -f docker/Dockerfile.go-service \
+            --build-arg SERVICE_NAME=workflow-runner \
+            --build-arg NEEDS_SCRIPTS=true .
+
+          docker run -d --name workflow-runner \
+            --network host \
+            --volumes-from mover-workflow \
+            -e REDIS_HOST=localhost \
+            -e REDIS_PORT=6379 \
+            -e ORCHESTRATOR_URL=http://localhost:9081 \
+            -e PORT=9082 \
+            -e USE_MOVER=true \
+            -e MOVER_SOCKET=/tmp/mover-workflow.sock \
+            -e ENABLE_TEST_SERVER=true \
+            -e PERF_TEST_TOKEN=perf-test-unsafe-default-token \
+            workflow-runner:test
+
+          # Wait for workflow-runner health check
+          echo "Waiting for workflow-runner..."
+          timeout 60 bash -c 'until curl -sf http://localhost:9082/health > /dev/null; do sleep 2; done'
+          echo "✅ Workflow Runner is ready"
+
+      - name: Run Performance Tests (With Mover)
+        run: |
+          cd perf_tests/workflows
+          OUTPUT_RESULTS_JSON=true \
+          PERF_NUM_CALLS=100000 \
+          PERF_CONCURRENCY=10 \
+          USE_MOVER=true \
+          ORCHESTRATOR_URL=http://localhost:9081 \
+          WORKFLOW_RUNNER_URL=http://localhost:9082 \
+          PERF_TEST_TOKEN=perf-test-unsafe-default-token \
+          go test -v -run TestFetchWorkflowsConcurrent -timeout 25m
+
+      - name: Upload Mover Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mover-results
+          path: perf_tests/workflows/perf_results.json
+          retention-days: 7
+
+      - name: Show Logs on Failure
+        if: failure()
+        run: |
+          echo "=== Mover Orchestrator Logs ==="
+          docker logs mover-orchestrator --tail 100 || true
+          echo "=== Mover Workflow Logs ==="
+          docker logs mover-workflow --tail 100 || true
+          echo "=== Orchestrator Logs ==="
+          docker logs orchestrator --tail 100 || true
+          echo "=== Workflow Runner Logs ==="
+          docker logs workflow-runner --tail 100 || true
+          echo "=== Redis Logs ==="
+          docker logs redis --tail 50 || true
+
+  # ==================================================================
+  # Job 3: Compare Results and Post PR Comment
+  # ==================================================================
+  compare-results:
+    name: Compare and Report Results
+    runs-on: ubuntu-latest
+    needs: [test-baseline, test-with-mover]
+    if: always()
+
+    steps:
+      - name: Download Baseline Results
+        uses: actions/download-artifact@v4
+        with:
+          name: baseline-results
+          path: baseline
+
+      - name: Download Mover Results
+        uses: actions/download-artifact@v4
+        with:
+          name: mover-results
+          path: mover
+
+      - name: Parse and Compare Results
+        id: compare
+        run: |
+          # Check if both result files exist
+          if [[ ! -f baseline/perf_results.json ]]; then
+            echo "❌ Baseline results not found"
+            echo "status=baseline_failed" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          if [[ ! -f mover/perf_results.json ]]; then
+            echo "❌ Mover results not found"
+            echo "status=mover_failed" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Parse JSON results
+          baseline_ops=$(jq -r '.ops_per_sec' baseline/perf_results.json)
+          baseline_avg_lat=$(jq -r '.avg_latency_ms' baseline/perf_results.json)
+          baseline_min_lat=$(jq -r '.min_latency_ms' baseline/perf_results.json)
+          baseline_max_lat=$(jq -r '.max_latency_ms' baseline/perf_results.json)
+          baseline_throughput=$(jq -r '.throughput_mbps' baseline/perf_results.json)
+          baseline_errors=$(jq -r '.errors' baseline/perf_results.json)
+
+          mover_ops=$(jq -r '.ops_per_sec' mover/perf_results.json)
+          mover_avg_lat=$(jq -r '.avg_latency_ms' mover/perf_results.json)
+          mover_min_lat=$(jq -r '.min_latency_ms' mover/perf_results.json)
+          mover_max_lat=$(jq -r '.max_latency_ms' mover/perf_results.json)
+          mover_throughput=$(jq -r '.throughput_mbps' mover/perf_results.json)
+          mover_errors=$(jq -r '.errors' mover/perf_results.json)
+
+          # Calculate improvements
+          ops_improvement=$(echo "scale=1; ($mover_ops - $baseline_ops) / $baseline_ops * 100" | bc)
+          lat_improvement=$(echo "scale=1; ($baseline_avg_lat - $mover_avg_lat) / $baseline_avg_lat * 100" | bc)
+          throughput_improvement=$(echo "scale=1; ($mover_throughput - $baseline_throughput) / $baseline_throughput * 100" | bc)
+
+          # Check for failures (error rate > 5%)
+          baseline_error_rate=$(echo "scale=2; $baseline_errors / 100000 * 100" | bc)
+          mover_error_rate=$(echo "scale=2; $mover_errors / 100000 * 100" | bc)
+
+          # Save outputs
+          echo "baseline_ops=$baseline_ops" >> $GITHUB_OUTPUT
+          echo "baseline_avg_lat=$baseline_avg_lat" >> $GITHUB_OUTPUT
+          echo "baseline_min_lat=$baseline_min_lat" >> $GITHUB_OUTPUT
+          echo "baseline_max_lat=$baseline_max_lat" >> $GITHUB_OUTPUT
+          echo "baseline_throughput=$baseline_throughput" >> $GITHUB_OUTPUT
+          echo "baseline_errors=$baseline_errors" >> $GITHUB_OUTPUT
+          echo "baseline_error_rate=$baseline_error_rate" >> $GITHUB_OUTPUT
+
+          echo "mover_ops=$mover_ops" >> $GITHUB_OUTPUT
+          echo "mover_avg_lat=$mover_avg_lat" >> $GITHUB_OUTPUT
+          echo "mover_min_lat=$mover_min_lat" >> $GITHUB_OUTPUT
+          echo "mover_max_lat=$mover_max_lat" >> $GITHUB_OUTPUT
+          echo "mover_throughput=$mover_throughput" >> $GITHUB_OUTPUT
+          echo "mover_errors=$mover_errors" >> $GITHUB_OUTPUT
+          echo "mover_error_rate=$mover_error_rate" >> $GITHUB_OUTPUT
+
+          echo "ops_improvement=$ops_improvement" >> $GITHUB_OUTPUT
+          echo "lat_improvement=$lat_improvement" >> $GITHUB_OUTPUT
+          echo "throughput_improvement=$throughput_improvement" >> $GITHUB_OUTPUT
+
+          # Determine status
+          if (( $(echo "$baseline_error_rate > 5" | bc -l) )) || (( $(echo "$mover_error_rate > 5" | bc -l) )); then
+            echo "status=failed_high_errors" >> $GITHUB_OUTPUT
+          else
+            echo "status=success" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Post PR Comment
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const status = '${{ steps.compare.outputs.status }}';
+
+            let commentBody = '## 🚀 Performance Test Results\n\n';
+
+            if (status === 'baseline_failed') {
+              commentBody += '❌ **Baseline test failed**\n\nCheck the workflow logs for details.';
+            } else if (status === 'mover_failed') {
+              commentBody += '❌ **Mover test failed**\n\nCheck the workflow logs for details.';
+            } else {
+              const baselineOps = parseFloat('${{ steps.compare.outputs.baseline_ops }}');
+              const moverOps = parseFloat('${{ steps.compare.outputs.mover_ops }}');
+              const opsImprovement = parseFloat('${{ steps.compare.outputs.ops_improvement }}');
+              const latImprovement = parseFloat('${{ steps.compare.outputs.lat_improvement }}');
+              const throughputImprovement = parseFloat('${{ steps.compare.outputs.throughput_improvement }}');
+
+              const baselineErrors = parseInt('${{ steps.compare.outputs.baseline_errors }}');
+              const moverErrors = parseInt('${{ steps.compare.outputs.mover_errors }}');
+              const baselineErrorRate = parseFloat('${{ steps.compare.outputs.baseline_error_rate }}');
+              const moverErrorRate = parseFloat('${{ steps.compare.outputs.mover_error_rate }}');
+
+              commentBody += '**Test Configuration:** 100,000 calls with 10 concurrent workers\n\n';
+              commentBody += '| Metric | Baseline (no mover) | With Mover | Improvement |\n';
+              commentBody += '|--------|---------------------|------------|-------------|\n';
+              commentBody += `| **Throughput** | ${baselineOps.toFixed(2)} ops/sec | ${moverOps.toFixed(2)} ops/sec | ${opsImprovement > 0 ? '+' : ''}${opsImprovement.toFixed(1)}% |\n`;
+              commentBody += `| **Avg Latency** | ${'${{ steps.compare.outputs.baseline_avg_lat }}'} ms | ${'${{ steps.compare.outputs.mover_avg_lat }}'} ms | ${latImprovement > 0 ? '+' : ''}${latImprovement.toFixed(1)}% |\n`;
+              commentBody += `| **Min Latency** | ${'${{ steps.compare.outputs.baseline_min_lat }}'} ms | ${'${{ steps.compare.outputs.mover_min_lat }}'} ms | - |\n`;
+              commentBody += `| **Max Latency** | ${'${{ steps.compare.outputs.baseline_max_lat }}'} ms | ${'${{ steps.compare.outputs.mover_max_lat }}'} ms | - |\n`;
+              commentBody += `| **Data Rate** | ${'${{ steps.compare.outputs.baseline_throughput }}'} MB/s | ${'${{ steps.compare.outputs.mover_throughput }}'} MB/s | ${throughputImprovement > 0 ? '+' : ''}${throughputImprovement.toFixed(1)}% |\n`;
+              commentBody += `| **Errors** | ${baselineErrors} (${baselineErrorRate.toFixed(2)}%) | ${moverErrors} (${moverErrorRate.toFixed(2)}%) | - |\n\n`;
+
+              if (status === 'failed_high_errors') {
+                commentBody += '❌ **Test failed:** Error rate exceeded 5% threshold\n\n';
+              } else {
+                commentBody += '✅ **All tests passed successfully**\n\n';
+              }
+
+              if (opsImprovement > 10) {
+                commentBody += `🎉 **Mover optimization shows ${opsImprovement.toFixed(1)}% improvement in throughput!**\n`;
+              } else if (opsImprovement < -10) {
+                commentBody += `⚠️ **Warning:** Mover configuration shows ${Math.abs(opsImprovement).toFixed(1)}% regression in throughput.\n`;
+              }
+            }
+
+            commentBody += `\n---\n*Workflow run: [${context.runId}](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})*`;
+
+            // Find existing comment or create new one
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const botComment = comments.find(comment =>
+              comment.user.type === 'Bot' &&
+              comment.body.includes('Performance Test Results')
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: commentBody
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: commentBody
+              });
+            }
+
+      - name: Fail if High Error Rate
+        if: steps.compare.outputs.status == 'failed_high_errors'
+        run: |
+          echo "❌ Tests failed due to high error rate (>5%)"
+          echo "Baseline error rate: ${{ steps.compare.outputs.baseline_error_rate }}%"
+          echo "Mover error rate: ${{ steps.compare.outputs.mover_error_rate }}%"
+          exit 1

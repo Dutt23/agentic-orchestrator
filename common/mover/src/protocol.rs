@@ -40,6 +40,18 @@ impl TryFrom<u8> for OpCode {
     }
 }
 
+/// HTTP metadata for streaming protocol (OpHTTPSplice)
+/// Used to send HTTP request metadata separately from body
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct HttpMetadata {
+    pub host: String,
+    pub port: u16,
+    pub method: String,
+    pub path: String,
+    pub headers: Vec<(String, String)>,
+    pub content_length: u64,  // Bytes to read from socket after metadata
+}
+
 /// Mover request (generic, no workflow knowledge)
 #[derive(Debug)]
 pub struct MoverRequest {
@@ -179,6 +191,13 @@ impl MoverResponse {
             data: message.into_bytes(),
         }
     }
+}
+
+/// Parse HTTP metadata from JSON bytes
+/// Used by OpHTTPSplice to extract request metadata before streaming body
+pub fn parse_http_metadata(data: &[u8]) -> io::Result<HttpMetadata> {
+    serde_json::from_slice(data)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("Failed to parse HTTP metadata: {}", e)))
 }
 
 #[cfg(test)]

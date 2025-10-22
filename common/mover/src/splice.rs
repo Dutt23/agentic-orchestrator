@@ -10,8 +10,8 @@
 
 use crate::connection_pool;
 use crate::true_splice;
-use futures_lite::io::{AsyncReadExt, AsyncWriteExt};
-use glommio::net::{TcpStream, UnixStream};
+use monoio::io::{AsyncReadRent, AsyncWriteRentExt};
+use monoio::net::{TcpStream, UnixStream};
 use std::os::unix::io::AsRawFd;
 use std::time::Instant;
 
@@ -28,7 +28,7 @@ use std::time::Instant;
 ///
 /// Returns: (bytes_sent, bytes_received)
 pub async fn relay_bidirectional(
-    mut client: UnixStream,
+    client: UnixStream,
     target_host: &str,
     target_port: u16,
 ) -> Result<(usize, usize), std::io::Error> {
@@ -36,7 +36,7 @@ pub async fn relay_bidirectional(
 
     // Get or create connection from pool (benefits from keep-alive!)
     let connect_start = Instant::now();
-    let mut upstream = if let Some(pooled) = connection_pool::get_connection(target_host, target_port) {
+    let upstream = if let Some(pooled) = connection_pool::get_connection(target_host, target_port) {
         pooled
     } else {
         let addr = format!("{}:{}", target_host, target_port);
@@ -45,40 +45,16 @@ pub async fn relay_bidirectional(
     };
     let connect_elapsed = connect_start.elapsed();
 
-    // For now, use buffer-based relay (fast enough, simpler than raw fd manipulation)
-    // glommio doesn't expose raw fds easily for safety
-    // TODO: Implement true io_uring splice when glommio adds support
+    // NOW we can use true splice with monoio!
+    // Monoio exposes AsRawFd, so we can use raw splice() syscalls
 
-    // Phase 1: Forward request from client → upstream
-    let mut request_bytes = 0;
-    let mut buf = vec![0u8; 4096];
+    // Get raw file descriptors
+    let client_fd = client.as_raw_fd();
+    let upstream_fd = upstream.as_raw_fd();
 
-    loop {
-        match client.read(&mut buf).await? {
-            0 => break,
-            n => {
-                request_bytes += n;
-                upstream.write_all(&buf[..n]).await?;
-                // Assume request complete after first read (typical for HTTP)
-                break;
-            }
-        }
-    }
-    upstream.flush().await?;
-
-    // Phase 2: Read response from upstream → client
-    let mut response_bytes = 0;
-
-    loop {
-        match upstream.read(&mut buf).await? {
-            0 => break,
-            n => {
-                response_bytes += n;
-                client.write_all(&buf[..n]).await?;
-            }
-        }
-    }
-    client.flush().await?;
+    // Use TRUE splice() syscalls for kernel-only zero-copy!
+    let (request_bytes, response_bytes) = true_splice::splice_bidirectional_fd(client_fd, upstream_fd)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
 
     let total_elapsed = start.elapsed();
 
