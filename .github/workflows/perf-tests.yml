@@ -203,7 +203,21 @@ jobs:
           mkdir -p ${{ github.workspace }}/mover-sockets
           chmod 777 ${{ github.workspace }}/mover-sockets
 
+          # Debug: Check filesystem type and test socket creation
+          echo "=== Filesystem Debug ==="
+          df -T ${{ github.workspace }}/mover-sockets
+          stat -f ${{ github.workspace }}/mover-sockets
+
+          # Test socket creation on host
+          echo "Testing socket creation on host..."
+          python3 -c "import socket; import os; s=socket.socket(socket.AF_UNIX); s.bind('${{ github.workspace }}/mover-sockets/test.sock'); print('✅ Host can create sockets'); os.unlink('${{ github.workspace }}/mover-sockets/test.sock')"
+
+          # Test socket creation in container
+          echo "Testing socket creation in container..."
+          docker run --rm -v ${{ github.workspace }}/mover-sockets:/mover-sockets alpine sh -c "apk add --no-cache python3 && python3 -c \"import socket; import os; s=socket.socket(socket.AF_UNIX); s.bind('/mover-sockets/test-container.sock'); print('✅ Container can create sockets'); os.unlink('/mover-sockets/test-container.sock')\""
+
           # Start mover for orchestrator (bind workspace directory)
+          echo "Starting mover with socket: /mover-sockets/mover-orchestrator.sock"
           docker run -d --name mover-orchestrator \
             --network host \
             --cap-add IPC_LOCK \
@@ -215,7 +229,16 @@ jobs:
             -v ${{ github.workspace }}/mover-sockets:/mover-sockets \
             mover:test
 
-          echo "✅ Mover for orchestrator started"
+          # Wait a moment and check if mover started successfully
+          sleep 2
+          if docker ps | grep -q mover-orchestrator; then
+            echo "✅ Mover for orchestrator started"
+            docker logs mover-orchestrator --tail 20
+          else
+            echo "❌ Mover for orchestrator failed to start"
+            docker logs mover-orchestrator --tail 50
+            exit 1
+          fi
 
       - name: Build and Start Mover for Workflow Runner
         run: |
