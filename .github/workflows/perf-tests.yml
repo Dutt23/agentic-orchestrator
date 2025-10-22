@@ -95,9 +95,9 @@ jobs:
             -e REDIS_HOST=localhost \
             -e REDIS_PORT=6379 \
             -e ORCHESTRATOR_URL=http://localhost:8081 \
-            -e PORT=8082 \
             -e USE_MOVER=false \
             -e ENABLE_TEST_SERVER=true \
+            -e TEST_PORT=8082 \
             -e PERF_TEST_TOKEN=perf-test-unsafe-default-token \
             -e ENABLE_PPROF=false \
             workflow-runner:test
@@ -300,10 +300,10 @@ jobs:
             -e REDIS_HOST=localhost \
             -e REDIS_PORT=6379 \
             -e ORCHESTRATOR_URL=http://localhost:9081 \
-            -e PORT=9082 \
             -e USE_MOVER=true \
             -e MOVER_SOCKET=/mover-sockets/mover-workflow.sock \
             -e ENABLE_TEST_SERVER=true \
+            -e TEST_PORT=9082 \
             -e PERF_TEST_TOKEN=perf-test-unsafe-default-token \
             -e ENABLE_PPROF=false \
             workflow-runner:test
