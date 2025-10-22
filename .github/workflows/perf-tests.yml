@@ -251,6 +251,7 @@ jobs:
             -e MOVER_SOCKET=/mover-sockets/mover-workflow.sock \
             -e SERVICE_NAME=workflow-runner \
             -e MOVER_ENABLE_POSTGRES=false \
+            -e HTTP_HANDLER_MODE=splice \
             -v ${{ github.workspace }}/mover-sockets:/mover-sockets \
             mover:test
 
