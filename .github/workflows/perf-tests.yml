@@ -1,6 +1,8 @@
 name: Performance Tests
 
 on:
+  push:
+    branches: ['**']
   pull_request:
     branches: ['**']
   workflow_dispatch:
