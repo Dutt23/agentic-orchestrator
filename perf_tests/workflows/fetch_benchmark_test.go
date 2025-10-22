@@ -375,9 +375,8 @@ func createTestWorkflowForTest(t *testing.T, workflowName string) string {
 	t.Logf("Creating test workflow: %s", testRunID)
 
 	// Create workflow via API
-	reqBody := fmt.Sprintf(`{"run_id":"%s","node_count":10}`, testRunID)
-	url := fmt.Sprintf("%s/api/v1/test/create-workflow", orchestratorURL)
-
+	reqBody := fmt.Sprintf(`{"run_id":"%s","size_kb":%d}`, testRunID, 10240)
+	url := fmt.Sprintf("%s/api/v1/test/create-large-workflow", orchestratorURL)
 	req, err := http.NewRequest("POST", url, bytes.NewBufferString(reqBody))
 	if err != nil {
 		t.Fatalf("Failed to create request: %v", err)
