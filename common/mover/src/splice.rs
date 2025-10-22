@@ -10,7 +10,6 @@
 
 use crate::connection_pool;
 use crate::true_splice;
-use monoio::io::{AsyncReadRent, AsyncWriteRentExt};
 use monoio::net::{TcpStream, UnixStream};
 use std::os::unix::io::AsRawFd;
 use std::time::Instant;

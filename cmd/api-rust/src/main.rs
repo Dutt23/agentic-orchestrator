@@ -5,7 +5,7 @@ mod sse;
 mod hitl;
 
 use axum::{
-    routing::{delete, get, post, put},
+    routing::{get, post},
     Router,
 };
 use std::net::SocketAddr;

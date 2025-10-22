@@ -30,22 +30,14 @@ pub async fn handle_response(
         "Received client response"
     );
 
-    // Get client channel
-    let clients = sse_manager.clients.read().await;
-    let channel = clients.get(&client_id).ok_or_else(|| {
-        tracing::error!(client_id = %client_id, "Client not found");
-        StatusCode::NOT_FOUND
-    })?;
-
     // Send response to response channel
     let response_data = serde_json::json!({
         "question_id": response.question_id,
         "answer": response.answer,
     });
 
-    channel
-        .response_tx
-        .send(response_data)
+    sse_manager
+        .send_response(&client_id, response_data)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "Failed to send response");

@@ -4,7 +4,6 @@ use axum::{
     http::{StatusCode, Uri},
     response::{IntoResponse, Response},
 };
-use hyper::body::Incoming;
 use hyper_util::{
     client::legacy::{connect::HttpConnector, Client},
     rt::TokioExecutor,
@@ -50,11 +49,12 @@ impl ProxyState {
         })?;
 
         // Update request URI
-        *req.uri_mut() = uri;
+        *req.uri_mut() = uri.clone();
 
         // Add X-Forwarded headers
+        let host = uri.host().unwrap_or("unknown");
         let headers = req.headers_mut();
-        headers.insert("X-Forwarded-Host", req.uri().host().unwrap_or("unknown").parse().unwrap());
+        headers.insert("X-Forwarded-Host", host.parse().unwrap());
 
         let start = std::time::Instant::now();
 

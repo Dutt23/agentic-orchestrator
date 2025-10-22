@@ -1,10 +1,6 @@
 use axum::{
     extract::{Path, State},
-    http::StatusCode,
-    response::{
-        sse::{Event, KeepAlive, Sse},
-        IntoResponse,
-    },
+    response::sse::{Event, KeepAlive, Sse},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -13,8 +9,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tokio::sync::{mpsc, RwLock};
-use tokio_stream::{wrappers::ReceiverStream, StreamExt};
+use tokio::sync::{broadcast, mpsc, RwLock};
 use uuid::Uuid;
 
 use crate::proxy::ProxyState;
@@ -30,7 +25,7 @@ pub struct SSEEvent {
 #[derive(Clone)]
 struct ClientChannel {
     sender: mpsc::Sender<SSEEvent>,
-    response_tx: mpsc::Sender<serde_json::Value>,
+    response_tx: broadcast::Sender<serde_json::Value>,
 }
 
 #[derive(Clone)]
@@ -65,9 +60,9 @@ impl SSEManager {
         manager
     }
 
-    pub async fn register_client(&self, client_id: String) -> (mpsc::Receiver<SSEEvent>, mpsc::Receiver<serde_json::Value>) {
+    pub async fn register_client(&self, client_id: String) -> mpsc::Receiver<SSEEvent> {
         let (event_tx, event_rx) = mpsc::channel(100);
-        let (response_tx, response_rx) = mpsc::channel(10);
+        let (response_tx, _response_rx) = broadcast::channel(10);
 
         let channel = ClientChannel {
             sender: event_tx,
@@ -78,7 +73,7 @@ impl SSEManager {
 
         tracing::info!(client_id = %client_id, "Client registered");
 
-        (event_rx, response_rx)
+        event_rx
     }
 
     pub async fn unregister_client(&self, client_id: &str) {
@@ -105,13 +100,24 @@ impl SSEManager {
         }
     }
 
+    pub async fn send_response(&self, client_id: &str, response: serde_json::Value) -> Result<(), String> {
+        let clients = self.clients.read().await;
+        if let Some(channel) = clients.get(client_id) {
+            channel.response_tx.send(response).map_err(|e| e.to_string())?;
+            Ok(())
+        } else {
+            Err(format!("Client not found: {}", client_id))
+        }
+    }
+
     pub async fn wait_for_response(&self, client_id: &str, timeout: Duration) -> Result<serde_json::Value, String> {
-        let channel = {
+        let mut receiver = {
             let clients = self.clients.read().await;
-            clients.get(client_id).cloned().ok_or_else(|| format!("Client not found: {}", client_id))?
+            let channel = clients.get(client_id).ok_or_else(|| format!("Client not found: {}", client_id))?;
+            channel.response_tx.subscribe()
         };
 
-        tokio::time::timeout(timeout, channel.response_tx.subscribe())
+        tokio::time::timeout(timeout, receiver.recv())
             .await
             .map_err(|_| "Response timeout".to_string())?
             .map_err(|e| e.to_string())
@@ -124,7 +130,7 @@ pub async fn handle_sse(
 ) -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>> {
     tracing::info!(client_id = %client_id, "SSE connection established");
 
-    let (mut event_rx, _response_rx) = sse_manager.register_client(client_id.clone()).await;
+    let mut event_rx = sse_manager.register_client(client_id.clone()).await;
 
     // Send initial connection event
     let connection_event = SSEEvent {

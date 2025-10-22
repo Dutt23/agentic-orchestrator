@@ -1,11 +1,9 @@
 use axum::{
-    body::Body,
     extract::Request,
     http::StatusCode,
     middleware::Next,
-    response::{IntoResponse, Response},
+    response::Response,
 };
-use std::time::Duration;
 
 // Simple in-memory rate limiter
 // For production, consider using Redis or a distributed rate limiter

@@ -4,6 +4,8 @@ pub mod protocol;
 
 // Linux-only modules (require io_uring, splice syscalls)
 #[cfg(target_os = "linux")]
+pub mod async_splice;
+#[cfg(target_os = "linux")]
 pub mod connection_pool;
 #[cfg(target_os = "linux")]
 pub mod dma_pool;

@@ -4,7 +4,7 @@ use crate::config::MoverConfig;
 use crate::dma_pool;
 use crate::handlers::{self, PostgresManager};
 use crate::http_handler_splice::SpliceHttpHandler;
-use crate::protocol::{MoverRequest, MoverResponse, OpCode};
+use crate::protocol::{MoverRequest, OpCode};
 use anyhow::{Context, Result};
 use monoio::io::{AsyncReadRent, AsyncWriteRentExt};
 use monoio::net::UnixListener;
@@ -71,7 +71,7 @@ pub async fn run_mover() -> Result<()> {
 
 /// Handle HTTP splice request using pluggable handler
 async fn handle_http_splice_request(
-    config: &MoverConfig,
+    _config: &MoverConfig,
     client: &mut monoio::net::UnixStream,
     request_data: &[u8],
 ) -> Result<()> {
