@@ -26,6 +26,8 @@ func RegisterTestRoutes(e *echo.Echo, c *container.Container) {
 
 		// Create test workflow
 		test.POST("/create-workflow", testHandler.CreateTestWorkflow)
+
+		test.POST("/create-large-workflow", testHandler.CreateLargeWorkflow)
 	}
 
 	c.Components.Logger.Info("Test endpoints registered (protected by X-Test-Token header)")

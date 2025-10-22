@@ -290,8 +290,14 @@ func parseRawHTTPResponse(respBytes []byte) (*http.Response, error) {
 
 	statusLine := string(lines[0])
 	var statusCode int
-	if _, err := fmt.Sscanf(statusLine, "HTTP/1.1 %d", &statusCode); err != nil {
+	var httpVersion string
+	// Support both HTTP/1.0 and HTTP/1.1 responses
+	if _, err := fmt.Sscanf(statusLine, "%s %d", &httpVersion, &statusCode); err != nil {
 		return nil, fmt.Errorf("failed to parse status code: %w", err)
+	}
+	// Validate HTTP version
+	if httpVersion != "HTTP/1.0" && httpVersion != "HTTP/1.1" {
+		return nil, fmt.Errorf("invalid HTTP version: %s", httpVersion)
 	}
 
 	// Parse headers

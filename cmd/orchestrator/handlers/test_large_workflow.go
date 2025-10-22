@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/labstack/echo/v4"
 )
@@ -17,18 +18,26 @@ import (
 // This tests mover's splice performance with large responses
 //
 // Example:
-//   curl -H "X-Test-Token: my-secret-token" \
-//     http://localhost:8081/api/v1/test/create-large-workflow/1024
+//
+//	curl -H "X-Test-Token: my-secret-token" \
+//	  http://localhost:8081/api/v1/test/create-large-workflow/1024
 //
 // Returns: Workflow IR of ~1MB size
 func (h *TestHandler) CreateLargeWorkflow(c echo.Context) error {
-	sizeKB := c.Param("size_kb")
-	if sizeKB == "" {
-		sizeKB = "1024" // Default 1MB
+	var req struct {
+		Size_kb int    `json:"size_kb"`
+		RunID   string `json:"run_id"`
 	}
 
-	targetSizeKB, err := strconv.Atoi(sizeKB)
-	if err != nil || targetSizeKB <= 0 || targetSizeKB > 10240 {
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{
+			"error": "invalid request",
+		})
+	}
+
+	targetSizeKB := req.Size_kb
+	h.components.Logger.Info("here it is ", "size_kb", targetSizeKB)
+	if targetSizeKB <= 0 || targetSizeKB > 10240 {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{
 			"error": "size_kb must be between 1 and 10240 (10MB max)",
 		})
@@ -41,7 +50,19 @@ func (h *TestHandler) CreateLargeWorkflow(c echo.Context) error {
 		"size_kb", targetSizeKB,
 		"actual_bytes", len(workflow))
 
-	return c.JSONBlob(http.StatusOK, workflow)
+	irKey := "ir:" + req.RunID
+	h.components.Logger.Info("Cach key stores", "run_id", irKey)
+	err := h.redis.Set(c.Request().Context(), irKey, string(workflow), 3600*time.Second) // 1 hour TTL
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{
+			"error": "failed to store IR",
+		})
+	}
+	return c.JSON(http.StatusCreated, map[string]interface{}{
+		"run_id":     req.RunID,
+		"node_count": 10,
+		"ir_key":     irKey,
+	})
 }
 
 // generateLargeWorkflowIR creates a workflow IR of approximately the specified size
@@ -60,11 +81,11 @@ func generateLargeWorkflowIR(sizeKB int) []byte {
 	}
 
 	type WorkflowIR struct {
-		Version     string           `json:"version"`
-		Name        string           `json:"name"`
-		Description string           `json:"description"`
-		Nodes       map[string]Node  `json:"nodes"`
-		Entry       string           `json:"entry"`
+		Version     string                 `json:"version"`
+		Name        string                 `json:"name"`
+		Description string                 `json:"description"`
+		Nodes       map[string]Node        `json:"nodes"`
+		Entry       string                 `json:"entry"`
 		Metadata    map[string]interface{} `json:"metadata"`
 	}
 
@@ -90,9 +111,9 @@ func generateLargeWorkflowIR(sizeKB int) []byte {
 			Name:        fmt.Sprintf("Task %d", i),
 			Description: fmt.Sprintf("This is task number %d in a large workflow for performance testing", i),
 			Config: map[string]interface{}{
-				"timeout":    300,
-				"retries":    3,
-				"priority":   i % 10,
+				"timeout":  300,
+				"retries":  3,
+				"priority": i % 10,
 				"parameters": map[string]interface{}{
 					"param1": fmt.Sprintf("value_%d", i),
 					"param2": i * 100,
@@ -111,9 +132,9 @@ func generateLargeWorkflowIR(sizeKB int) []byte {
 		Nodes:       nodes,
 		Entry:       "node_0",
 		Metadata: map[string]interface{}{
-			"created_for": "splice_performance_testing",
+			"created_for":    "splice_performance_testing",
 			"target_size_kb": sizeKB,
-			"num_nodes": numNodes,
+			"num_nodes":      numNodes,
 		},
 	}
 

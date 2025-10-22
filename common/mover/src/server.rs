@@ -183,6 +183,22 @@ async fn handle_connection(
                 }
                 Err(e) => {
                     error!("HttpSplice failed: {}", e);
+                    // Send HTTP error response back to client
+                    let error_msg = format!("Mover splice error: {}", e);
+                    let error_response = format!(
+                        "HTTP/1.1 502 Bad Gateway\r\n\
+                         Content-Type: text/plain\r\n\
+                         Content-Length: {}\r\n\
+                         Connection: close\r\n\
+                         \r\n\
+                         {}",
+                        error_msg.len(),
+                        error_msg
+                    );
+                    let (write_result, _) = stream.write_all(error_response.into_bytes()).await;
+                    if let Err(write_err) = write_result {
+                        error!("Failed to send error response: {}", write_err);
+                    }
                     return Ok(());
                 }
             }
