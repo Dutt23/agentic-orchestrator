@@ -71,6 +71,7 @@ jobs:
             -e REDIS_PORT=6379 \
             -e PORT=8081 \
             -e USE_MOVER=false \
+            -e ENABLE_PPROF=false \
             orchestrator:test
 
           # Wait for orchestrator health check
@@ -86,6 +87,11 @@ jobs:
 
           docker run -d --name workflow-runner \
             --network host \
+            -e POSTGRES_HOST=localhost \
+            -e POSTGRES_PORT=5432 \
+            -e POSTGRES_DB=orchestrator \
+            -e POSTGRES_USER=orchestrator \
+            -e POSTGRES_PASSWORD=orchestrator \
             -e REDIS_HOST=localhost \
             -e REDIS_PORT=6379 \
             -e ORCHESTRATOR_URL=http://localhost:8081 \
@@ -93,11 +99,12 @@ jobs:
             -e USE_MOVER=false \
             -e ENABLE_TEST_SERVER=true \
             -e PERF_TEST_TOKEN=perf-test-unsafe-default-token \
+            -e ENABLE_PPROF=false \
             workflow-runner:test
 
-          # Wait for workflow-runner health check
-          echo "Waiting for workflow-runner..."
-          timeout 60 bash -c 'until curl -sf http://localhost:8082/health > /dev/null; do sleep 2; done'
+          # Wait for workflow-runner port to be listening
+          echo "Waiting for workflow-runner port 8082..."
+          timeout 60 bash -c 'until nc -z localhost 8082; do sleep 2; done'
           echo "✅ Workflow Runner is ready"
 
       - name: Run Performance Tests (Baseline)
@@ -245,6 +252,7 @@ jobs:
             -e PORT=9081 \
             -e USE_MOVER=true \
             -e MOVER_SOCKET=/tmp/mover-sockets/mover-orchestrator.sock \
+            -e ENABLE_PPROF=false \
             orchestrator:test
 
           # Wait for orchestrator health check
@@ -274,11 +282,12 @@ jobs:
             -e MOVER_SOCKET=/tmp/mover-sockets/mover-workflow.sock \
             -e ENABLE_TEST_SERVER=true \
             -e PERF_TEST_TOKEN=perf-test-unsafe-default-token \
+            -e ENABLE_PPROF=false \
             workflow-runner:test
 
-          # Wait for workflow-runner health check
-          echo "Waiting for workflow-runner..."
-          timeout 60 bash -c 'until curl -sf http://localhost:9082/health > /dev/null; do sleep 2; done'
+          # Wait for workflow-runner port to be listening
+          echo "Waiting for workflow-runner port 9082..."
+          timeout 60 bash -c 'until nc -z localhost 9082; do sleep 2; done'
           echo "✅ Workflow Runner is ready"
 
       - name: Run Performance Tests (With Mover)
