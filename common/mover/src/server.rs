@@ -37,10 +37,22 @@ pub async fn run_mover() -> Result<()> {
     // Remove old socket if exists
     let _ = std::fs::remove_file(&config.socket_path);
 
-    // Start Unix socket listener (monoio, io_uring!)
+    // Start Unix socket listener
+    // IMPORTANT: Use std::os::unix first, then convert to monoio
+    // This avoids io_uring Unix socket bind issues on some kernels (like GitHub Actions)
     info!("Starting Unix socket listener on {}", config.socket_path);
-    let listener = UnixListener::bind(&config.socket_path)
+
+    // Bind using standard library (regular syscalls, always works)
+    let std_listener = std::os::unix::net::UnixListener::bind(&config.socket_path)
         .map_err(|e| anyhow::anyhow!("Failed to bind Unix socket: {}", e))?;
+
+    // Set non-blocking for monoio
+    std_listener.set_nonblocking(true)
+        .map_err(|e| anyhow::anyhow!("Failed to set non-blocking: {}", e))?;
+
+    // Convert to monoio listener (uses io_uring for accept operations only)
+    let listener = UnixListener::from_std(std_listener)
+        .map_err(|e| anyhow::anyhow!("Failed to create monoio listener: {}", e))?;
 
     // Share config across connections
     let config = Arc::new(config);
