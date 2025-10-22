@@ -199,36 +199,36 @@ jobs:
           # Build mover image
           docker build -t mover:test -f docker/Dockerfile.mover .
 
-          # Create socket directory on host
-          sudo mkdir -p /tmp/mover-sockets
-          sudo chmod 777 /tmp/mover-sockets
+          # Create socket directory in workspace (real ext4 filesystem)
+          mkdir -p ${{ github.workspace }}/mover-sockets
+          chmod 777 ${{ github.workspace }}/mover-sockets
 
-          # Start mover for orchestrator (bind host /tmp to avoid volume issues)
+          # Start mover for orchestrator (bind workspace directory)
           docker run -d --name mover-orchestrator \
             --network host \
             --cap-add IPC_LOCK \
             --cap-add SYS_RESOURCE \
             --security-opt seccomp=unconfined \
-            -e MOVER_SOCKET=/tmp/mover-sockets/mover-orchestrator.sock \
+            -e MOVER_SOCKET=/mover-sockets/mover-orchestrator.sock \
             -e SERVICE_NAME=orchestrator \
             -e MOVER_ENABLE_POSTGRES=false \
-            -v /tmp/mover-sockets:/tmp/mover-sockets \
+            -v ${{ github.workspace }}/mover-sockets:/mover-sockets \
             mover:test
 
           echo "✅ Mover for orchestrator started"
 
       - name: Build and Start Mover for Workflow Runner
         run: |
-          # Start mover for workflow-runner (use same host directory)
+          # Start mover for workflow-runner (use same workspace directory)
           docker run -d --name mover-workflow \
             --network host \
             --cap-add IPC_LOCK \
             --cap-add SYS_RESOURCE \
             --security-opt seccomp=unconfined \
-            -e MOVER_SOCKET=/tmp/mover-sockets/mover-workflow.sock \
+            -e MOVER_SOCKET=/mover-sockets/mover-workflow.sock \
             -e SERVICE_NAME=workflow-runner \
             -e MOVER_ENABLE_POSTGRES=false \
-            -v /tmp/mover-sockets:/tmp/mover-sockets \
+            -v ${{ github.workspace }}/mover-sockets:/mover-sockets \
             mover:test
 
           echo "✅ Mover for workflow-runner started"
@@ -241,7 +241,7 @@ jobs:
 
           docker run -d --name orchestrator \
             --network host \
-            -v /tmp/mover-sockets:/tmp/mover-sockets \
+            -v ${{ github.workspace }}/mover-sockets:/mover-sockets \
             -e POSTGRES_HOST=localhost \
             -e POSTGRES_PORT=5432 \
             -e POSTGRES_DB=orchestrator \
@@ -251,7 +251,7 @@ jobs:
             -e REDIS_PORT=6379 \
             -e PORT=9081 \
             -e USE_MOVER=true \
-            -e MOVER_SOCKET=/tmp/mover-sockets/mover-orchestrator.sock \
+            -e MOVER_SOCKET=/mover-sockets/mover-orchestrator.sock \
             -e ENABLE_PPROF=false \
             orchestrator:test
 
@@ -268,7 +268,7 @@ jobs:
 
           docker run -d --name workflow-runner \
             --network host \
-            -v /tmp/mover-sockets:/tmp/mover-sockets \
+            -v ${{ github.workspace }}/mover-sockets:/mover-sockets \
             -e POSTGRES_HOST=localhost \
             -e POSTGRES_PORT=5432 \
             -e POSTGRES_DB=orchestrator \
@@ -279,7 +279,7 @@ jobs:
             -e ORCHESTRATOR_URL=http://localhost:9081 \
             -e PORT=9082 \
             -e USE_MOVER=true \
-            -e MOVER_SOCKET=/tmp/mover-sockets/mover-workflow.sock \
+            -e MOVER_SOCKET=/mover-sockets/mover-workflow.sock \
             -e ENABLE_TEST_SERVER=true \
             -e PERF_TEST_TOKEN=perf-test-unsafe-default-token \
             -e ENABLE_PPROF=false \
