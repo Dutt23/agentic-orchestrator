@@ -1,8 +1,6 @@
 package handlers
 
 import (
-	"context"
-	"fmt"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
@@ -12,17 +10,17 @@ import (
 
 // TestHandler provides test endpoints for workflow-runner benchmarking
 type TestHandler struct {
-	components      *bootstrap.Components
-	casClient       clients.CASClient
-	orchestratorURL string
+	components          *bootstrap.Components
+	casClient           clients.CASClient
+	orchestratorClient  *clients.OrchestratorClient
 }
 
 // NewTestHandler creates a new test handler
 func NewTestHandler(components *bootstrap.Components, casClient clients.CASClient, orchestratorURL string) *TestHandler {
 	return &TestHandler{
-		components:      components,
-		casClient:       casClient,
-		orchestratorURL: orchestratorURL,
+		components:         components,
+		casClient:          casClient,
+		orchestratorClient: clients.NewOrchestratorClient(orchestratorURL, components.Logger),
 	}
 }
 
@@ -31,9 +29,10 @@ func NewTestHandler(components *bootstrap.Components, casClient clients.CASClien
 // GET /api/v1/test/fetch-from-orchestrator/{run_id}
 //
 // Flow:
-//   Test → workflow-runner → orchestrator (this endpoint)
-//                          → Redis/CAS
-//                          → response back through chain
+//
+//	Test → workflow-runner → orchestrator (this endpoint)
+//	                       → Redis/CAS (via mover if enabled)
+//	                       → response back through chain
 func (h *TestHandler) FetchFromOrchestrator(c echo.Context) error {
 	runID := c.Param("run_id")
 
@@ -45,43 +44,27 @@ func (h *TestHandler) FetchFromOrchestrator(c echo.Context) error {
 
 	h.components.Logger.Debug("Test: Fetching workflow from orchestrator", "run_id", runID)
 
-	// Make HTTP call to orchestrator (what workflow-runner does in real flow)
-	url := fmt.Sprintf("%s/api/v1/test/fetch-workflow/%s", h.orchestratorURL, runID)
+	// Get context and add test token from incoming request
+	ctx := c.Request().Context()
 
-	// Create request with test token (pass through from incoming request)
-	req, err := http.NewRequestWithContext(c.Request().Context(), "GET", url, nil)
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]interface{}{
-			"error": "failed to create request",
-		})
-	}
-
-	// Forward test token
+	// Forward test token from incoming request header to context
+	// The HTTPClient will automatically extract it and add to outgoing request
 	if token := c.Request().Header.Get("X-Test-Token"); token != "" {
-		req.Header.Set("X-Test-Token", token)
+		ctx = clients.WithTestToken(ctx, token)
 	}
 
-	// Execute request
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	// Fetch workflow IR using OrchestratorClient (supports mover for HTTP)
+	irData, err := h.orchestratorClient.FetchWorkflowIR(ctx, runID)
 	if err != nil {
-		h.components.Logger.Error("Failed to fetch from orchestrator", "error", err)
+		h.components.Logger.Error("Failed to fetch workflow IR from orchestrator", "error", err, "run_id", runID)
 		return c.JSON(http.StatusBadGateway, map[string]interface{}{
 			"error": "failed to fetch from orchestrator",
 		})
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
-		h.components.Logger.Warn("Orchestrator returned error", "status", resp.StatusCode)
-		return c.JSON(resp.StatusCode, map[string]interface{}{
-			"error": "orchestrator returned error",
-		})
-	}
-
-	// Read response and forward it
+	// Return the workflow IR
 	// This simulates what workflow-runner does: fetch IR and use it
-	return c.Stream(resp.StatusCode, resp.Header.Get("Content-Type"), resp.Body)
+	return c.JSONBlob(http.StatusOK, irData)
 }
 
 // FetchFromCAS fetches data from CAS (tests CAS client with mover routing)

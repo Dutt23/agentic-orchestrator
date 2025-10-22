@@ -303,3 +303,31 @@ func (c *OrchestratorClient) GetArtifact(ctx context.Context, artifactID string)
 
 	return &artifact, nil
 }
+
+// FetchWorkflowIR fetches workflow IR for testing purposes
+// This is used by workflow-runner test endpoints
+func (c *OrchestratorClient) FetchWorkflowIR(ctx context.Context, runID string) ([]byte, error) {
+	url := fmt.Sprintf("%s/api/v1/test/fetch-workflow/%s", c.baseURL, runID)
+	resp, err := c.http.DoRequest(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch workflow IR: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("workflow IR request failed: status=%d, body=%s", resp.StatusCode, string(body))
+	}
+
+	// Read the entire response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read workflow IR response: %w", err)
+	}
+
+	c.logger.Debug("fetched workflow IR from orchestrator",
+		"run_id", runID,
+		"size_bytes", len(body))
+
+	return body, nil
+}

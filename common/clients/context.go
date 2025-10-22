@@ -9,6 +9,9 @@ const (
 	// UserIDKey is the context key for user ID (for X-User-ID header)
 	UserIDKey contextKey = "user-id"
 
+	// TestTokenKey is the context key for test token (for X-Test-Token header in test endpoints)
+	TestTokenKey contextKey = "test-token"
+
 	// Future context keys can be added here:
 	// OrgIDKey     contextKey = "org-id"
 	// RequestIDKey contextKey = "request-id"
@@ -26,4 +29,17 @@ func WithUserID(ctx context.Context, userID string) context.Context {
 func GetUserID(ctx context.Context) (string, bool) {
 	userID, ok := ctx.Value(UserIDKey).(string)
 	return userID, ok && userID != ""
+}
+
+// WithTestToken adds a test token to the context
+// This will be automatically extracted and added as X-Test-Token header in HTTP requests
+func WithTestToken(ctx context.Context, token string) context.Context {
+	return context.WithValue(ctx, TestTokenKey, token)
+}
+
+// GetTestToken retrieves the test token from context
+// Returns the test token and true if found, empty string and false otherwise
+func GetTestToken(ctx context.Context) (string, bool) {
+	token, ok := ctx.Value(TestTokenKey).(string)
+	return token, ok && token != ""
 }

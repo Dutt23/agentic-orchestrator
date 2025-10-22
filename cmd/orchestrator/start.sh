@@ -14,9 +14,15 @@ fi
 
 # Start mover if USE_MOVER is enabled
 if [ "${USE_MOVER:-false}" = "true" ]; then
-    echo "[${SERVICE_NAME}] Starting mover..."
+    echo ""
+    echo "🚀 [${SERVICE_NAME}] MOVER ENABLED - Starting io_uring optimizer..."
+    echo ""
     "${PROJECT_ROOT}/scripts/start-mover.sh" "${SERVICE_NAME}"
     sleep 1  # Give mover time to initialize
+else
+    echo ""
+    echo "📡 [${SERVICE_NAME}] Running without mover (direct I/O)"
+    echo ""
 fi
 
 # Service-specific configuration

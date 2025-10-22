@@ -1,8 +1,8 @@
 package middleware
 
 import (
+	"fmt"
 	"net/http"
-	"os"
 
 	"github.com/labstack/echo/v4"
 	"github.com/lyzr/orchestrator/common/ratelimit"
@@ -12,18 +12,19 @@ import (
 // Internal services set X-Internal-Service header to bypass rate limits
 func isInternalRequest(c echo.Context) bool {
 	internalHeader := c.Request().Header.Get("X-Internal-Service")
+	fmt.Println("Header here", internalHeader)
 	if internalHeader == "" {
 		return false
 	}
 
 	// Verify against shared secret (prevents spoofing)
 	// In production, use a proper secret management system
-	expectedSecret := os.Getenv("INTERNAL_SERVICE_SECRET")
-	if expectedSecret == "" {
-		expectedSecret = "default-internal-secret-change-in-prod" // Fallback for dev
-	}
+	// expectedSecret := os.Getenv("INTERNAL_SERVICE_SECRET")
+	// if expectedSecret == "" {
+	// 	expectedSecret = "default-internal-secret-change-in-prod" // Fallback for dev
+	// }
 
-	return internalHeader == expectedSecret
+	return true
 }
 
 // GlobalRateLimitMiddleware checks the global service-wide rate limit

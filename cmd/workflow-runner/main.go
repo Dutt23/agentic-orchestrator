@@ -7,14 +7,15 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/lyzr/orchestrator/common/repository"
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/consumer"
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/coordinator"
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/executor"
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/supervisor"
+	"github.com/lyzr/orchestrator/cmd/workflow-runner/testserver" // Remove this line to disable test server
 	"github.com/lyzr/orchestrator/common/bootstrap"
 	"github.com/lyzr/orchestrator/common/clients"
 	"github.com/lyzr/orchestrator/common/ratelimit"
+	"github.com/lyzr/orchestrator/common/repository"
 	"github.com/lyzr/orchestrator/common/sdk"
 	"github.com/redis/go-redis/v9"
 )
@@ -42,6 +43,10 @@ func main() {
 
 	// Create all workflow components
 	workflowComponents := createWorkflowComponents(deps, components)
+
+	// Start optional test HTTP server (for performance testing)
+	// Remove this line to disable test endpoints entirely
+	testserver.StartTestServerIfEnabled(components, deps.casClient, deps.orchestratorURL)
 
 	// Start all components
 	errChan := startComponents(ctx, workflowComponents, components)

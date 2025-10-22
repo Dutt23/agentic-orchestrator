@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/lyzr/orchestrator/common/bootstrap"
@@ -45,6 +46,7 @@ func (h *TestHandler) FetchWorkflowIR(c echo.Context) error {
 
 	// This is what workflow-runner does: Load IR from Redis
 	irKey := "ir:" + runID
+	h.components.Logger.Info("Fetching ", "id_key", irKey)
 	irJSON, err := h.redis.Get(c.Request().Context(), irKey)
 	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]interface{}{
@@ -112,7 +114,8 @@ func (h *TestHandler) CreateTestWorkflow(c echo.Context) error {
 
 	// Store in Redis
 	irKey := "ir:" + req.RunID
-	err := h.redis.Set(c.Request().Context(), irKey, ir, 3600) // 1 hour TTL
+	h.components.Logger.Info("Cach key stores", "run_id", irKey)
+	err := h.redis.Set(c.Request().Context(), irKey, ir, 3600*time.Second) // 1 hour TTL
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]interface{}{
 			"error": "failed to store IR",
@@ -144,5 +147,5 @@ func generateNodes(count int) string {
 }
 
 func generateID() string {
-	return "test-id-placeholder"  // TODO: Use proper ID generation
+	return "test-id-placeholder" // TODO: Use proper ID generation
 }

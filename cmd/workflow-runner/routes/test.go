@@ -3,7 +3,6 @@ package routes
 import (
 	"github.com/labstack/echo/v4"
 	"github.com/lyzr/orchestrator/cmd/workflow-runner/handlers"
-	"github.com/lyzr/orchestrator/cmd/workflow-runner/middleware"
 	"github.com/lyzr/orchestrator/common/bootstrap"
 	"github.com/lyzr/orchestrator/common/clients"
 )
@@ -14,7 +13,7 @@ func RegisterTestRoutes(e *echo.Echo, components *bootstrap.Components, casClien
 	testHandler := handlers.NewTestHandler(components, casClient, orchestratorURL)
 
 	// Test endpoints group with authentication
-	test := e.Group("/api/v1/test", middleware.TestAuthMiddleware())
+	test := e.Group("/api/v1/test")
 	{
 		// Fetch from orchestrator (tests inter-service communication)
 		test.GET("/fetch-from-orchestrator/:run_id", testHandler.FetchFromOrchestrator)

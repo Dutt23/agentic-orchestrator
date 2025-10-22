@@ -86,6 +86,7 @@ func registerRoutes(e *echo.Echo, serviceContainer *container.Container) {
 	routes.RegisterTagRoutes(e, serviceContainer)
 	routes.RegisterRunRoutes(e, serviceContainer)
 	routes.RegisterRunPatchRoutes(e, serviceContainer)
+	routes.RegisterTestRoutes(e, serviceContainer)
 }
 
 // startServer starts the Echo server on the configured port

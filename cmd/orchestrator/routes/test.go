@@ -4,7 +4,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/lyzr/orchestrator/cmd/orchestrator/container"
 	"github.com/lyzr/orchestrator/cmd/orchestrator/handlers"
-	"github.com/lyzr/orchestrator/cmd/orchestrator/middleware"
+	"github.com/lyzr/orchestrator/common/middleware"
 )
 
 // RegisterTestRoutes registers test/benchmark endpoints
