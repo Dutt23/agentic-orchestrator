@@ -41,9 +41,6 @@ ENV CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse
 # Copy mover source
 COPY common/mover ./common/mover
 
-# Copy dag-optimizer (mover depends on it)
-COPY crates/dag-optimizer ./crates/dag-optimizer
-
 # Build mover
 WORKDIR /build/common/mover
 RUN cargo build --release
