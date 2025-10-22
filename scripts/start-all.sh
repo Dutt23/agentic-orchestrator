@@ -18,7 +18,11 @@ if [ -f "${PROJECT_ROOT}/.env" ]; then
 fi
 
 echo "Configuration:"
-echo "  USE_MOVER: ${USE_MOVER:-false}"
+if [ "${USE_MOVER:-false}" = "true" ]; then
+    echo "  🚀 USE_MOVER: true (io_uring optimized I/O)"
+else
+    echo "  📡 USE_MOVER: false (direct I/O)"
+fi
 echo "  LOG_LEVEL: ${LOG_LEVEL:-info}"
 echo ""
 

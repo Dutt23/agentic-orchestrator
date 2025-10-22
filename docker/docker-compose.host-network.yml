@@ -1,0 +1,53 @@
+# Docker Compose override for host networking
+# Use this for performance testing to avoid Docker bridge overhead
+#
+# Usage:
+#   docker-compose -f docker-compose.yml -f docker-compose.host-network.yml up
+#
+# Benefits:
+#   - No bridge network latency (~1-5ms saved per call)
+#   - Direct access to host network stack
+#   - Essential for measuring io_uring/mover improvements
+#
+# Note: Only works on Linux (not macOS Docker Desktop)
+
+services:
+  # Infrastructure
+  postgres:
+    network_mode: "host"
+    ports: []  # Binds to host's 5432 directly
+
+  redis:
+    network_mode: "host"
+    ports: []  # Binds to host's 6379 directly
+
+  # Go Services
+  orchestrator:
+    network_mode: "host"
+    ports: []  # Binds to host's 8081
+
+  workflow-runner:
+    network_mode: "host"
+    ports: []
+
+  http-worker:
+    network_mode: "host"
+    ports: []
+
+  hitl-worker:
+    network_mode: "host"
+    ports: []
+
+  fanout:
+    network_mode: "host"
+    ports: []  # Binds to host's 8085
+
+  # Python Service
+  agent-runner:
+    network_mode: "host"
+    ports: []
+
+  # Frontend
+  frontend:
+    network_mode: "host"
+    ports: []  # Binds to host's 3000

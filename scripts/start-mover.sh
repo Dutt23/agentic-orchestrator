@@ -42,6 +42,8 @@ cd "${PROJECT_ROOT}/common/mover"
 # Save PID
 echo $! > "/tmp/mover-${SERVICE_NAME}.pid"
 
-echo "Mover started (PID: $(cat /tmp/mover-${SERVICE_NAME}.pid))"
-echo "  Logs: /tmp/mover-${SERVICE_NAME}.log"
-echo "  Socket: ${MOVER_SOCKET}"
+echo "✅ Mover started (PID: $(cat /tmp/mover-${SERVICE_NAME}.pid))"
+echo "   Logs: /tmp/mover-${SERVICE_NAME}.log"
+echo "   Socket: ${MOVER_SOCKET}"
+echo ""
+echo "🚀 Services using this socket will use io_uring optimization"

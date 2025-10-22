@@ -1,3 +1,44 @@
+# ============================================================================
+# YAML Anchors - DRY Configuration Templates
+# ============================================================================
+
+# Mover service template (reusable for all movers)
+x-mover-template: &mover-template
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile.mover
+  environment:
+    IOURING_ENTRIES: ${IOURING_ENTRIES:-4096}
+    IOURING_FLAGS: ${IOURING_FLAGS:-clamp}
+    DATABASE_URL: postgres://${DB_USER:-orchestrator}:${DB_PASSWORD:-orchestrator}@postgres:5432/${DB_NAME:-orchestrator}
+  cap_add:
+    - IPC_LOCK        # Required for io_uring buffer registration
+    - SYS_RESOURCE    # Required for io_uring setup and memory locking
+    - NET_ADMIN       # Required for TCP tuning (optional)
+  security_opt:
+    - seccomp:unconfined  # Disable seccomp to allow io_uring syscalls
+  # Kernel TCP tuning for high-performance networking
+  sysctls:
+    - net.core.somaxconn=8192                    # More pending connections
+    - net.ipv4.tcp_fin_timeout=15                # Faster FIN-WAIT cleanup (15s vs 60s)
+    - net.ipv4.tcp_tw_reuse=2                    # Reuse TIME_WAIT ports (KEY FIX!)
+    - net.ipv4.tcp_fastopen=3                    # TCP Fast Open (skip handshake)
+    - net.ipv4.ip_local_port_range=10000 65535  # More ephemeral ports (55k vs 28k)
+  networks:
+    - orchestrator-net
+  profiles:
+    - mover  # Only starts with: docker-compose --profile mover up
+  restart: unless-stopped
+  deploy:
+    resources:
+      limits:
+        cpus: '1'
+        memory: 256M
+
+# ============================================================================
+# Services
+# ============================================================================
+
 services:
   # ═══════════════════════════════════════════════════════════
   # INFRASTRUCTURE
@@ -68,6 +109,23 @@ services:
   # CONTROL PLANE
   # ═══════════════════════════════════════════════════════════
 
+  # Mover for orchestrator (uses template)
+  mover-orchestrator:
+    <<: *mover-template  # Inject common config
+    container_name: mover-orchestrator
+    environment:
+      MOVER_SOCKET: /tmp/mover-orchestrator.sock
+      SERVICE_NAME: orchestrator
+      # Inherit from template: DATABASE_URL, IOURING_*, etc.
+      DATABASE_URL: postgres://${DB_USER:-orchestrator}:${DB_PASSWORD:-orchestrator}@postgres:5432/${DB_NAME:-orchestrator}
+      IOURING_ENTRIES: ${IOURING_ENTRIES:-4096}
+      IOURING_FLAGS: ${IOURING_FLAGS:-clamp}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - mover-orchestrator-socket:/tmp
+
   orchestrator:
     build:
       context: ..
@@ -75,6 +133,8 @@ services:
       args:
         SERVICE_NAME: orchestrator
     container_name: orchestrator-api
+    volumes:
+      - mover-orchestrator-socket:/tmp  # Share socket with mover
     environment:
       # Database (orchestrator uses POSTGRES_ prefix)
       POSTGRES_HOST: postgres
@@ -117,6 +177,23 @@ services:
           cpus: '1'
           memory: 256M
 
+  # Mover for workflow-runner
+  mover-workflow:
+    <<: *mover-template
+    container_name: mover-workflow
+    environment:
+      MOVER_SOCKET: /tmp/mover-workflow.sock
+      SERVICE_NAME: workflow-runner
+      DATABASE_URL: postgres://${DB_USER:-orchestrator}:${DB_PASSWORD:-orchestrator}@postgres:5432/${DB_NAME:-orchestrator}
+      IOURING_ENTRIES: ${IOURING_ENTRIES:-4096}
+      IOURING_FLAGS: ${IOURING_FLAGS:-clamp}
+      HTTP_HANDLER_MODE: ${HTTP_HANDLER_MODE:-buffered}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - mover-workflow-socket:/tmp
+
   workflow-runner:
     build:
       context: ..
@@ -125,6 +202,8 @@ services:
         SERVICE_NAME: workflow-runner
         NEEDS_SCRIPTS: "true"
     container_name: orchestrator-workflow-runner
+    volumes:
+      - mover-workflow-socket:/tmp  # Share socket with mover
     environment:
       # Database
       POSTGRES_HOST: postgres
@@ -144,10 +223,17 @@ services:
       USE_MOVER: ${USE_MOVER:-false}
       MOVER_SOCKET: /tmp/mover-workflow.sock
 
+      # Test server (for performance testing)
+      ENABLE_TEST_SERVER: ${ENABLE_TEST_SERVER:-false}
+      TEST_PORT: "8082"
+      PERF_TEST_TOKEN: ${PERF_TEST_TOKEN:-perf-test-unsafe-default-token}
+
       # Service config
       PORT: 8082
       GOMAXPROCS: 4
       LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "8082:8082"  # Only needed when ENABLE_TEST_SERVER=true
     depends_on:
       redis:
         condition: service_healthy
@@ -169,6 +255,19 @@ services:
   # WORKER PLANE
   # ═══════════════════════════════════════════════════════════
 
+  # Mover for http-worker (no Postgres - http-worker doesn't use CAS)
+  mover-http:
+    <<: *mover-template
+    container_name: mover-http
+    environment:
+      MOVER_SOCKET: /tmp/mover-http.sock
+      SERVICE_NAME: http-worker
+      MOVER_ENABLE_POSTGRES: "false"  # Don't waste resources on unused DB connection
+      IOURING_ENTRIES: ${IOURING_ENTRIES:-4096}
+      IOURING_FLAGS: ${IOURING_FLAGS:-clamp}
+    volumes:
+      - mover-http-socket:/tmp
+
   http-worker:
     build:
       context: ..
@@ -176,6 +275,8 @@ services:
       args:
         SERVICE_NAME: http-worker
         NEEDS_SCRIPTS: "true"
+    volumes:
+      - mover-http-socket:/tmp  # Share socket with mover
     environment:
       REDIS_HOST: redis
       REDIS_PORT: 6379
@@ -203,6 +304,19 @@ services:
           cpus: '0.5'
           memory: 128M
 
+  # Mover for hitl-worker (no Postgres - hitl-worker doesn't use CAS)
+  mover-hitl:
+    <<: *mover-template
+    container_name: mover-hitl
+    environment:
+      MOVER_SOCKET: /tmp/mover-hitl.sock
+      SERVICE_NAME: hitl-worker
+      MOVER_ENABLE_POSTGRES: "false"  # Don't waste resources on unused DB connection
+      IOURING_ENTRIES: ${IOURING_ENTRIES:-4096}
+      IOURING_FLAGS: ${IOURING_FLAGS:-clamp}
+    volumes:
+      - mover-hitl-socket:/tmp
+
   hitl-worker:
     build:
       context: ..
@@ -211,6 +325,8 @@ services:
         SERVICE_NAME: hitl-worker
         NEEDS_SCRIPTS: "true"
     container_name: orchestrator-hitl-worker
+    volumes:
+      - mover-hitl-socket:/tmp  # Share socket with mover
     environment:
       REDIS_HOST: redis
       REDIS_PORT: 6379
@@ -324,6 +440,15 @@ volumes:
   postgres_data:
     driver: local
   redis_data:
+    driver: local
+  # Mover sockets (for sidecar pattern)
+  mover-orchestrator-socket:
+    driver: local
+  mover-workflow-socket:
+    driver: local
+  mover-http-socket:
+    driver: local
+  mover-hitl-socket:
     driver: local
 
 networks:

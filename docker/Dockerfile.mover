@@ -1,0 +1,74 @@
+# Dockerfile for Mover Service (Linux only)
+# Ultra-fast I/O layer with io_uring + zero-copy
+#
+# Note: Requires Linux kernel 5.1+ (io_uring support)
+# Will not work on macOS/Windows
+
+# Build stage - Use nightly for glommio (requires edition2024)
+FROM rustlang/rust:nightly-slim AS builder
+
+WORKDIR /build
+
+# Install build dependencies for glommio (needs clang, liburing, kernel headers)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      pkg-config \
+      libssl-dev \
+      ca-certificates \
+      curl \
+      clang \
+      liburing-dev \
+      build-essential \
+      linux-headers-generic \
+      git && \
+    rm -rf /var/lib/apt/lists/*
+
+# Add Zscaler certificate (for corporate SSL inspection)
+COPY docker/zscaler.pem /usr/local/share/ca-certificates/zscaler.crt
+RUN update-ca-certificates
+
+# Configure cargo to use sparse index (more reliable)
+ENV CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse
+
+# Copy mover source
+COPY common/mover ./common/mover
+
+# Copy dag-optimizer (mover depends on it)
+COPY crates/dag-optimizer ./crates/dag-optimizer
+
+# Build mover
+WORKDIR /build/common/mover
+RUN cargo build --release
+
+# Runtime stage
+FROM debian:12-slim
+
+WORKDIR /app
+
+# Install runtime dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+# Copy binary from builder
+COPY --from=builder /build/common/mover/target/release/mover ./mover
+
+# Create non-root user (Debian commands)
+RUN groupadd -g 1000 app && \
+    useradd -u 1000 -g app -m -s /bin/bash app && \
+    chown app:app /app/mover
+
+USER app
+
+# Environment defaults
+ENV MOVER_SOCKET=/tmp/mover.sock
+ENV IOURING_ENTRIES=4096
+ENV IOURING_FLAGS=clamp
+
+# Expose Unix socket directory as volume
+VOLUME /tmp
+
+HEALTHCHECK --interval=30s --timeout=3s --retries=3 \
+  CMD test -S ${MOVER_SOCKET} || exit 1
+
+CMD ["./mover"]
