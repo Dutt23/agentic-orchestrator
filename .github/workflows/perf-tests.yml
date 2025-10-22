@@ -30,6 +30,17 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Cache Docker layers
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ hashFiles('**/Dockerfile*', 'go.sum', 'go.mod') }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
+
       - name: Start Postgres
         run: |
           docker run -d --name postgres \
@@ -155,19 +166,26 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Cache Docker layers
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-mover-${{ hashFiles('**/Dockerfile*', 'go.sum', 'go.mod', '**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-mover-
+            ${{ runner.os }}-buildx-
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Rust dependencies
-        uses: actions/cache@v4
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            common/mover/target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          workspaces: common/mover
+          cache-on-failure: true
 
       - name: Start Postgres
         run: |
