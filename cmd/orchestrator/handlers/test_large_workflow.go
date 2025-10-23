@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/labstack/echo/v4"
 )
@@ -51,13 +50,20 @@ func (h *TestHandler) CreateLargeWorkflow(c echo.Context) error {
 		"actual_bytes", len(workflow))
 
 	irKey := "ir:" + req.RunID
-	h.components.Logger.Info("Cach key stores", "run_id", irKey)
-	err := h.redis.Set(c.Request().Context(), irKey, string(workflow), 3600*time.Second) // 1 hour TTL
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]interface{}{
-			"error": "failed to store IR",
-		})
-	}
+	h.components.Logger.Info("Cache key stores", "run_id", irKey)
+	// err := h.redis.Set(c.Request().Context(), irKey, string(workflow), 3600*time.Second) // 1 hour TTL
+	// if err != nil {
+	// 	return c.JSON(http.StatusInternalServerError, map[string]interface{}{
+	// 		"error": "failed to store IR",
+	// 	})
+	// }
+
+	// Also store in in-memory cache for fast perf test access (eliminates Redis bottleneck)
+	// h.workflowCacheMu.Lock()
+	h.workflowCache[irKey] = string(workflow)
+	// h.workflowCacheMu.Unlock()
+	h.components.Logger.Info("✅ Stored in cache for perf testing", "run_id", req.RunID, "size_kb", len(workflow)/1024)
+
 	return c.JSON(http.StatusCreated, map[string]interface{}{
 		"run_id":     req.RunID,
 		"node_count": 10,

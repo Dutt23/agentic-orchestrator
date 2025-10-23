@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"time"
 )
 
 // Ensure MoverCASClient implements CASClient interface
@@ -305,8 +306,19 @@ func (m *MoverCASClient) ProxyHTTPZeroCopy(ctx context.Context, method, targetHo
 	if err != nil {
 		return nil, fmt.Errorf("failed to get connection: %w", err)
 	}
-	// Don't reuse connection after HttpSplice - it's consumed by the mover
+	// CRITICAL: The mover closes the Unix socket after sending the HTTP response (EOF),
+	// so we CANNOT reuse this connection. Each request needs a fresh connection.
 	defer conn.Close()
+
+	// Set socket deadlines based on context (5 minute timeout for large payloads)
+	// Check if context has a deadline, otherwise use 5 minutes
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		deadline = time.Now().Add(5 * time.Minute)
+	}
+	if err := conn.SetDeadline(deadline); err != nil {
+		return nil, fmt.Errorf("failed to set connection deadline: %w", err)
+	}
 
 	// Build HTTP metadata JSON (without body)
 	metadataBytes, err := buildHttpMetadata(method, path, targetHost, targetPort, headers, uint64(len(body)))
@@ -336,20 +348,29 @@ func (m *MoverCASClient) ProxyHTTPZeroCopy(ctx context.Context, method, targetHo
 
 	// Read raw HTTP response back (mover splices it directly!)
 	// Read until EOF (connection closed by mover after complete response)
-	responseData := make([]byte, 0, 4096)
-	buf := make([]byte, 4096)
+	// The socket deadline we set above will ensure this doesn't hang forever
+	responseData := make([]byte, 0, 65536) // Pre-allocate 64KB
+	buf := make([]byte, 65536) // Use 64KB buffer for better performance
 
 	for {
+		// Check if context is cancelled before each read
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("context cancelled while reading response: %w", ctx.Err())
+		}
+
 		n, err := conn.Read(buf)
 		if err != nil {
 			if err == io.EOF {
 				// EOF means mover closed connection after sending complete response
 				break
 			}
+			// Check if error is due to context cancellation or deadline
+			if ctx.Err() != nil {
+				return nil, fmt.Errorf("context cancelled/timeout while reading response: %w", ctx.Err())
+			}
 			return nil, fmt.Errorf("failed to read response: %w", err)
 		}
 		responseData = append(responseData, buf[:n]...)
-		// Keep reading until EOF - don't break early!
 	}
 
 	return responseData, nil

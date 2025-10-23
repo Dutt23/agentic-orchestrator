@@ -74,7 +74,7 @@ pub async fn splice_exact_bytes_async(
 
     let start = Instant::now();
     let mut total_transferred = 0;
-    let timeout_duration = std::time::Duration::from_secs(30); // 30 second timeout
+    let timeout_duration = std::time::Duration::from_secs(300); // 5 minute timeout for large payloads
 
     // Create pipe once for all transfers
     let (pipe_read, pipe_write) = pipe()
@@ -96,7 +96,7 @@ pub async fn splice_exact_bytes_async(
         }
 
         let remaining = exact_bytes - total_transferred;
-        let chunk_size = remaining.min(65536); // 64KB chunks
+        let chunk_size = remaining.min(1048576); // 1MB chunks for better performance
 
         // Step 1: Wait for upstream to be readable (io_uring POLL_ADD)
         // Use timeout to prevent indefinite waiting

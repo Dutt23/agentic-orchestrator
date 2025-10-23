@@ -86,6 +86,7 @@ async fn handle_http_splice_request(
     _config: &MoverConfig,
     client: &mut monoio::net::UnixStream,
     request_data: &[u8],
+    excess_body_bytes: &[u8],  // Use slice to avoid copy
 ) -> Result<()> {
     use crate::protocol::parse_http_metadata;
 
@@ -100,11 +101,11 @@ async fn handle_http_splice_request(
     // Always use splice mode with the new streaming protocol
     // The old buffered mode is not compatible with the new metadata-based protocol
     let handler = SpliceHttpHandler;
-    let result = handler.handle(upstream, client, metadata).await
+    let result = handler.handle(upstream, client, metadata, excess_body_bytes).await
         .map_err(|e| anyhow::anyhow!("Splice handler: {}", e))?;
 
-    debug!("{} handler: {}b in {:?}",
-           result.method, result.bytes_transferred, result.duration);
+    // Verbose logging disabled for performance
+    // debug!("handler: {}b in {:?}", result.bytes_transferred, result.duration);
 
     Ok(())
 }
@@ -161,7 +162,7 @@ async fn handle_connection(
                         Err(_e) => {
                             // Need more data
 
-                            if accumulated_data.len() > 1_000_000 {
+                            if accumulated_data.len() > 100_000_000 { // 100MB limit for large workflows
                                 error!("Request too large: {} bytes", accumulated_data.len());
                                 return Ok(());
                             }
@@ -175,9 +176,18 @@ async fn handle_connection(
             }
         };
 
+        // Extract excess body bytes that were read along with the request header
+        // These bytes are the start of the HTTP body and must be sent to upstream
+        let req_size = req.serialized_size();
+        let excess_body_bytes = if accumulated_data.len() > req_size {
+            accumulated_data[req_size..].to_vec()
+        } else {
+            Vec::new()
+        };
+
         // Handle HttpSplice - Pluggable handler (buffered or splice)
         if req.op == OpCode::HttpSplice {
-            match handle_http_splice_request(&config, &mut stream, &req.data).await {
+            match handle_http_splice_request(&config, &mut stream, &req.data, &excess_body_bytes).await {
                 Ok(()) => {
                     return Ok(());
                 }

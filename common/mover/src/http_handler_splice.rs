@@ -20,7 +20,7 @@ use crate::dma_pool;
 use crate::http_handler::HttpHandlerResult;
 use monoio::io::{AsyncReadRent, AsyncWriteRentExt};
 use std::time::Instant;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::protocol::HttpMetadata;
 
@@ -32,8 +32,12 @@ impl SpliceHttpHandler {
         mut upstream: monoio::net::TcpStream,
         client: &mut monoio::net::UnixStream,
         metadata: HttpMetadata,
+        excess_body_bytes: &[u8],  // Use slice to avoid copy
     ) -> Result<HttpHandlerResult, String> {
         let start = Instant::now();
+
+        // Verbose logging disabled for performance - enable RUST_LOG=debug to see details
+        // debug!("=== HTTP Splice Handler Start ===");
 
         // Build HTTP request from metadata (headers only, body comes from socket)
         let http_headers = build_http_headers(&metadata)?;
@@ -48,12 +52,24 @@ impl SpliceHttpHandler {
             return Err(format!("Failed to write request headers: {}", e));
         }
 
-        // Splice request body from unix socket to TCP if present
-        if metadata.content_length > 0 {
-            debug!("Splicing request body: {} bytes from unix → TCP", metadata.content_length);
-            match splice_request_body(client, &mut upstream, metadata.content_length).await {
-                Ok(bytes) => {
-                    debug!("Spliced request body: {} bytes", bytes);
+        // Write excess body bytes first (these were pre-read during request header parsing)
+        // Use a reference to avoid copying - monoio will take ownership of the slice
+        let mut body_bytes_written = 0;
+        if !excess_body_bytes.is_empty() {
+            let (write_result, _) = upstream.write_all(excess_body_bytes).await;
+            if let Err(e) = write_result {
+                error!("Failed to write excess body bytes to upstream: {}", e);
+                return Err(format!("Failed to write excess body bytes: {}", e));
+            }
+            body_bytes_written = excess_body_bytes.len();
+        }
+
+        // Splice remaining request body from unix socket to TCP
+        let remaining_body = metadata.content_length.saturating_sub(body_bytes_written as u64);
+        if remaining_body > 0 {
+            match splice_request_body(client, &mut upstream, remaining_body).await {
+                Ok(_bytes) => {
+                    // Success
                 }
                 Err(e) => {
                     error!("Failed to splice request body: {}", e);
@@ -64,20 +80,15 @@ impl SpliceHttpHandler {
 
         let write_time = write_start.elapsed();
 
-        debug!("Reading response headers from upstream...");
-        let (header_bytes, content_length, excess_body_bytes, is_chunked) = parse_http_response_headers(&mut upstream).await?;
+        let (header_bytes, content_length, excess_body_bytes, is_chunked) = match parse_http_response_headers(&mut upstream).await {
+            Ok(result) => result,
+            Err(e) => {
+                error!("Failed to parse response headers: {}", e);
+                return Err(e);
+            }
+        };
 
-        debug!(
-            "Parsed headers: {}b, Content-Length={:?}, excess={}b, chunked={}",
-            header_bytes.len(),
-            content_length,
-            excess_body_bytes.len(),
-            is_chunked
-        );
-
-        debug!("Writing headers to client...");
-
-        let (write_result, _) = client.write_all(header_bytes.clone()).await;
+        let (write_result, _) = client.write_all(header_bytes).await;
         if let Err(e) = write_result {
             error!("Failed to write headers to client: {}", e);
             return Err(format!("Failed to write headers to client: {}", e));
@@ -85,8 +96,7 @@ impl SpliceHttpHandler {
 
         let mut body_bytes_written = 0;
         if !excess_body_bytes.is_empty() {
-            debug!("Writing {}b excess body bytes from header read", excess_body_bytes.len());
-            let (write_result, _) = client.write_all(excess_body_bytes.clone()).await;
+            let (write_result, _) = client.write_all(excess_body_bytes).await;
             if let Err(e) = write_result {
                 error!("Failed to write excess body bytes: {}", e);
                 return Err(format!("Failed to write excess body bytes: {}", e));
@@ -95,27 +105,31 @@ impl SpliceHttpHandler {
         }
 
         let body_bytes = if is_chunked {
-            // Handle chunked encoding
-            debug!("Response uses chunked encoding, processing chunks with splice");
-            match splice_chunked_response(&mut upstream, client, excess_body_bytes).await {
-                Ok(bytes) => bytes,
+            // For chunked encoding, use transparent relay - splice everything until EOF
+            if !excess_body_bytes.is_empty() {
+                let (write_result, _) = client.write_all(excess_body_bytes).await;
+                if let Err(e) = write_result {
+                    error!("Failed to write excess bytes: {}", e);
+                    return Err(format!("Failed to write excess bytes: {}", e));
+                }
+            }
+
+            match splice_until_eof(&mut upstream, client).await {
+                Ok(bytes) => excess_body_bytes.len() + bytes,
                 Err(e) => {
-                    error!("Chunked splice failed: {}", e);
+                    error!("Transparent chunked splice failed: {}", e);
                     return Err(format!("Failed to splice chunked response: {}", e));
                 }
             }
         } else if let Some(length) = content_length {
             let remaining_bytes = length.saturating_sub(body_bytes_written);
             if remaining_bytes > 0 {
-                debug!("Splicing remaining {}b ({}b already written)", remaining_bytes, body_bytes_written);
-
                 match async_splice::splice_exact_bytes_async(&mut upstream, client, remaining_bytes).await {
                     Ok(bytes) => {
-                        debug!("Spliced {}b successfully", bytes);
                         body_bytes_written + bytes
                     }
                     Err(e) => {
-                        warn!("Splice failed ({}b remaining), falling back to buffered: {}", remaining_bytes, e);
+                        warn!("Splice failed, falling back to buffered: {}", e);
 
                         let mut total_read = body_bytes_written;
                         let mut remaining = remaining_bytes;
@@ -154,21 +168,16 @@ impl SpliceHttpHandler {
                         }
                     }
 
-                        debug!("Buffered fallback succeeded: {}b total", total_read);
                         total_read
                     }
                 }
             } else {
-                debug!("All {}b body bytes read with headers", body_bytes_written);
                 body_bytes_written
             }
         } else {
             // No Content-Length, no chunked - read until EOF (HTTP/1.0 behavior)
-            debug!("No Content-Length or chunked, reading until EOF (HTTP/1.0)");
-
-            // Write any excess bytes from header read
             if !excess_body_bytes.is_empty() {
-                let (write_result, _) = client.write_all(excess_body_bytes.clone()).await;
+                let (write_result, _) = client.write_all(excess_body_bytes).await;
                 if let Err(e) = write_result {
                     error!("Failed to write excess bytes: {}", e);
                     return Err(format!("Failed to write excess bytes: {}", e));
@@ -177,7 +186,6 @@ impl SpliceHttpHandler {
 
             let mut total_read = excess_body_bytes.len();
 
-            // Read until EOF
             loop {
                 let buf = dma_pool::get_buffer_4k();
                 let (result, buf) = upstream.read(buf).await;
@@ -185,8 +193,7 @@ impl SpliceHttpHandler {
                 match result {
                     Ok(0) => {
                         dma_pool::return_buffer_4k(buf);
-                        debug!("EOF reached, read {} total bytes", total_read);
-                        break; // Normal EOF
+                        break;
                     }
                     Ok(n) => {
                         let data = buf[..n].to_vec();
@@ -214,9 +221,8 @@ impl SpliceHttpHandler {
         let total_time = start.elapsed();
         let transfer_time = total_time - write_time;
 
-        debug!("Splice handler completed: {}b in {:?}",
-               request_size + header_bytes.len() + body_bytes,
-               total_time);
+        // Minimal logging - only enable with RUST_LOG=info
+        // info!("Splice complete: {}b in {:?}", request_size + header_bytes.len() + body_bytes, total_time);
 
         Ok(HttpHandlerResult {
             bytes_transferred: request_size + header_bytes.len() + body_bytes,
@@ -274,18 +280,129 @@ fn build_http_headers(metadata: &HttpMetadata) -> Result<Vec<u8>, String> {
     Ok(buf)
 }
 
-/// Splice request body from unix socket to TCP stream
+/// Splice request body from unix socket to TCP stream using true zero-copy
 /// Returns number of bytes spliced
-/// Note: The splice function signature expects (TcpStream, UnixStream, bytes)
-/// but we're reading from Unix and writing to TCP, so we can't use splice directly
-/// for this direction. We'll use a manual copy with buffers.
 async fn splice_request_body(
     unix_sock: &mut monoio::net::UnixStream,
     tcp_sock: &mut monoio::net::TcpStream,
     content_length: u64,
 ) -> Result<usize, String> {
-    // Manual copy with buffering (splice doesn't support Unix→TCP direction in our impl)
-    // TODO: Implement true splice for this direction
+    use std::os::unix::io::AsRawFd;
+
+    // Try to use splice for zero-copy Unix→TCP transfer
+    // Splice requires: source→pipe→destination
+    // We need to reverse the direction: read from Unix, write to TCP
+
+    #[cfg(target_os = "linux")]
+    {
+        use nix::unistd::{close, pipe};
+
+        // Create a pipe for splice
+        let (pipe_read, pipe_write) = pipe()
+            .map_err(|e| format!("Failed to create pipe for request: {}", e))?;
+
+        let unix_fd = unix_sock.as_raw_fd();
+        let tcp_fd = tcp_sock.as_raw_fd();
+
+        let mut total_transferred = 0;
+        let mut remaining = content_length as usize;
+
+        while remaining > 0 {
+            let chunk_size = remaining.min(1048576); // 1MB chunks
+
+            // Step 1: Splice from Unix socket to pipe
+            let to_pipe = unsafe {
+                const SPLICE_F_MOVE: u32 = 1;
+                const SPLICE_F_NONBLOCK: u32 = 2;
+
+                let result = libc::splice(
+                    unix_fd,
+                    std::ptr::null_mut(),
+                    pipe_write,
+                    std::ptr::null_mut(),
+                    chunk_size,
+                    SPLICE_F_MOVE | SPLICE_F_NONBLOCK,
+                );
+
+                if result < 0 {
+                    let err = std::io::Error::last_os_error();
+                    let _ = close(pipe_read);
+                    let _ = close(pipe_write);
+
+                    // Fall back to buffered copy on splice failure
+                    if err.raw_os_error() == Some(libc::EAGAIN) {
+                        debug!("Splice EAGAIN on Unix socket, falling back to buffered");
+                    }
+                    return splice_request_body_buffered(unix_sock, tcp_sock, content_length - total_transferred as u64).await;
+                }
+                result as usize
+            };
+
+            if to_pipe == 0 {
+                let _ = close(pipe_read);
+                let _ = close(pipe_write);
+                return Err(format!(
+                    "Unexpected EOF: got {} bytes, expected {}",
+                    total_transferred, content_length
+                ));
+            }
+
+            // Step 2: Splice from pipe to TCP socket
+            let mut written = 0;
+            while written < to_pipe {
+                let result = unsafe {
+                    const SPLICE_F_MOVE: u32 = 1;
+                    const SPLICE_F_NONBLOCK: u32 = 2;
+
+                    libc::splice(
+                        pipe_read,
+                        std::ptr::null_mut(),
+                        tcp_fd,
+                        std::ptr::null_mut(),
+                        to_pipe - written,
+                        SPLICE_F_MOVE | SPLICE_F_NONBLOCK,
+                    )
+                };
+
+                if result < 0 {
+                    let _ = close(pipe_read);
+                    let _ = close(pipe_write);
+                    return Err(format!("Failed to splice to TCP: {}", std::io::Error::last_os_error()));
+                }
+
+                if result == 0 {
+                    let _ = close(pipe_read);
+                    let _ = close(pipe_write);
+                    return Err("Splice to TCP returned 0".to_string());
+                }
+
+                written += result as usize;
+            }
+
+            total_transferred += to_pipe;
+            remaining = remaining.saturating_sub(to_pipe);
+        }
+
+        let _ = close(pipe_read);
+        let _ = close(pipe_write);
+
+        debug!("Zero-copy splice of request body succeeded: {} bytes", total_transferred);
+        Ok(total_transferred)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        // Fall back to buffered copy on non-Linux systems
+        splice_request_body_buffered(unix_sock, tcp_sock, content_length).await
+    }
+}
+
+/// Buffered fallback for request body transfer (used when splice fails or on non-Linux)
+async fn splice_request_body_buffered(
+    unix_sock: &mut monoio::net::UnixStream,
+    tcp_sock: &mut monoio::net::TcpStream,
+    content_length: u64,
+) -> Result<usize, String> {
     let mut total_written = 0;
     let mut remaining = content_length as usize;
 
@@ -473,6 +590,180 @@ async fn read_exact_bytes(stream: &mut monoio::net::TcpStream, count: usize) -> 
     }
 
     Ok(result_buf)
+}
+
+/// Splice entire stream until EOF (transparent relay for chunked responses)
+/// This is pure zero-copy - we don't parse or process anything
+/// The receiving HTTP client will handle chunked decoding
+#[cfg(target_os = "linux")]
+async fn splice_until_eof(
+    upstream: &mut monoio::net::TcpStream,
+    client: &mut monoio::net::UnixStream,
+) -> Result<usize, String> {
+    use std::os::unix::io::AsRawFd;
+    use nix::unistd::{close, pipe};
+    use std::time::Duration;
+
+    let upstream_fd = upstream.as_raw_fd();
+    let client_fd = client.as_raw_fd();
+
+    // Create pipe for splice
+    let (pipe_read, pipe_write) = pipe()
+        .map_err(|e| format!("Failed to create pipe: {}", e))?;
+
+    let mut total_bytes = 0;
+    let max_chunk = 1048576; // Try to splice 1MB at a time
+
+    // Keep splicing until EOF
+    loop {
+        // Wait for upstream to be readable
+        let readable_timeout = Duration::from_secs(5);
+        match monoio::time::timeout(readable_timeout, upstream.readable(false)).await {
+            Ok(Ok(_)) => {},
+            Ok(Err(e)) => {
+                let _ = close(pipe_read);
+                let _ = close(pipe_write);
+                return Err(format!("Readiness check failed: {}", e));
+            }
+            Err(_) => {
+                // Timeout - assume EOF
+                debug!("Timeout waiting for data, assuming EOF");
+                break;
+            }
+        }
+
+        // Try to splice from upstream to pipe
+        let to_pipe = unsafe {
+            const SPLICE_F_MOVE: u32 = 1;
+            const SPLICE_F_NONBLOCK: u32 = 2;
+
+            let result = libc::splice(
+                upstream_fd,
+                std::ptr::null_mut(),
+                pipe_write,
+                std::ptr::null_mut(),
+                max_chunk,
+                SPLICE_F_MOVE | SPLICE_F_NONBLOCK,
+            );
+
+            if result < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.raw_os_error() == Some(libc::EAGAIN) {
+                    // No data available yet, continue
+                    continue;
+                }
+                // Other error
+                let _ = close(pipe_read);
+                let _ = close(pipe_write);
+                return Err(format!("Splice from upstream failed: {}", err));
+            }
+            result as usize
+        };
+
+        // 0 means EOF
+        if to_pipe == 0 {
+            debug!("EOF reached on upstream");
+            break;
+        }
+
+        // Splice from pipe to client
+        let mut written = 0;
+        while written < to_pipe {
+            // Wait for client to be writable
+            let writable_timeout = Duration::from_secs(5);
+            match monoio::time::timeout(writable_timeout, client.writable(false)).await {
+                Ok(Ok(_)) => {},
+                Ok(Err(e)) => {
+                    let _ = close(pipe_read);
+                    let _ = close(pipe_write);
+                    return Err(format!("Client writable check failed: {}", e));
+                }
+                Err(_) => {
+                    let _ = close(pipe_read);
+                    let _ = close(pipe_write);
+                    return Err("Timeout waiting for client to be writable".to_string());
+                }
+            }
+
+            let result = unsafe {
+                const SPLICE_F_MOVE: u32 = 1;
+                const SPLICE_F_NONBLOCK: u32 = 2;
+
+                libc::splice(
+                    pipe_read,
+                    std::ptr::null_mut(),
+                    client_fd,
+                    std::ptr::null_mut(),
+                    to_pipe - written,
+                    SPLICE_F_MOVE | SPLICE_F_NONBLOCK,
+                )
+            };
+
+            if result < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.raw_os_error() == Some(libc::EAGAIN) {
+                    continue;
+                }
+                let _ = close(pipe_read);
+                let _ = close(pipe_write);
+                return Err(format!("Splice to client failed: {}", err));
+            }
+
+            if result == 0 {
+                let _ = close(pipe_read);
+                let _ = close(pipe_write);
+                return Err("Client splice returned 0".to_string());
+            }
+
+            written += result as usize;
+        }
+
+        total_bytes += to_pipe;
+    }
+
+    let _ = close(pipe_read);
+    let _ = close(pipe_write);
+
+    debug!("Transparent splice until EOF completed: {} bytes", total_bytes);
+    Ok(total_bytes)
+}
+
+/// Non-Linux fallback - buffered copy until EOF
+#[cfg(not(target_os = "linux"))]
+async fn splice_until_eof(
+    upstream: &mut monoio::net::TcpStream,
+    client: &mut monoio::net::UnixStream,
+) -> Result<usize, String> {
+    let mut total_bytes = 0;
+
+    loop {
+        let buf = dma_pool::get_buffer_4k();
+        let (result, buf) = upstream.read(buf).await;
+
+        match result {
+            Ok(0) => {
+                dma_pool::return_buffer_4k(buf);
+                break; // EOF
+            }
+            Ok(n) => {
+                let data = buf[..n].to_vec();
+                dma_pool::return_buffer_4k(buf);
+
+                let (write_result, _) = client.write_all(data).await;
+                if let Err(e) = write_result {
+                    return Err(format!("Write failed: {}", e));
+                }
+
+                total_bytes += n;
+            }
+            Err(e) => {
+                dma_pool::return_buffer_4k(buf);
+                return Err(format!("Read failed: {}", e));
+            }
+        }
+    }
+
+    Ok(total_bytes)
 }
 
 /// Parse hex chunk size from line like "5a3\r\n"

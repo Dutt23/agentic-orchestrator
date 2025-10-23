@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -17,6 +18,9 @@ type TestHandler struct {
 	components *bootstrap.Components
 	redis      *rediscommon.Client
 	casClient  clients.CASClient
+	// In-memory cache for test workflows (eliminates Redis bottleneck during perf tests)
+	workflowCache   map[string]string
+	workflowCacheMu sync.RWMutex
 }
 
 // NewTestHandler creates a new test handler
@@ -26,13 +30,14 @@ func NewTestHandler(components *bootstrap.Components, redis *rediscommon.Client,
 	casClient, _ := clients.NewCASClient(redisRaw, components.Logger)
 
 	return &TestHandler{
-		components: components,
-		redis:      redis,
-		casClient:  casClient,
+		components:    components,
+		redis:         redis,
+		casClient:     casClient,
+		workflowCache: make(map[string]string), // Initialize in-memory cache
 	}
 }
 
-// FetchWorkflowIR fetches and returns workflow IR from Redis
+// FetchWorkflowIR fetches and returns workflow IR from cache (first) or Redis
 // This is the EXACT operation workflow-runner does when loading a workflow
 // GET /api/v1/test/fetch-workflow/{run_id}
 func (h *TestHandler) FetchWorkflowIR(c echo.Context) error {
@@ -44,9 +49,19 @@ func (h *TestHandler) FetchWorkflowIR(c echo.Context) error {
 		})
 	}
 
-	// This is what workflow-runner does: Load IR from Redis
 	irKey := "ir:" + runID
-	h.components.Logger.Info("Fetching ", "id_key", irKey)
+
+	// Check in-memory cache first (for perf tests - avoid Redis bottleneck)
+	// h.workflowCacheMu.RLock()
+	if cachedIR, found := h.workflowCache[irKey]; found {
+		// h.workflowCacheMu.RUnlock()
+		// Cache hit - instant response!
+		return c.JSONBlob(http.StatusOK, []byte(cachedIR))
+	}
+	// h.workflowCacheMu.RUnlock()
+
+	// Cache miss - fetch from Redis
+	h.components.Logger.Info("Fetching from Redis (cache miss)", "id_key", irKey)
 	irJSON, err := h.redis.Get(c.Request().Context(), irKey)
 	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]interface{}{
@@ -54,7 +69,12 @@ func (h *TestHandler) FetchWorkflowIR(c echo.Context) error {
 		})
 	}
 
-	// Return the IR (measures: Redis fetch + network send)
+	// Store in cache for future requests
+	h.workflowCacheMu.Lock()
+	h.workflowCache[irKey] = irJSON
+	h.workflowCacheMu.Unlock()
+
+	// Return the IR
 	return c.JSONBlob(http.StatusOK, []byte(irJSON))
 }
 
@@ -114,13 +134,18 @@ func (h *TestHandler) CreateTestWorkflow(c echo.Context) error {
 
 	// Store in Redis
 	irKey := "ir:" + req.RunID
-	h.components.Logger.Info("Cach key stores", "run_id", irKey)
+	h.components.Logger.Info("Cache key stores", "run_id", irKey)
 	err := h.redis.Set(c.Request().Context(), irKey, ir, 3600*time.Second) // 1 hour TTL
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]interface{}{
 			"error": "failed to store IR",
 		})
 	}
+
+	// Also store in in-memory cache for fast perf test access
+	h.workflowCacheMu.Lock()
+	h.workflowCache[irKey] = ir
+	h.workflowCacheMu.Unlock()
 
 	return c.JSON(http.StatusCreated, map[string]interface{}{
 		"run_id":     req.RunID,

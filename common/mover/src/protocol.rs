@@ -63,6 +63,18 @@ pub struct MoverRequest {
 }
 
 impl MoverRequest {
+    /// Calculate the serialized size of this request
+    /// Used to determine how many bytes were consumed during parsing
+    pub fn serialized_size(&self) -> usize {
+        1                       // op code
+        + 2                     // id_len (u16)
+        + self.id.len()         // id bytes
+        + 8                     // offset (u64)
+        + 8                     // length (u64)
+        + 4                     // data_len (u32)
+        + self.data.len()       // data bytes
+    }
+
     /// Serialize request to binary format
     /// Format: [op: u8][id_len: u16][id: bytes][offset: u64][len: u64][data_len: u32][data: bytes]
     pub fn write_to<W: Write>(&self, writer: &mut W) -> io::Result<()> {
